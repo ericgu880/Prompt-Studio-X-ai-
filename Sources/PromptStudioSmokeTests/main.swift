@@ -122,12 +122,45 @@ func testSeedAssetRepairKeepsExistingUserData() throws {
     try expect(loaded.first { $0.id == userItem.id }?.assetPath == "/missing/user.png", "non-seed user item should not be rewritten")
 }
 
+func testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let item = sampleItem(title: "缩略图测试", prompt: "thumbnail", assetPath: "/tmp/original.png")
+    let thumbnailPath = repository.libraryURL
+        .appendingPathComponent("thumbnails")
+        .appendingPathComponent(item.id + ".jpg")
+        .path
+
+    try repository.saveItem(item)
+    try repository.updateThumbnailPath(itemID: item.id, thumbnailPath: thumbnailPath)
+
+    let loaded = try repository.loadItems()[0]
+    try expect(loaded.assetPath == "/tmp/original.png", "thumbnail update should not alter original asset path")
+    try expect(loaded.thumbnailPath == thumbnailPath, "thumbnail path should persist")
+}
+
+func testLastUsedUpdatePersistsForRecentSorting() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let older = sampleItem(title: "较早", prompt: "older")
+    let newer = sampleItem(title: "较新", prompt: "newer")
+    try repository.saveItem(older)
+    try repository.saveItem(newer)
+
+    let date = Date().addingTimeInterval(3_600)
+    try repository.updateLastUsed(itemID: older.id, at: date)
+
+    let loaded = try repository.loadItems()
+    let recent = PromptFiltering.apply(loaded, filter: PromptFilter(collection: .recent))
+    try expect(recent.first?.id == older.id, "updated lastUsedAt should drive recent sorting")
+}
+
 do {
     try testSearchFiltering()
     try testSQLiteRoundTrip()
     try testTrashAndRestore()
     try testAspectRatioDisplayNormalizesImportedSizes()
     try testSeedAssetRepairKeepsExistingUserData()
+    try testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset()
+    try testLastUsedUpdatePersistsForRecentSorting()
     print("PromptStudioSmokeTests passed")
 } catch {
     fputs("PromptStudioSmokeTests failed: \(error.localizedDescription)\n", stderr)

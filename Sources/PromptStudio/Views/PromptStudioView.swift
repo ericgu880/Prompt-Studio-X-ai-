@@ -26,11 +26,11 @@ struct PromptStudioView: View {
 
             if let toast = state.toast {
                 Text(toast)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(StudioColor.text)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
-                    .background(Capsule().fill(Color.black.opacity(0.78)))
+                    .background(Capsule().fill(StudioColor.panelRaised))
                     .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                     .padding(.bottom, 22)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -100,7 +100,7 @@ private struct SidebarView: View {
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))
             .padding(.horizontal, 14)
-            .padding(.top, 18)
+            .padding(.top, 16)
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
@@ -156,36 +156,25 @@ private struct SidebarView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(StudioColor.text)
                 .frame(height: 42)
+                .padding(.horizontal, 10)
+                .background(state.filter.collection == .trash ? StudioColor.selection : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 18)
-            .padding(.bottom, 18)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 20)
         }
         .background(StudioColor.sidebar)
     }
 
     private var windowChrome: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 8) {
-                Circle().fill(Color.red).frame(width: 12, height: 12)
-                Circle().fill(Color.orange).frame(width: 12, height: 12)
-                Circle().fill(Color.green).frame(width: 12, height: 12)
-                Spacer()
-            }
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6).fill(Color.white)
-                    Text("P")
-                        .font(.system(size: 16, weight: .heavy))
-                        .foregroundStyle(Color.black)
-                }
-                .frame(width: 26, height: 26)
-                Text("PromptStudio")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(StudioColor.text)
-            }
+        HStack {
+            Text("PromptStudio")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+            Spacer()
         }
-        .padding(.top, 18)
+        .padding(.top, 48)
         .padding(.horizontal, 18)
     }
 
@@ -255,7 +244,7 @@ private struct SidebarDisclosure: View {
                         .font(.system(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(expanded ? 0 : 180))
                 }
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(StudioColor.text)
             }
             .buttonStyle(.plain)
@@ -295,12 +284,20 @@ private struct SidebarRow: View {
                 Text("\(count)")
                     .foregroundStyle(StudioColor.secondaryText)
             }
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 13, weight: .regular))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(active ? StudioColor.blue.opacity(0.48) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(height: 34)
+            .background(active ? StudioColor.selection : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(alignment: .leading) {
+                if active {
+                    Capsule()
+                        .fill(StudioColor.blue)
+                        .frame(width: 3, height: 18)
+                        .offset(x: -8)
+                }
+            }
         }
         .buttonStyle(.plain)
     }
@@ -316,7 +313,7 @@ private struct RecentRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             Text(item.title)
                 .lineLimit(1)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular))
             Spacer()
             Text(item.lastUsedAt.formatted(date: .omitted, time: .shortened))
                 .font(.system(size: 11))
@@ -384,13 +381,13 @@ private struct TopToolbarView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
-            .studioPanel(radius: 8)
+            .studioPanel(radius: 12)
 
             Button {
                 state.modal = .filters
             } label: {
                 Label("筛选", systemImage: "line.3.horizontal.decrease")
-                    .frame(minWidth: 72)
+                    .frame(minWidth: 76)
             }
             .buttonStyle(CapsuleButtonStyle())
 
@@ -418,17 +415,22 @@ private struct ModelTabsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 18) {
                 ForEach(state.models) { model in
+                    let active = state.filter.modelId == model.id || (state.filter.modelId == nil && model.id == "all")
                     Button {
                         state.setModel(model.id)
                     } label: {
                         Text(model.name)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(state.filter.modelId == model.id || (state.filter.modelId == nil && model.id == "all") ? Color.white : StudioColor.secondaryText)
-                            .padding(.horizontal, model.id == "all" ? 12 : 4)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(active ? StudioColor.text : StudioColor.secondaryText)
+                            .padding(.horizontal, active ? 12 : 4)
                             .frame(height: 32)
                             .background(
                                 Capsule()
-                                    .fill(model.id == "all" && state.filter.modelId == nil ? StudioColor.blueSoft : Color.clear)
+                                    .fill(active ? StudioColor.selection : Color.clear)
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(active ? StudioColor.hairline : Color.clear, lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)
@@ -458,7 +460,7 @@ private struct MasonryGridView: View {
             ScrollView {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                        VStack(spacing: 12) {
+                        LazyVStack(spacing: 12) {
                             ForEach(column) { item in
                                 AssetCardView(item: item, width: width)
                             }
@@ -517,7 +519,7 @@ private struct AssetCardView: View {
                 .padding(12)
 
             LinearGradient(
-                colors: [.clear, Color.black.opacity(isSelected ? 0.82 : 0.66)],
+                colors: [.clear, Color.black.opacity(isSelected ? 0.78 : 0.60)],
                 startPoint: .center,
                 endPoint: .bottom
             )
@@ -525,10 +527,10 @@ private struct AssetCardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Spacer()
                 Text(item.title)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
                 Text("\(item.modelName) · \(item.displayAspectRatio)")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.78))
 
                 if isSelected {
@@ -538,7 +540,7 @@ private struct AssetCardView: View {
                                 .font(.system(size: 11, weight: .semibold))
                                 .padding(.horizontal, 9)
                                 .frame(height: 24)
-                                .background(Capsule().fill(Color.white.opacity(0.12)))
+                                .background(Capsule().fill(Color.white.opacity(0.14)))
                         }
                     }
 
@@ -564,7 +566,8 @@ private struct AssetCardView: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 24, height: 24)
-                            .background(Circle().fill(StudioColor.blue))
+                            .background(Circle().fill(StudioColor.blueSoft))
+                            .overlay(Circle().stroke(StudioColor.blue, lineWidth: 1))
                             .padding(12)
                     }
                     Spacer()
@@ -575,7 +578,7 @@ private struct AssetCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isSelected ? StudioColor.blue : Color.white.opacity(0.08), lineWidth: isSelected ? 2 : 1)
+                .stroke(isSelected ? StudioColor.blue : Color.clear, lineWidth: isSelected ? 1.5 : 0)
         )
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onTapGesture {
@@ -629,7 +632,7 @@ private struct PromptListView: View {
                     .studioPanel(radius: 10)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(state.selectedID == item.id ? StudioColor.blue : Color.clear, lineWidth: 2)
+                            .stroke(state.selectedID == item.id ? StudioColor.blue : Color.clear, lineWidth: 1.5)
                     )
                     .onTapGesture { state.select(item) }
                 }
@@ -649,7 +652,7 @@ private struct EmptyStateView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(StudioColor.secondaryText)
             Text("没有找到素材")
-                .font(.system(size: 24, weight: .bold))
+                .font(.system(size: 24, weight: .semibold))
             Text("调整搜索或导入图片、视频、Prompt 文本。")
                 .foregroundStyle(StudioColor.secondaryText)
             Button("导入素材") {
@@ -664,10 +667,11 @@ private struct EmptyStateView: View {
 
 struct ThumbnailImage: View {
     let path: String
+    @StateObject private var loader = CachedImageLoader()
 
     var body: some View {
         Group {
-            if !path.isEmpty, let image = NSImage(contentsOfFile: path) {
+            if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
@@ -680,5 +684,47 @@ struct ThumbnailImage: View {
                 }
             }
         }
+        .task(id: path) {
+            await loader.load(path)
+        }
+    }
+}
+
+@MainActor
+private final class CachedImageLoader: ObservableObject {
+    @Published var image: NSImage?
+
+    private static let cache = NSCache<NSString, NSImage>()
+    private var path: String = ""
+    private var task: Task<Void, Never>?
+
+    func load(_ path: String) async {
+        task?.cancel()
+        self.path = path
+        guard !path.isEmpty else {
+            image = nil
+            return
+        }
+
+        if let cached = Self.cache.object(forKey: path as NSString) {
+            image = cached
+            return
+        }
+
+        image = nil
+        task = Task {
+            let loaded = await Self.loadImage(at: path)
+            guard !Task.isCancelled, self.path == path else { return }
+            if let loaded {
+                Self.cache.setObject(loaded, forKey: path as NSString)
+            }
+            image = loaded
+        }
+    }
+
+    private nonisolated static func loadImage(at path: String) async -> NSImage? {
+        await Task.detached(priority: .utility) {
+            NSImage(contentsOfFile: path)
+        }.value
     }
 }

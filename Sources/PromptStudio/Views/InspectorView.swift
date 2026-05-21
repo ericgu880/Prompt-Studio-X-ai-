@@ -11,12 +11,13 @@ struct InspectorView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("未选择素材")
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.system(size: 20, weight: .semibold))
                     Text("选择瀑布流中的图片后，这里会显示 Prompt、参数、标签和文件信息。")
                         .foregroundStyle(StudioColor.secondaryText)
                     Spacer()
                 }
                 .padding(22)
+                .padding(.top, 16)
                 .foregroundStyle(StudioColor.text)
             }
         }
@@ -37,7 +38,7 @@ struct InspectorView: View {
                 fileInfoSection(item)
             }
             .padding(20)
-            .padding(.top, 12)
+            .padding(.top, 24)
         }
     }
 
@@ -45,14 +46,14 @@ struct InspectorView: View {
         HStack(alignment: .top, spacing: 14) {
             ThumbnailImage(path: item.thumbnailPath)
                 .frame(width: 112, height: 112)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioColor.hairline, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(StudioColor.hairline, lineWidth: 1))
                 .onTapGesture { state.previewSelected() }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(item.title)
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.system(size: 17, weight: .semibold))
                         .lineLimit(2)
                     Spacer()
                     Button {
@@ -80,7 +81,7 @@ struct InspectorView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .padding(.horizontal, 10)
                         .frame(height: 28)
-                        .background(Capsule().fill(StudioColor.panelRaised))
+                        .background(Capsule().fill(StudioColor.control))
                         .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                 }
                 Button {
@@ -90,7 +91,7 @@ struct InspectorView: View {
                         .frame(width: 30, height: 28)
                 }
                 .buttonStyle(.plain)
-                .background(Capsule().fill(StudioColor.panelRaised))
+                .background(Capsule().fill(StudioColor.control))
                 .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
             }
         }
@@ -138,7 +139,7 @@ struct InspectorView: View {
                     ThumbnailImage(path: reference.path)
                         .frame(width: 48, height: 48)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.blue.opacity(0.7), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
                 }
                 Button {
                     state.modal = .references
@@ -155,11 +156,23 @@ struct InspectorView: View {
 
     private func actionSection(_ item: PromptItem) -> some View {
         HStack(spacing: 8) {
-            Button("编辑") { state.modal = .editPrompt }
+            Button {
+                state.modal = .editPrompt
+            } label: {
+                Text("编辑").frame(maxWidth: .infinity)
+            }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
-            Button("复制提示词") { state.copySelectedPrompt() }
+            Button {
+                state.copySelectedPrompt()
+            } label: {
+                Text("复制提示词").frame(maxWidth: .infinity)
+            }
                 .buttonStyle(CapsuleButtonStyle())
-            Button("生成变体") { state.modal = .variants }
+            Button {
+                state.modal = .variants
+            } label: {
+                Text("生成变体").frame(maxWidth: .infinity)
+            }
                 .buttonStyle(CapsuleButtonStyle())
         }
     }
@@ -172,7 +185,7 @@ struct InspectorView: View {
                 Button("查看全部版本") { state.modal = .versionHistory }
                     .buttonStyle(.plain)
                     .foregroundStyle(StudioColor.secondaryText)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
             }
             HStack(spacing: 8) {
                 ForEach(item.versions.prefix(4)) { version in
@@ -180,7 +193,7 @@ struct InspectorView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .padding(.horizontal, 12)
                         .frame(height: 30)
-                        .background(Capsule().fill(version.id == item.currentVersion?.id ? StudioColor.blueSoft : StudioColor.panelRaised))
+                        .background(Capsule().fill(version.id == item.currentVersion?.id ? StudioColor.selection : StudioColor.control))
                         .overlay(Capsule().stroke(version.id == item.currentVersion?.id ? StudioColor.blue : StudioColor.hairline, lineWidth: 1))
                 }
             }
@@ -218,29 +231,36 @@ struct InspectorView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(StudioColor.tertiaryText)
             Text(value)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(2)
         }
     }
 
     private func infoGrid(_ a: String, _ b: String, _ c: String, _ d: String) -> some View {
-        HStack {
-            Text(a).foregroundStyle(StudioColor.secondaryText)
-            Spacer()
-            Text(b)
-            Spacer(minLength: 16)
-            Text(c).foregroundStyle(StudioColor.secondaryText)
-            Spacer()
-            Text(d)
+        HStack(alignment: .top, spacing: 12) {
+            infoPair(a, b)
+            infoPair(c, d)
         }
-        .font(.system(size: 12))
-        .foregroundStyle(StudioColor.text)
+    }
+
+    private func infoPair(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(StudioColor.secondaryText)
+            Text(value)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 12, weight: .bold))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(StudioColor.secondaryText)
     }
 

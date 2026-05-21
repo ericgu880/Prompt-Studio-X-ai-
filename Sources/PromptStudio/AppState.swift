@@ -36,28 +36,37 @@ final class AppState: ObservableObject {
         }
     }
 
-    @Published var items: [PromptItem] = []
+    @Published var items: [PromptItem] = [] {
+        didSet {
+            rebuildItemLookup()
+            refreshFilteredItems()
+        }
+    }
     @Published var tags: [Tag] = []
     @Published var models: [ModelProfile] = SeedData.models
-    @Published var filter = PromptFilter()
+    @Published var filter = PromptFilter() {
+        didSet {
+            refreshFilteredItems()
+        }
+    }
     @Published var selectedID: String?
+    @Published private(set) var filteredItems: [PromptItem] = []
     @Published var modal: Modal?
     @Published var toast: String?
     @Published var isListView = false
     @Published var isImporting = false
 
     private var repository: PromptRepository?
+    private var itemsByID: [String: PromptItem] = [:]
+    private var pendingLastUsedTask: Task<Void, Never>?
+    private var thumbnailGenerationID = UUID()
 
     var libraryURL: URL {
         repository?.libraryURL ?? PromptRepository.defaultLibraryURL()
     }
 
     var selectedItem: PromptItem? {
-        items.first { $0.id == selectedID }
-    }
-
-    var filteredItems: [PromptItem] {
-        PromptFiltering.apply(items, filter: filter)
+        selectedID.flatMap { itemsByID[$0] }
     }
 
     var trashCount: Int {
@@ -83,7 +92,8 @@ final class AppState: ObservableObject {
             self.models = SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels)
             self.items = try repository.loadItems()
             self.tags = try repository.loadTags()
-            self.selectedID = filteredItems.first?.id
+            refreshFilteredItems(selecting: filteredItems.first?.id)
+            prepareMissingThumbnails()
         } catch {
             self.modal = .error(error.localizedDescription)
         }
@@ -91,14 +101,7 @@ final class AppState: ObservableObject {
 
     func select(_ item: PromptItem) {
         selectedID = item.id
-        do {
-            try repository?.updateLastUsed(itemID: item.id)
-            if let index = items.firstIndex(where: { $0.id == item.id }) {
-                items[index].lastUsedAt = Date()
-            }
-        } catch {
-            showToast("最近使用更新失败")
-        }
+        scheduleLastUsedUpdate(itemID: item.id)
     }
 
     func setCollection(_ collection: LibraryCollection) {
@@ -119,7 +122,7 @@ final class AppState: ObservableObject {
         AppKitBridge.copyToPasteboard(prompt)
         showToast("已复制提示词")
         if let id = selectedID {
-            try? repository?.updateLastUsed(itemID: id)
+            scheduleLastUsedUpdate(itemID: id)
         }
     }
 
@@ -274,6 +277,7 @@ final class AppState: ObservableObject {
                 selectedID = id
             }
             reload(selecting: selectedID)
+            prepareMissingThumbnails()
             showToast("导入完成")
         } catch {
             modal = .error(error.localizedDescription)
@@ -369,13 +373,84 @@ final class AppState: ObservableObject {
         do {
             items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
-            if let id {
-                selectedID = id
-            } else if selectedID == nil || !items.contains(where: { $0.id == selectedID }) {
-                selectedID = filteredItems.first?.id
-            }
+            refreshFilteredItems(selecting: id)
         } catch {
             modal = .error(error.localizedDescription)
+        }
+    }
+
+    private func rebuildItemLookup() {
+        itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+    }
+
+    private func refreshFilteredItems(selecting requestedID: String? = nil) {
+        let nextFilteredItems = PromptFiltering.apply(items, filter: filter)
+        filteredItems = nextFilteredItems
+
+        if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
+            selectedID = requestedID
+        } else if let selectedID, nextFilteredItems.contains(where: { $0.id == selectedID }) {
+            return
+        } else {
+            selectedID = nextFilteredItems.first?.id
+        }
+    }
+
+    private func scheduleLastUsedUpdate(itemID: String) {
+        pendingLastUsedTask?.cancel()
+        pendingLastUsedTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled, let self else { return }
+            let date = Date()
+            do {
+                try repository?.updateLastUsed(itemID: itemID, at: date)
+                if filter.collection == .recent, let index = items.firstIndex(where: { $0.id == itemID }) {
+                    items[index].lastUsedAt = date
+                    refreshFilteredItems(selecting: itemID)
+                }
+            } catch {
+                showToast("最近使用更新失败")
+            }
+        }
+    }
+
+    private func prepareMissingThumbnails() {
+        let libraryURL = libraryURL
+        var candidates: [PromptItem] = []
+        for item in items {
+            guard item.type == .image else { continue }
+            if ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) != nil {
+                continue
+            }
+            candidates.append(item)
+        }
+        guard !candidates.isEmpty else { return }
+        thumbnailGenerationID = UUID()
+        ThumbnailGenerationCenter.shared.start(
+            candidates: candidates,
+            libraryURL: libraryURL,
+            generationID: thumbnailGenerationID,
+            receiver: self
+        )
+    }
+
+    private func applyGeneratedThumbnails(_ generated: [(String, String)]) {
+        guard !generated.isEmpty else { return }
+        var updatedItems = items
+        var changed = false
+        for (itemID, path) in generated {
+            do {
+                try repository?.updateThumbnailPath(itemID: itemID, thumbnailPath: path)
+                if let index = updatedItems.firstIndex(where: { $0.id == itemID }) {
+                    updatedItems[index].thumbnailPath = path
+                    changed = true
+                }
+            } catch {
+                showToast("缩略图更新失败")
+            }
+        }
+        if changed {
+            items = updatedItems
         }
     }
 
@@ -406,5 +481,12 @@ final class AppState: ObservableObject {
         }
         let divisor = max(a, 1)
         return "\(width / divisor):\(height / divisor)"
+    }
+}
+
+extension AppState: ThumbnailGenerationReceiver {
+    func thumbnailGenerationDidFinish(_ generated: [(String, String)], generationID: UUID) {
+        guard thumbnailGenerationID == generationID else { return }
+        applyGeneratedThumbnails(generated)
     }
 }

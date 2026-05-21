@@ -237,6 +237,13 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
+    public func updateThumbnailPath(itemID: String, thumbnailPath: String) throws {
+        try database.run(
+            "UPDATE prompt_items SET thumbnailPath = ?, updatedAt = ? WHERE id = ?;",
+            values: [.text(thumbnailPath), .text(Self.string(from: Date())), .text(itemID)]
+        )
+    }
+
     public func copyAssetIntoLibrary(from sourceURL: URL, type: PromptType) throws -> URL {
         let directory = libraryURL.appendingPathComponent(type == .video ? "assets/videos" : "assets/images")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

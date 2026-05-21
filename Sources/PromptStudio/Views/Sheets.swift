@@ -176,7 +176,7 @@ struct ImportSheet: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 220)
-                .studioPanel(radius: 12)
+                .studioPanel(radius: 14)
 
                 HStack(spacing: 12) {
                     ImportStep(title: "1", text: "复制到资料库")
@@ -280,7 +280,7 @@ struct VersionHistorySheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text(version.version)
-                                        .font(.system(size: 16, weight: .bold))
+                                        .font(.system(size: 16, weight: .semibold))
                                     Spacer()
                                     Text(version.createdAt.formatted(date: .numeric, time: .shortened))
                                         .font(.system(size: 12))
@@ -397,7 +397,7 @@ struct ExportSheet: View {
                     .foregroundStyle(StudioColor.secondaryText)
                 if let item = state.selectedItem {
                     Text(item.title)
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 18, weight: .semibold))
                     Text(item.assetPath)
                         .font(.system(size: 12))
                         .foregroundStyle(StudioColor.tertiaryText)
@@ -448,7 +448,7 @@ struct PreviewSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text(state.selectedItem?.title ?? "预览")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Button("关闭") { state.modal = nil }
             }
@@ -474,7 +474,7 @@ struct ErrorSheet: View {
                 .font(.system(size: 34))
                 .foregroundStyle(StudioColor.orange)
             Text("操作失败")
-                .font(.system(size: 20, weight: .bold))
+                .font(.system(size: 20, weight: .semibold))
             Text(message)
                 .foregroundStyle(StudioColor.secondaryText)
                 .multilineTextAlignment(.center)
@@ -500,7 +500,7 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Text(title)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 22, weight: .semibold))
                 Spacer()
             }
             .padding(22)
@@ -537,10 +537,21 @@ private struct LabeledField<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(StudioColor.secondaryText)
             content
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(StudioColor.text)
+                .padding(.horizontal, 10)
+                .frame(minHeight: 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StudioColor.control)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(StudioColor.hairline, lineWidth: 1)
+                )
         }
     }
 }
@@ -559,7 +570,7 @@ private struct LabeledEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(StudioColor.secondaryText)
             TextEditor(text: $text)
                 .font(.system(size: 13))
@@ -578,11 +589,12 @@ private struct ImportStep: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.system(size: 14, weight: .bold))
+                .font(.system(size: 14, weight: .semibold))
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(StudioColor.blue))
+                .foregroundStyle(StudioColor.primaryActionText)
+                .background(Circle().fill(StudioColor.primaryAction))
             Text(text)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: .medium))
         }
         .padding(12)
         .studioPanel(radius: 10)
@@ -607,7 +619,7 @@ private struct SettingsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(StudioColor.secondaryText)
             Text(value)
                 .font(.system(size: 13))
