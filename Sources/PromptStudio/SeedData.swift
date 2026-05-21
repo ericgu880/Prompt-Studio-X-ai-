@@ -1,0 +1,233 @@
+import Foundation
+import PromptStudioCore
+
+enum SeedData {
+    static let models: [ModelProfile] = [
+        ModelProfile(id: "all", name: "全部模型", type: .image, parameters: []),
+        ModelProfile(id: "nano_banana_2", name: "Nano banana 2", type: .image, parameters: ["aspectRatio", "style", "seed", "quality"]),
+        ModelProfile(id: "image_2", name: "Image 2", type: .image, parameters: ["aspectRatio", "style", "chaos"]),
+        ModelProfile(id: "midjourney", name: "Midjourney", type: .image, parameters: ["ar", "v", "style", "seed"]),
+        ModelProfile(id: "seedream_7", name: "Seedream 7.0", type: .image, parameters: ["aspectRatio", "camera", "color"]),
+        ModelProfile(id: "seedance_2", name: "Seedance 2.0", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "happyhorse_1", name: "HappyHorse 1.0", type: .video, parameters: ["duration", "fps"]),
+        ModelProfile(id: "kling_3", name: "可灵 3.0", type: .video, parameters: ["duration", "motion", "camera"])
+    ]
+
+    static let tags: [Tag] = [
+        Tag(name: "风景", count: 128),
+        Tag(name: "人物", count: 96),
+        Tag(name: "插画", count: 89),
+        Tag(name: "写实", count: 73),
+        Tag(name: "摄影设计", count: 65)
+    ]
+
+    static func orderedModels(_ persisted: [ModelProfile]) -> [ModelProfile] {
+        let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
+        let knownIDs = Set(models.map(\.id))
+        let known = models.compactMap { persistedByID[$0.id] ?? $0 }
+        let custom = persisted
+            .filter { !knownIDs.contains($0.id) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return known + custom
+    }
+
+    static func makePromptItems(resourceBundle: Bundle, libraryURL: URL) throws -> [PromptItem] {
+        let imageNames = [
+            "asset-face",
+            "asset-samurai",
+            "asset-fish",
+            "asset-caravan",
+            "asset-field",
+            "asset-girl-deer",
+            "asset-moon",
+            "asset-leaves",
+            "preview-samurai"
+        ]
+
+        let destination = libraryURL.appendingPathComponent("assets/images")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        let copied = try imageNames.reduce(into: [String: URL]()) { result, name in
+            guard let source = resourceBundle.url(forResource: name, withExtension: "png", subdirectory: "SeedImages")
+                ?? resourceBundle.url(forResource: name, withExtension: "png") else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: "SeedImages/\(name).png"])
+            }
+            let target = destination.appendingPathComponent(name + ".png")
+            if !FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.copyItem(at: source, to: target)
+            }
+            result[name] = target
+        }
+
+        func url(_ name: String) -> String {
+            copied[name]?.path ?? ""
+        }
+
+        func date(_ day: Int, hour: Int) -> Date {
+            DateComponents(calendar: .current, year: 2024, month: 6, day: day, hour: hour, minute: 35).date ?? Date()
+        }
+
+        func item(
+            title: String,
+            type: PromptType = .image,
+            modelId: String,
+            modelName: String,
+            asset: String,
+            ratio: String,
+            width: Int,
+            height: Int,
+            tags: [String],
+            favorite: Bool = false,
+            createdAt: Date,
+            prompt: String,
+            negative: String = "低分辨率, 模糊, 变形, 多余的手指, 文字, 水印",
+            parameters: [String: String]
+        ) -> PromptItem {
+            let id = UUID().uuidString
+            let version = PromptVersion(
+                promptItemId: id,
+                version: "V1.0",
+                prompt: prompt,
+                negativePrompt: negative,
+                parameters: parameters,
+                note: "初始版本",
+                createdAt: createdAt
+            )
+            return PromptItem(
+                id: id,
+                title: title,
+                type: type,
+                modelId: modelId,
+                modelName: modelName,
+                folderName: modelId.contains("seedance") ? "完整项目框架开发" : "PromptStudio",
+                category: type == .video ? "视频 Prompt" : "图片 Prompt",
+                assetPath: url(asset),
+                aspectRatio: ratio,
+                width: width,
+                height: height,
+                format: "PNG",
+                fileSize: Int64((width * height) / 9),
+                favorite: favorite,
+                createdAt: createdAt,
+                updatedAt: createdAt,
+                lastUsedAt: createdAt.addingTimeInterval(3_600),
+                tags: tags,
+                referenceAssets: [
+                    ReferenceAsset(type: "风格参考", path: url("asset-samurai"), label: "Samurai mood"),
+                    ReferenceAsset(type: "色彩参考", path: url("asset-fish"), label: "Warm palette")
+                ],
+                versions: [version],
+                description: "本地演示数据，可用于验证浏览、筛选、编辑和复制 Prompt。"
+            )
+        }
+
+        return [
+            item(
+                title: "人群构成的侧脸",
+                modelId: "seedream_7",
+                modelName: "Seedream 7.0",
+                asset: "asset-face",
+                ratio: "3:4",
+                width: 1344,
+                height: 2016,
+                tags: ["人物", "写实"],
+                createdAt: date(1, hour: 10),
+                prompt: "A human profile made of thousands of tiny people, editorial poster composition, white background, detailed documentary realism.",
+                parameters: ["比例": "3:4", "风格": "editorial", "质量": "high"]
+            ),
+            item(
+                title: "这里是一个标题",
+                modelId: "nano_banana_2",
+                modelName: "Nano Banana 2",
+                asset: "asset-samurai",
+                ratio: "16:9",
+                width: 1920,
+                height: 1080,
+                tags: ["风景", "人物", "写实"],
+                favorite: true,
+                createdAt: date(1, hour: 14),
+                prompt: "A samurai, with purple grasses swaying gently around him in the style of James Gurney and John Bauer. The illustration scene is captured from an overhead perspective, creating a vast landscape that adds to its grandeur.",
+                parameters: ["比例": "16:9", "风格": "cinematic", "种子": "3291", "版本": "v6"]
+            ),
+            item(
+                title: "鱼的排列插画",
+                modelId: "image_2",
+                modelName: "Image 2",
+                asset: "asset-fish",
+                ratio: "4:5",
+                width: 1024,
+                height: 1280,
+                tags: ["插画"],
+                createdAt: date(2, hour: 9),
+                prompt: "A minimal illustration of red and blue fish arranged in rows, flat poster texture, playful children's book style.",
+                parameters: ["比例": "4:5", "风格": "flat illustration"]
+            ),
+            item(
+                title: "森林露营车场景",
+                modelId: "midjourney",
+                modelName: "Midjourney",
+                asset: "asset-caravan",
+                ratio: "3:4",
+                width: 1344,
+                height: 2016,
+                tags: ["风景", "插画"],
+                favorite: true,
+                createdAt: date(2, hour: 12),
+                prompt: "A cozy green camper in a lush forest clearing, small animals, warm lights, highly detailed storybook illustration.",
+                parameters: ["比例": "3:4", "风格": "storybook", "chaos": "12"]
+            ),
+            item(
+                title: "草原上的合影",
+                modelId: "seedream_7",
+                modelName: "Seedream 7.0",
+                asset: "asset-field",
+                ratio: "3:4",
+                width: 1344,
+                height: 2016,
+                tags: ["人物", "摄影设计"],
+                createdAt: date(3, hour: 9),
+                prompt: "A group portrait in open grassland, all subjects dressed in white, cinematic editorial photography, soft overcast daylight.",
+                parameters: ["比例": "3:4", "镜头": "medium wide"]
+            ),
+            item(
+                title: "女孩与小鹿",
+                modelId: "nano_banana_2",
+                modelName: "Nano Banana 2",
+                asset: "asset-girl-deer",
+                ratio: "4:5",
+                width: 1024,
+                height: 1280,
+                tags: ["人物", "写实"],
+                createdAt: date(3, hour: 16),
+                prompt: "A gentle portrait of a young girl holding a small deer, soft bokeh garden background, nostalgic film colors.",
+                parameters: ["比例": "4:5", "色彩": "soft pastel"]
+            ),
+            item(
+                title: "月亮下的女孩",
+                modelId: "seedream_7",
+                modelName: "Seedream 7.0",
+                asset: "asset-moon",
+                ratio: "3:4",
+                width: 1344,
+                height: 2016,
+                tags: ["插画", "人物"],
+                createdAt: date(4, hour: 11),
+                prompt: "A tarot inspired illustration of a girl under the moon, flowers, cats, surreal editorial composition.",
+                parameters: ["比例": "3:4", "风格": "tarot"]
+            ),
+            item(
+                title: "雨滴叶子特写",
+                modelId: "image_2",
+                modelName: "Image 2",
+                asset: "asset-leaves",
+                ratio: "1:1",
+                width: 1024,
+                height: 1024,
+                tags: ["风景", "摄影设计"],
+                createdAt: date(4, hour: 18),
+                prompt: "Macro photography of colorful autumn leaves with water drops, crisp texture, natural light.",
+                parameters: ["比例": "1:1", "镜头": "macro"]
+            )
+        ]
+    }
+}

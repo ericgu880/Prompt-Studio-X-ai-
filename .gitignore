@@ -1,3 +1,5 @@
 .DS_Store
+.build/
+.swiftpm/
 prompt-studio-ui-exports/
 awesome-design-md/
