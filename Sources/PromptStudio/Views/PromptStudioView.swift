@@ -309,28 +309,6 @@ private struct SidebarView: View {
                     sidebarSection(nil) {
                         SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
                     }
-
-                    sidebarSection("最近使用") {
-                        ForEach(recentItems.prefix(3)) { item in
-                            RecentRow(item: item)
-                                .onTapGesture { state.select(item) }
-                        }
-                    }
-
-                    sidebarSection("标签") {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 8)], spacing: 8) {
-                            ForEach(state.tags.prefix(6)) { tag in
-                                Button {
-                                    state.setCollection(.tag(tag.name))
-                                } label: {
-                                    Text("# \(tag.name)  \(tag.count)")
-                                        .lineLimit(1)
-                                        .font(.system(size: 12, weight: .regular))
-                                }
-                                .buttonStyle(CapsuleButtonStyle())
-                            }
-                        }
-                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 18)
@@ -386,7 +364,7 @@ private struct SidebarView: View {
                 .foregroundStyle(StudioColor.text)
             Spacer()
         }
-        .padding(.top, 48)
+        .padding(.top, 24)
         .padding(.horizontal, 18)
     }
 
@@ -862,10 +840,11 @@ private struct AssetCardView: View {
     }
 
     var body: some View {
-        let height = cardHeight(for: item, width: width)
+        let contentWidth = max(120, width - Self.selectionOutset * 2)
+        let contentHeight = cardHeight(for: item, width: contentWidth)
         ZStack(alignment: .topLeading) {
             ThumbnailImage(path: item.thumbnailPath)
-                .frame(width: width, height: height)
+                .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
             VStack {
@@ -878,7 +857,7 @@ private struct AssetCardView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(height: gradientHeight(for: height))
+                .frame(height: gradientHeight(for: contentHeight))
             }
 
             Text(item.format)
@@ -932,14 +911,16 @@ private struct AssetCardView: View {
             .foregroundStyle(StudioColor.text)
 
         }
-        .frame(width: width, height: height)
+        .frame(width: contentWidth, height: contentHeight)
         .clipShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous)
                 .stroke(isSelected ? StudioColor.primaryAction.opacity(0.88) : Color.clear, lineWidth: isSelected ? 2 : 0)
-                .padding(isSelected ? -4 : 0)
+                .padding(isSelected ? -Self.selectionOutset : 0)
         )
-        .contentShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
+        .padding(Self.selectionOutset)
+        .frame(width: width, height: contentHeight + Self.selectionOutset * 2)
+        .contentShape(RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous))
         .onTapGesture {
             clearTextFocus()
             state.select(item)
@@ -1001,7 +982,8 @@ private struct AssetCardView: View {
     }
 
     private static let cardCornerRadius: CGFloat = 12
-    private static let selectionCornerRadius: CGFloat = 16
+    private static let selectionCornerRadius: CGFloat = 15
+    private static let selectionOutset: CGFloat = 3
 }
 
 private struct AssetCardDropDelegate: DropDelegate {
