@@ -6,24 +6,59 @@ import UniformTypeIdentifiers
 struct PromptStudioView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("promptStudio.sidebarWidth") private var sidebarWidth = 220.0
+    @AppStorage("promptStudio.inspectorWidth") private var inspectorWidth = 330.0
+    @State private var isFileDropTargeted = false
+    @State private var sidebarDragStartWidth: Double?
+    @State private var inspectorDragStartWidth: Double?
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            HStack(spacing: 0) {
-                SidebarView()
-                    .frame(width: 220)
+            GeometryReader { proxy in
+                let layout = constrainedLayout(totalWidth: proxy.size.width)
 
-                Divider().overlay(StudioColor.hairline)
+                HStack(spacing: 0) {
+                    SidebarView()
+                        .frame(width: layout.sidebar)
 
-                MainContentView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ResizeHandle {
+                        sidebarDragStartWidth = nil
+                    } onDragChanged: { translation in
+                        if sidebarDragStartWidth == nil {
+                            sidebarDragStartWidth = Double(layout.sidebar)
+                        }
+                        sidebarWidth = clampedSidebarWidth(
+                            CGFloat(sidebarDragStartWidth ?? sidebarWidth) + translation,
+                            totalWidth: proxy.size.width
+                        )
+                    }
 
-                Divider().overlay(StudioColor.hairline)
+                    MainContentView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                InspectorView()
-                    .frame(width: 330)
+                    ResizeHandle {
+                        inspectorDragStartWidth = nil
+                    } onDragChanged: { translation in
+                        if inspectorDragStartWidth == nil {
+                            inspectorDragStartWidth = Double(layout.inspector)
+                        }
+                        inspectorWidth = clampedInspectorWidth(
+                            CGFloat(inspectorDragStartWidth ?? inspectorWidth) - translation,
+                            totalWidth: proxy.size.width
+                        )
+                    }
+
+                    InspectorView()
+                        .frame(width: layout.inspector)
+                }
             }
             .background(StudioColor.appBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
+                    .padding(10)
+                    .allowsHitTesting(false)
+            )
 
             if let toast = state.toast {
                 Text(toast)
@@ -43,10 +78,55 @@ struct PromptStudioView: View {
                 state.togglePreview()
             }
         }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isFileDropTargeted) { providers in
+            Task { @MainActor in
+                let urls = await loadDroppedFileURLs(from: providers)
+                if !urls.isEmpty {
+                    state.importFiles(urls)
+                }
+            }
+            return true
+        }
         .sheet(item: $state.modal) { modal in
             sheet(for: modal)
         }
     }
+
+    private func constrainedLayout(totalWidth: CGFloat) -> (sidebar: CGFloat, inspector: CGFloat) {
+        var sidebar = min(max(CGFloat(sidebarWidth), Self.sidebarMinWidth), Self.sidebarMaxWidth)
+        var inspector = min(max(CGFloat(inspectorWidth), Self.inspectorMinWidth), Self.inspectorMaxWidth)
+        let availableForSidePanels = max(Self.sidebarMinWidth + Self.inspectorMinWidth, totalWidth - Self.mainMinWidth)
+
+        if sidebar + inspector > availableForSidePanels {
+            let overflow = sidebar + inspector - availableForSidePanels
+            let inspectorReduction = min(overflow, inspector - Self.inspectorMinWidth)
+            inspector -= inspectorReduction
+            let remaining = overflow - inspectorReduction
+            sidebar -= min(remaining, sidebar - Self.sidebarMinWidth)
+        }
+
+        return (sidebar, inspector)
+    }
+
+    private func clampedSidebarWidth(_ proposed: CGFloat, totalWidth: CGFloat) -> Double {
+        let currentInspector = constrainedLayout(totalWidth: totalWidth).inspector
+        let maxByWindow = max(Self.sidebarMinWidth, totalWidth - Self.mainMinWidth - currentInspector)
+        let width = min(max(proposed, Self.sidebarMinWidth), min(Self.sidebarMaxWidth, maxByWindow))
+        return Double(width)
+    }
+
+    private func clampedInspectorWidth(_ proposed: CGFloat, totalWidth: CGFloat) -> Double {
+        let currentSidebar = constrainedLayout(totalWidth: totalWidth).sidebar
+        let maxByWindow = max(Self.inspectorMinWidth, totalWidth - Self.mainMinWidth - currentSidebar)
+        let width = min(max(proposed, Self.inspectorMinWidth), min(Self.inspectorMaxWidth, maxByWindow))
+        return Double(width)
+    }
+
+    private static let sidebarMinWidth: CGFloat = 176
+    private static let sidebarMaxWidth: CGFloat = 360
+    private static let inspectorMinWidth: CGFloat = 292
+    private static let inspectorMaxWidth: CGFloat = 480
+    private static let mainMinWidth: CGFloat = 560
 
     @ViewBuilder
     private func sheet(for modal: AppState.Modal) -> some View {
@@ -89,6 +169,40 @@ struct PromptStudioView: View {
         case .error(let message):
             ErrorSheet(message: message)
         }
+    }
+}
+
+private struct ResizeHandle: View {
+    let onDragEnded: () -> Void
+    let onDragChanged: (CGFloat) -> Void
+    @State private var isHovered = false
+    @State private var isDragging = false
+
+    var body: some View {
+        let active = isHovered || isDragging
+        Rectangle()
+            .fill(active ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline)
+            .frame(width: 1)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isDragging = true
+                        onDragChanged(value.translation.width)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                        onDragEnded()
+                    }
+            )
     }
 }
 
@@ -154,6 +268,17 @@ private func clearTextFocus() {
     NSApp.keyWindow?.makeFirstResponder(nil)
 }
 
+private func loadDroppedFileURLs(from providers: [NSItemProvider]) async -> [URL] {
+    var urls: [URL] = []
+    for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+        if let data = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data,
+           let url = URL(dataRepresentation: data, relativeTo: nil) {
+            urls.append(url)
+        }
+    }
+    return urls
+}
+
 private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -177,8 +302,8 @@ private struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     sidebarSection("资源库") {
                         SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                        SidebarDisclosure(title: "图片 Prompt", icon: "photo", rows: imageRows)
-                        SidebarDisclosure(title: "视频 Prompt", icon: "video", rows: videoRows)
+                        SidebarDisclosure(title: "图片 Prompt", icon: "photo", rows: imageRows, acceptedDropType: .image)
+                        SidebarDisclosure(title: "视频 Prompt", icon: "video", rows: videoRows, acceptedDropType: .video)
                     }
 
                     sidebarSection(nil) {
@@ -242,7 +367,7 @@ private struct SidebarView: View {
         .background {
             ZStack {
                 SidebarGlassBackground()
-                StudioColor.sidebar.opacity(0.38)
+                StudioColor.sidebar.opacity(0.18)
             }
         }
     }
@@ -316,6 +441,7 @@ private struct SidebarDisclosure: View {
     let title: String
     let icon: String
     let rows: [(String, Int, LibraryCollection)]
+    let acceptedDropType: PromptType?
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isOpen = true
@@ -353,7 +479,14 @@ private struct SidebarDisclosure: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(rows, id: \.0) { row in
-                    SidebarRow(icon: "folder", title: row.0, count: row.1, collection: row.2)
+                    SidebarRow(
+                        icon: "folder",
+                        title: row.0,
+                        count: row.1,
+                        collection: row.2,
+                        dropFolderName: row.0,
+                        acceptedDropType: acceptedDropType
+                    )
                         .padding(.leading, 16)
                 }
             }
@@ -394,7 +527,10 @@ private struct SidebarRow: View {
     let collection: LibraryCollection
     var isActive = false
     var tint: Color = StudioColor.secondaryText
+    var dropFolderName: String?
+    var acceptedDropType: PromptType?
     @State private var isHovered = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         let active = isActive || state.filter.collection == collection
@@ -427,14 +563,32 @@ private struct SidebarRow: View {
                         .offset(x: -8)
                 }
             }
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isDropTargeted ? StudioColor.primaryAction.opacity(0.76) : Color.clear, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
+            guard let dropFolderName, let provider = providers.first else { return false }
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let itemID = object as? String else { return }
+                Task { @MainActor in
+                    state.moveItem(itemID, toFolder: dropFolderName, acceptedType: acceptedDropType)
+                }
+            }
+            return true
+        }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
         .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
     }
 
     private func rowBackground(active: Bool) -> Color {
+        if isDropTargeted {
+            return StudioColor.primaryAction.opacity(0.16)
+        }
         if active {
             return StudioColor.selection
         }
@@ -482,6 +636,10 @@ private struct MainContentView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
                 .padding(.bottom, 14)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    AppKitBridge.zoomKeyWindow()
+                }
 
             ModelTabsView()
                 .padding(.horizontal, 24)
@@ -496,24 +654,13 @@ private struct MainContentView: View {
                     MasonryGridView(items: state.filteredItems)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(StudioColor.previewBackground)
             .id(contentStateKey)
             .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
         .background(StudioColor.appBackground)
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            Task { @MainActor in
-                var urls: [URL] = []
-                for provider in providers {
-                    if let item = try? await provider.loadItem(forTypeIdentifier: "public.file-url") as? Data,
-                       let url = URL(dataRepresentation: item, relativeTo: nil) {
-                        urls.append(url)
-                    }
-                }
-                if !urls.isEmpty { state.importFiles(urls) }
-            }
-            return true
-        }
     }
 
     private var contentStateKey: String {
@@ -784,30 +931,15 @@ private struct AssetCardView: View {
             }
             .foregroundStyle(StudioColor.text)
 
-            if isSelected {
-                VStack {
-                    HStack {
-                        Spacer()
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundStyle(StudioColor.primaryActionText)
-                            .frame(width: 24, height: 24)
-                            .background(Circle().fill(StudioColor.primaryAction))
-                            .overlay(Circle().stroke(StudioColor.primaryAction, lineWidth: 1))
-                            .padding(12)
-                    }
-                    Spacer()
-                }
-                .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
-            }
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: isSelected ? 1.5 : 0)
+            RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous)
+                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.88) : Color.clear, lineWidth: isSelected ? 2 : 0)
+                .padding(isSelected ? -4 : 0)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
         .onTapGesture {
             clearTextFocus()
             state.select(item)
@@ -820,6 +952,8 @@ private struct AssetCardView: View {
         .onDrag {
             draggedItemID = item.id
             return NSItemProvider(object: item.id as NSString)
+        } preview: {
+            dragPreview
         }
         .onDrop(
             of: [UTType.plainText.identifier],
@@ -832,6 +966,18 @@ private struct AssetCardView: View {
         .opacity(draggedItemID == item.id ? 0.72 : 1)
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSelected)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
+    }
+
+    private var dragPreview: some View {
+        ThumbnailImage(path: item.thumbnailPath)
+            .frame(width: 120, height: 90)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                    .stroke(StudioColor.primaryAction.opacity(0.7), lineWidth: 1)
+            )
+            .offset(x: 60, y: 45)
     }
 
     private func cardAction(_ systemName: String, action: @escaping () -> Void) -> some View {
@@ -853,6 +999,9 @@ private struct AssetCardView: View {
         let normalHeight = min(128, max(86, cardHeight * 0.36))
         return isSelected ? selectedHeight : normalHeight
     }
+
+    private static let cardCornerRadius: CGFloat = 12
+    private static let selectionCornerRadius: CGFloat = 16
 }
 
 private struct AssetCardDropDelegate: DropDelegate {

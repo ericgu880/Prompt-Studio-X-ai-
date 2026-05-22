@@ -189,7 +189,8 @@ struct InspectorView: View {
                     startEditing(item)
                 }
             } label: {
-                Text(isEditing ? "保存" : "编辑").frame(maxWidth: .infinity)
+                Text(isEditing ? "保存" : "编辑")
+                    .frame(width: 92)
             }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
 
@@ -205,12 +206,6 @@ struct InspectorView: View {
                     state.copySelectedPrompt()
                 } label: {
                     Text("复制提示词").frame(maxWidth: .infinity)
-                }
-                    .buttonStyle(CapsuleButtonStyle())
-                Button {
-                    state.modal = .variants
-                } label: {
-                    Text("生成变体").frame(maxWidth: .infinity)
                 }
                     .buttonStyle(CapsuleButtonStyle())
             }

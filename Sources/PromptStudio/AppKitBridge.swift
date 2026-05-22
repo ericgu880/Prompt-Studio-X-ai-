@@ -40,6 +40,11 @@ enum AppKitBridge {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
+    @MainActor
+    static func zoomKeyWindow() {
+        NSApp.keyWindow?.zoom(nil)
+    }
+
     static func imageInfo(for url: URL) -> (width: Int, height: Int, fileSize: Int64, format: String) {
         let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
         let fileSize = attributes[.size] as? Int64 ?? 0

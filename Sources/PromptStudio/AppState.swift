@@ -243,11 +243,13 @@ final class AppState: ObservableObject {
         selectedID = id
     }
 
-    func importFiles(_ urls: [URL]) {
+    func importFiles(_ urls: [URL], targetFolderName: String? = nil) {
         guard let repository else { return }
         isImporting = true
         defer { isImporting = false }
         do {
+            var importedIDs: [String] = []
+            var nextSortOrder = nextSortOrderForNewItem() - max(0, urls.count - 1)
             for url in urls {
                 let isVideo = ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
                 let type: PromptType = isVideo ? .video : .image
@@ -260,7 +262,7 @@ final class AppState: ObservableObject {
                     type: type,
                     modelId: type == .video ? "seedance_2" : "nano_banana_2",
                     modelName: type == .video ? "Seedance 2.0" : "Nano Banana 2",
-                    folderName: "待完善信息",
+                    folderName: targetFolderName ?? currentImportFolderName(for: type),
                     category: type.displayName,
                     assetPath: copied.path,
                     aspectRatio: Self.normalizedAspectRatio(width: info.width, height: info.height),
@@ -268,17 +270,22 @@ final class AppState: ObservableObject {
                     height: info.height,
                     format: info.format,
                     fileSize: info.fileSize,
-                    sortOrder: nextSortOrderForNewItem(),
+                    sortOrder: nextSortOrder,
                     tags: ["待整理"],
                     versions: [
                         PromptVersion(promptItemId: id, version: "V1.0", prompt: "", note: "导入后待完善")
                     ],
                     description: "从 Finder 导入"
                 )
+                nextSortOrder += 1
                 try repository.saveItem(item)
+                importedIDs.append(id)
                 selectedID = id
             }
             reload(selecting: selectedID)
+            if let firstImportedID = importedIDs.first {
+                ensureImportedItemVisible(firstImportedID)
+            }
             prepareMissingThumbnails()
             showToast("导入完成")
         } catch {
@@ -371,6 +378,24 @@ final class AppState: ObservableObject {
         } catch {
             modal = .error(error.localizedDescription)
         }
+    }
+
+    func moveItem(_ itemID: String, toFolder folderName: String, acceptedType: PromptType?) {
+        guard var item = itemsByID[itemID], !item.isDeleted else { return }
+        if let acceptedType, item.type != acceptedType {
+            showToast("只能移动同类型素材到该文件夹")
+            return
+        }
+        guard item.folderName != folderName else {
+            selectedID = item.id
+            showToast("素材已在当前文件夹")
+            return
+        }
+
+        item.folderName = folderName
+        item.category = item.type.displayName
+        item.updatedAt = Date()
+        save(item, toast: "已移动到 \(folderName)")
     }
 
     func generateTextVariant() {
@@ -528,6 +553,29 @@ final class AppState: ObservableObject {
 
     private func nextSortOrderForNewItem() -> Int {
         (items.map(\.sortOrder).min() ?? 0) - 1
+    }
+
+    private func currentImportFolderName(for type: PromptType) -> String {
+        if case .folder(let folderName) = filter.collection {
+            return folderName
+        }
+        return type == .video ? "完整项目框架开发" : "PromptStudio"
+    }
+
+    private func ensureImportedItemVisible(_ itemID: String) {
+        guard filteredItems.contains(where: { $0.id == itemID }) else {
+            filter.query = ""
+            filter.collection = .all
+            filter.modelId = nil
+            filter.type = nil
+            filter.requiredTag = nil
+            filter.favoriteOnly = false
+            filter.hasPromptOnly = false
+            filter.hasReferenceOnly = false
+            refreshFilteredItems(selecting: itemID)
+            return
+        }
+        selectedID = itemID
     }
 }
 

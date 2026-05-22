@@ -2,6 +2,7 @@ import SwiftUI
 
 enum StudioColor {
     static let appBackground = Color(hex: 0x0A0A0A)
+    static let previewBackground = Color(hex: 0x0A0A0A)
     static let sidebar = Color(hex: 0x0A0A0A)
     static let panel = Color(hex: 0x191919)
     static let panelRaised = Color(hex: 0x1A1C20)
