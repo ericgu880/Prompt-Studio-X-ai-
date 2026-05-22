@@ -234,6 +234,7 @@ final class AppState: ObservableObject {
             format: "PNG",
             fileSize: 0,
             favorite: false,
+            sortOrder: nextSortOrderForNewItem(),
             tags: tags,
             versions: [version],
             description: "用户新建 Prompt"
@@ -267,6 +268,7 @@ final class AppState: ObservableObject {
                     height: info.height,
                     format: info.format,
                     fileSize: info.fileSize,
+                    sortOrder: nextSortOrderForNewItem(),
                     tags: ["待整理"],
                     versions: [
                         PromptVersion(promptItemId: id, version: "V1.0", prompt: "", note: "导入后待完善")
@@ -326,6 +328,48 @@ final class AppState: ObservableObject {
     func previewSelected() {
         if selectedItem != nil {
             modal = .preview
+        }
+    }
+
+    func togglePreview() {
+        if modal == .preview {
+            modal = nil
+            return
+        }
+
+        guard modal == nil, selectedItem != nil else { return }
+        modal = .preview
+    }
+
+    func moveFilteredItem(draggedID: String, before targetID: String) {
+        guard draggedID != targetID else { return }
+        guard let fromIndex = filteredItems.firstIndex(where: { $0.id == draggedID }),
+              let toIndex = filteredItems.firstIndex(where: { $0.id == targetID }) else {
+            return
+        }
+
+        var reorderedFiltered = filteredItems
+        let moved = reorderedFiltered.remove(at: fromIndex)
+        let adjustedTargetIndex = fromIndex < toIndex ? max(0, toIndex - 1) : toIndex
+        reorderedFiltered.insert(moved, at: adjustedTargetIndex)
+
+        do {
+            let orders = reorderedFiltered.enumerated().map { index, item in
+                (id: item.id, sortOrder: index)
+            }
+            try repository?.updateSortOrders(orders)
+            var updatedItems = items
+            let orderLookup = Dictionary(uniqueKeysWithValues: orders.map { ($0.id, $0.sortOrder) })
+            for index in updatedItems.indices {
+                if let sortOrder = orderLookup[updatedItems[index].id] {
+                    updatedItems[index].sortOrder = sortOrder
+                    updatedItems[index].updatedAt = Date()
+                }
+            }
+            items = updatedItems
+            refreshFilteredItems(selecting: draggedID)
+        } catch {
+            modal = .error(error.localizedDescription)
         }
     }
 
@@ -418,7 +462,6 @@ final class AppState: ObservableObject {
         let libraryURL = libraryURL
         var candidates: [PromptItem] = []
         for item in items {
-            guard item.type == .image else { continue }
             if ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) != nil {
                 continue
             }
@@ -481,6 +524,10 @@ final class AppState: ObservableObject {
         }
         let divisor = max(a, 1)
         return "\(width / divisor):\(height / divisor)"
+    }
+
+    private func nextSortOrderForNewItem() -> Int {
+        (items.map(\.sortOrder).min() ?? 0) - 1
     }
 }
 

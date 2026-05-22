@@ -70,6 +70,7 @@ public final class PromptRepository: @unchecked Sendable {
                 createdAt TEXT NOT NULL,
                 updatedAt TEXT NOT NULL,
                 lastUsedAt TEXT NOT NULL,
+                sortOrder INTEGER NOT NULL DEFAULT 0,
                 tagsJSON TEXT NOT NULL,
                 referencesJSON TEXT NOT NULL,
                 description TEXT NOT NULL
@@ -103,6 +104,7 @@ public final class PromptRepository: @unchecked Sendable {
             );
             """
         )
+        try migratePromptItemsSchema()
     }
 
     public func loadItems() throws -> [PromptItem] {
@@ -131,6 +133,7 @@ public final class PromptRepository: @unchecked Sendable {
                 createdAt: date(required(row, "createdAt")) ?? Date(),
                 updatedAt: date(required(row, "updatedAt")) ?? Date(),
                 lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(),
+                sortOrder: int(row, "sortOrder"),
                 tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
                 referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
                 versions: itemVersions,
@@ -179,8 +182,8 @@ public final class PromptRepository: @unchecked Sendable {
             INSERT OR REPLACE INTO prompt_items (
                 id, title, type, modelId, modelName, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
-                lastUsedAt, tagsJSON, referencesJSON, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             values: [
                 .text(item.id),
@@ -202,6 +205,7 @@ public final class PromptRepository: @unchecked Sendable {
                 .text(Self.string(from: item.createdAt)),
                 .text(Self.string(from: item.updatedAt)),
                 .text(Self.string(from: item.lastUsedAt)),
+                .int(Int64(item.sortOrder)),
                 .text(encode(item.tags)),
                 .text(encode(item.referenceAssets)),
                 .text(item.description)
@@ -242,6 +246,15 @@ public final class PromptRepository: @unchecked Sendable {
             "UPDATE prompt_items SET thumbnailPath = ?, updatedAt = ? WHERE id = ?;",
             values: [.text(thumbnailPath), .text(Self.string(from: Date())), .text(itemID)]
         )
+    }
+
+    public func updateSortOrders(_ orders: [(id: String, sortOrder: Int)]) throws {
+        for order in orders {
+            try database.run(
+                "UPDATE prompt_items SET sortOrder = ?, updatedAt = ? WHERE id = ?;",
+                values: [.int(Int64(order.sortOrder)), .text(Self.string(from: Date())), .text(order.id)]
+            )
+        }
     }
 
     public func copyAssetIntoLibrary(from sourceURL: URL, type: PromptType) throws -> URL {
@@ -337,6 +350,21 @@ public final class PromptRepository: @unchecked Sendable {
             grouped[itemID, default: []].append(version)
         }
         return grouped
+    }
+
+    private func migratePromptItemsSchema() throws {
+        let columns = try database.query("PRAGMA table_info(prompt_items);")
+        let columnNames = Set(columns.compactMap { $0["name"] ?? nil })
+        if !columnNames.contains("sortOrder") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0;")
+            let rows = try database.query("SELECT id FROM prompt_items ORDER BY createdAt DESC;")
+            for (index, row) in rows.enumerated() {
+                try database.run(
+                    "UPDATE prompt_items SET sortOrder = ? WHERE id = ?;",
+                    values: [.int(Int64(index)), .text(required(row, "id"))]
+                )
+            }
+        }
     }
 
     private func refreshTags(from items: [PromptItem]) throws {

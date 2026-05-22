@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import ImageIO
 import PromptStudioCore
@@ -28,7 +29,6 @@ enum ThumbnailService {
 
     @discardableResult
     static func generateThumbnail(for item: PromptItem, libraryURL: URL) throws -> String? {
-        guard item.type == .image else { return nil }
         guard FileManager.default.fileExists(atPath: item.assetPath) else { return nil }
 
         let sourceURL = URL(fileURLWithPath: item.assetPath)
@@ -40,6 +40,10 @@ enum ThumbnailService {
 
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             return destinationURL.path
+        }
+
+        if item.type == .video {
+            return try generateVideoThumbnail(from: sourceURL, to: destinationURL)
         }
 
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
@@ -71,6 +75,39 @@ enum ThumbnailService {
             return nil
         }
 
+        return destinationURL.path
+    }
+
+    private static func generateVideoThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
+        let asset = AVURLAsset(url: sourceURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+
+        let image: CGImage
+        do {
+            image = try generator.copyCGImage(at: time, actualTime: nil)
+        } catch {
+            image = try generator.copyCGImage(at: .zero, actualTime: nil)
+        }
+
+        guard let destination = CGImageDestinationCreateWithURL(
+            destinationURL as CFURL,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.82
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
         return destinationURL.path
     }
 

@@ -81,6 +81,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var createdAt: Date
     public var updatedAt: Date
     public var lastUsedAt: Date
+    public var sortOrder: Int
     public var tags: [String]
     public var referenceAssets: [ReferenceAsset]
     public var versions: [PromptVersion]
@@ -106,6 +107,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         lastUsedAt: Date = Date(),
+        sortOrder: Int = 0,
         tags: [String] = [],
         referenceAssets: [ReferenceAsset] = [],
         versions: [PromptVersion] = [],
@@ -130,6 +132,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastUsedAt = lastUsedAt
+        self.sortOrder = sortOrder
         self.tags = tags
         self.referenceAssets = referenceAssets
         self.versions = versions
@@ -331,7 +334,11 @@ public enum PromptFiltering {
             case .recent:
                 lhs.lastUsedAt > rhs.lastUsedAt
             default:
-                lhs.createdAt > rhs.createdAt
+                if lhs.sortOrder != rhs.sortOrder {
+                    lhs.sortOrder < rhs.sortOrder
+                } else {
+                    lhs.createdAt > rhs.createdAt
+                }
             }
         }
     }

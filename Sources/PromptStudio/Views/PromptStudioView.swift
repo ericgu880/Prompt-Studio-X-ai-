@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct PromptStudioView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -26,14 +27,20 @@ struct PromptStudioView: View {
 
             if let toast = state.toast {
                 Text(toast)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(StudioColor.text)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
                     .background(Capsule().fill(StudioColor.panelRaised))
                     .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                     .padding(.bottom, 22)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(StudioMotion.toastTransition(reduceMotion: reduceMotion))
+            }
+        }
+        .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: state.toast)
+        .background {
+            SpacePreviewKeyMonitor {
+                state.togglePreview()
             }
         }
         .sheet(item: $state.modal) { modal in
@@ -85,8 +92,72 @@ struct PromptStudioView: View {
     }
 }
 
+private struct SpacePreviewKeyMonitor: NSViewRepresentable {
+    let onSpace: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSpace: onSpace)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onSpace = onSpace
+    }
+
+    final class Coordinator {
+        var onSpace: () -> Void
+        private var monitor: Any?
+
+        init(onSpace: @escaping () -> Void) {
+            self.onSpace = onSpace
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                let textInputActive = MainActor.assumeIsolated {
+                    Self.isTextInputActive
+                }
+                guard event.keyCode == 49,
+                      event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                      !textInputActive else {
+                    return event
+                }
+                self?.onSpace()
+                return nil
+            }
+        }
+
+        @MainActor
+        private static var isTextInputActive: Bool {
+            guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+            if responder is NSTextView || responder is NSTextField {
+                return true
+            }
+            return String(describing: type(of: responder)).contains("FieldEditor")
+        }
+    }
+}
+
+@MainActor
+private func clearTextFocus() {
+    NSApp.keyWindow?.makeFirstResponder(nil)
+}
+
 private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var trashHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -129,7 +200,7 @@ private struct SidebarView: View {
                                 } label: {
                                     Text("# \(tag.name)  \(tag.count)")
                                         .lineLimit(1)
-                                        .font(.system(size: 12, weight: .semibold))
+                                        .font(.system(size: 12, weight: .regular))
                                 }
                                 .buttonStyle(CapsuleButtonStyle())
                             }
@@ -153,24 +224,40 @@ private struct SidebarView: View {
                     Text("\(state.trashCount)")
                         .foregroundStyle(StudioColor.secondaryText)
                 }
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(StudioColor.text)
                 .frame(height: 42)
                 .padding(.horizontal, 10)
-                .background(state.filter.collection == .trash ? StudioColor.selection : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(trashBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
+            .onHover { trashHovered = $0 }
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: trashHovered)
+            .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: state.filter.collection)
             .padding(.horizontal, 14)
             .padding(.bottom, 20)
         }
-        .background(StudioColor.sidebar)
+        .background {
+            ZStack {
+                SidebarGlassBackground()
+                StudioColor.sidebar.opacity(0.38)
+            }
+        }
+    }
+
+    private var trashBackground: Color {
+        if state.filter.collection == .trash {
+            return StudioColor.selection
+        }
+        return trashHovered ? StudioColor.panelRaised : Color.clear
     }
 
     private var windowChrome: some View {
         HStack {
             Text("PromptStudio")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(StudioColor.text)
             Spacer()
         }
@@ -216,7 +303,8 @@ private struct SidebarView: View {
         VStack(alignment: .leading, spacing: 10) {
             if let title {
                 Text(title)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .tracking(1.2)
                     .foregroundStyle(StudioColor.tertiaryText)
             }
             content()
@@ -229,44 +317,84 @@ private struct SidebarDisclosure: View {
     let icon: String
     let rows: [(String, Int, LibraryCollection)]
     @EnvironmentObject private var state: AppState
-    @State private var expanded = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isOpen = true
+    @State private var expansion: CGFloat = 1
+    @State private var isHovered = false
 
     var body: some View {
+        let fullHeight = Self.rowsHeight(for: rows.count)
+        let rowOpacity = reduceMotion ? expansion : min(1, expansion * 1.2)
+        let rowOffset = reduceMotion ? 0 : -6 * (1 - expansion)
+
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                expanded.toggle()
+                toggle()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: icon).frame(width: 18)
                     Text(title)
                     Spacer()
                     Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .semibold))
-                        .rotationEffect(.degrees(expanded ? 0 : 180))
+                        .font(.system(size: 10, weight: .regular))
+                        .rotationEffect(.degrees(Double(180 * (1 - expansion))))
                 }
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(StudioColor.text)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .background(isHovered ? StudioColor.selection : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
 
-            if expanded {
+            VStack(alignment: .leading, spacing: 6) {
                 ForEach(rows, id: \.0) { row in
                     SidebarRow(icon: "folder", title: row.0, count: row.1, collection: row.2)
                         .padding(.leading, 16)
                 }
             }
+            .opacity(rowOpacity)
+            .offset(y: rowOffset)
+            .frame(height: fullHeight * expansion, alignment: .top)
+            .clipped()
+            .allowsHitTesting(expansion > 0.98)
+            .accessibilityHidden(expansion < 0.01)
         }
+    }
+
+    private func toggle() {
+        isOpen.toggle()
+        withAnimation(disclosureAnimation) {
+            expansion = isOpen ? 1 : 0
+        }
+    }
+
+    private static func rowsHeight(for count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return CGFloat(count * 34 + max(0, count - 1) * 6)
+    }
+
+    private var disclosureAnimation: Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.08)
+            : .interactiveSpring(response: 0.22, dampingFraction: 0.92, blendDuration: 0.04)
     }
 }
 
 private struct SidebarRow: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let icon: String
     let title: String
     let count: Int
     let collection: LibraryCollection
     var isActive = false
     var tint: Color = StudioColor.secondaryText
+    @State private var isHovered = false
 
     var body: some View {
         let active = isActive || state.filter.collection == collection
@@ -287,24 +415,37 @@ private struct SidebarRow: View {
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 10)
-            .frame(height: 34)
-            .background(active ? StudioColor.selection : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background(rowBackground(active: active))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .leading) {
                 if active {
                     Capsule()
-                        .fill(StudioColor.blue)
+                        .fill(StudioColor.primaryAction)
                         .frame(width: 3, height: 18)
                         .offset(x: -8)
                 }
             }
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
+    }
+
+    private func rowBackground(active: Bool) -> Color {
+        if active {
+            return StudioColor.selection
+        }
+        return isHovered ? StudioColor.panelRaised : Color.clear
     }
 }
 
 private struct RecentRow: View {
     let item: PromptItem
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -320,12 +461,20 @@ private struct RecentRow: View {
                 .foregroundStyle(StudioColor.secondaryText)
         }
         .foregroundStyle(StudioColor.text)
+        .padding(.horizontal, 8)
         .frame(height: 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isHovered ? StudioColor.panelRaised : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
     }
 }
 
 private struct MainContentView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -338,15 +487,20 @@ private struct MainContentView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 16)
 
-            if state.filteredItems.isEmpty {
-                EmptyStateView()
-            } else if state.isListView {
-                PromptListView(items: state.filteredItems)
-            } else {
-                MasonryGridView(items: state.filteredItems)
+            Group {
+                if state.filteredItems.isEmpty {
+                    EmptyStateView()
+                } else if state.isListView {
+                    PromptListView(items: state.filteredItems)
+                } else {
+                    MasonryGridView(items: state.filteredItems)
+                }
             }
+            .id(contentStateKey)
+            .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
         .background(StudioColor.appBackground)
+        .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             Task { @MainActor in
                 var urls: [URL] = []
@@ -361,10 +515,19 @@ private struct MainContentView: View {
             return true
         }
     }
+
+    private var contentStateKey: String {
+        if state.filteredItems.isEmpty {
+            return "empty-\(state.isListView)"
+        }
+        return state.isListView ? "list" : "grid"
+    }
 }
 
 private struct TopToolbarView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var searchHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -381,7 +544,15 @@ private struct TopToolbarView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
-            .studioPanel(radius: 12)
+            .background(searchHovered ? StudioColor.panelRaised : StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(searchHovered ? StudioColor.primaryAction.opacity(0.32) : StudioColor.hairline, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .onHover { searchHovered = $0 }
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
 
             Button {
                 state.modal = .filters
@@ -392,14 +563,18 @@ private struct TopToolbarView: View {
             .buttonStyle(CapsuleButtonStyle())
 
             Button {
-                state.isListView = false
+                withAnimation(StudioMotion.spring(reduceMotion: reduceMotion)) {
+                    state.isListView = false
+                }
             } label: {
                 Image(systemName: "square.grid.2x2")
             }
             .buttonStyle(CapsuleButtonStyle(accent: !state.isListView))
 
             Button {
-                state.isListView = true
+                withAnimation(StudioMotion.spring(reduceMotion: reduceMotion)) {
+                    state.isListView = true
+                }
             } label: {
                 Image(systemName: "list.bullet")
             }
@@ -408,49 +583,83 @@ private struct TopToolbarView: View {
     }
 }
 
+private struct SidebarGlassBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = false
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .sidebar
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+        nsView.isEmphasized = false
+    }
+}
+
 private struct ModelTabsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 18) {
                 ForEach(state.models) { model in
                     let active = state.filter.modelId == model.id || (state.filter.modelId == nil && model.id == "all")
-                    Button {
-                        state.setModel(model.id)
-                    } label: {
-                        Text(model.name)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(active ? StudioColor.text : StudioColor.secondaryText)
-                            .padding(.horizontal, active ? 12 : 4)
-                            .frame(height: 32)
-                            .background(
-                                Capsule()
-                                    .fill(active ? StudioColor.selection : Color.clear)
-                            )
-                            .overlay(
-                                Capsule()
-                                    .stroke(active ? StudioColor.hairline : Color.clear, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                    ModelTabButton(model: model, active: active)
                 }
                 Button {
                     state.modal = .settings
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 16, weight: .regular))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(IconCircleButtonStyle())
                 .foregroundStyle(StudioColor.text)
             }
         }
+        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: state.filter.modelId)
+    }
+}
+
+private struct ModelTabButton: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let model: ModelProfile
+    let active: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            state.setModel(model.id)
+        } label: {
+            Text(model.name)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(active || isHovered ? StudioColor.text : StudioColor.secondaryText)
+                .padding(.horizontal, active ? 12 : 10)
+                .frame(height: 32)
+                .background(Capsule().fill(active || isHovered ? StudioColor.selection : Color.clear))
+                .overlay(
+                    Capsule()
+                        .stroke(active ? StudioColor.primaryAction.opacity(0.72) : (isHovered ? StudioColor.hairline : Color.clear), lineWidth: 1)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
     }
 }
 
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
     let items: [PromptItem]
+    @State private var draggedItemID: String?
 
     var body: some View {
         GeometryReader { proxy in
@@ -462,7 +671,7 @@ private struct MasonryGridView: View {
                     ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
                         LazyVStack(spacing: 12) {
                             ForEach(column) { item in
-                                AssetCardView(item: item, width: width)
+                                AssetCardView(item: item, width: width, draggedItemID: $draggedItemID)
                             }
                         }
                     }
@@ -496,8 +705,10 @@ private struct MasonryGridView: View {
 
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: PromptItem
     let width: CGFloat
+    @Binding var draggedItemID: String?
 
     private var isSelected: Bool {
         state.selectedID == item.id
@@ -510,90 +721,123 @@ private struct AssetCardView: View {
                 .frame(width: width, height: height)
                 .clipped()
 
+            VStack {
+                Spacer()
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0),
+                        Color.black.opacity(isSelected ? 0.78 : 0.58)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: gradientHeight(for: height))
+            }
+
             Text(item.format)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Color.white)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 9)
                 .frame(height: 24)
-                .background(Capsule().fill(Color.black.opacity(0.72)))
+                .background(Capsule().fill(StudioColor.control))
                 .padding(12)
-
-            LinearGradient(
-                colors: [.clear, Color.black.opacity(isSelected ? 0.78 : 0.60)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
 
             VStack(alignment: .leading, spacing: 8) {
                 Spacer()
-                Text(item.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Text("\(item.modelName) · \(item.displayAspectRatio)")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(Color.white.opacity(0.78))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.title)
+                        .font(.system(size: 14, weight: .regular))
+                        .lineLimit(1)
+                    Text("\(item.modelName) · \(item.displayAspectRatio)")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(StudioColor.secondaryText)
 
-                if isSelected {
-                    HStack(spacing: 8) {
-                        ForEach(item.tags.prefix(3), id: \.self) { tag in
-                            Text(tag)
-                                .font(.system(size: 11, weight: .semibold))
-                                .padding(.horizontal, 9)
-                                .frame(height: 24)
-                                .background(Capsule().fill(Color.white.opacity(0.14)))
+                    if isSelected {
+                        HStack(spacing: 8) {
+                            ForEach(item.tags.prefix(3), id: \.self) { tag in
+                                Text(tag)
+                                    .font(.system(size: 11, weight: .regular))
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 24)
+                                    .background(Capsule().fill(StudioColor.selection))
+                                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+                            }
                         }
+                        .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
                     }
 
-                    HStack(spacing: 14) {
-                        cardAction("pencil") { state.modal = .editPrompt }
-                        cardAction("doc.on.doc") { state.copySelectedPrompt() }
-                        cardAction(item.favorite ? "star.fill" : "star") { state.toggleFavorite(item) }
-                        cardAction("clock") { state.modal = .versionHistory }
-                        Spacer()
-                        cardAction("ellipsis") { state.modal = .export }
+                    if isSelected {
+                        HStack(spacing: 14) {
+                            cardAction("pencil") { state.modal = .editPrompt }
+                            cardAction("doc.on.doc") { state.copySelectedPrompt() }
+                            cardAction(item.favorite ? "star.fill" : "star") { state.toggleFavorite(item) }
+                            cardAction("clock") { state.modal = .versionHistory }
+                            Spacer()
+                            cardAction("ellipsis") { state.modal = .export }
+                        }
+                        .padding(.top, 2)
+                        .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
                     }
-                    .padding(.top, 2)
                 }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .foregroundStyle(Color.white)
-            .padding(14)
+            .foregroundStyle(StudioColor.text)
 
             if isSelected {
                 VStack {
                     HStack {
                         Spacer()
                         Image(systemName: "checkmark")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(StudioColor.primaryActionText)
                             .frame(width: 24, height: 24)
-                            .background(Circle().fill(StudioColor.blueSoft))
-                            .overlay(Circle().stroke(StudioColor.blue, lineWidth: 1))
+                            .background(Circle().fill(StudioColor.primaryAction))
+                            .overlay(Circle().stroke(StudioColor.primaryAction, lineWidth: 1))
                             .padding(12)
                     }
                     Spacer()
                 }
+                .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
             }
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isSelected ? StudioColor.blue : Color.clear, lineWidth: isSelected ? 1.5 : 0)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: isSelected ? 1.5 : 0)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onTapGesture {
+            clearTextFocus()
             state.select(item)
         }
         .onTapGesture(count: 2) {
+            clearTextFocus()
             state.select(item)
             state.previewSelected()
         }
+        .onDrag {
+            draggedItemID = item.id
+            return NSItemProvider(object: item.id as NSString)
+        }
+        .onDrop(
+            of: [UTType.plainText.identifier],
+            delegate: AssetCardDropDelegate(
+                targetItemID: item.id,
+                draggedItemID: $draggedItemID,
+                state: state
+            )
+        )
+        .opacity(draggedItemID == item.id ? 0.72 : 1)
+        .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSelected)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
     }
 
     private func cardAction(_ systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 14, weight: .regular))
         }
         .buttonStyle(IconCircleButtonStyle())
     }
@@ -602,6 +846,33 @@ private struct AssetCardView: View {
         let parts = item.displayAspectRatio.split(separator: ":").compactMap { Double($0) }
         guard parts.count == 2, parts[0] > 0 else { return width * 1.25 }
         return max(170, min(430, width * CGFloat(parts[1] / parts[0])))
+    }
+
+    private func gradientHeight(for cardHeight: CGFloat) -> CGFloat {
+        let selectedHeight = min(210, max(132, cardHeight * 0.54))
+        let normalHeight = min(128, max(86, cardHeight * 0.36))
+        return isSelected ? selectedHeight : normalHeight
+    }
+}
+
+private struct AssetCardDropDelegate: DropDelegate {
+    let targetItemID: String
+    @Binding var draggedItemID: String?
+    let state: AppState
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggedItemID != nil && draggedItemID != targetItemID
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { draggedItemID = nil }
+        guard let draggedItemID, draggedItemID != targetItemID else { return false }
+        state.moveFilteredItem(draggedID: draggedItemID, before: targetItemID)
+        return true
     }
 }
 
@@ -618,7 +889,7 @@ private struct PromptListView: View {
                             .frame(width: 66, height: 52)
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(item.title).font(.system(size: 14, weight: .bold))
+                            Text(item.title).font(.system(size: 14, weight: .regular))
                             Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.tags.joined(separator: " / "))")
                                 .font(.system(size: 12))
                                 .foregroundStyle(StudioColor.secondaryText)
@@ -629,12 +900,15 @@ private struct PromptListView: View {
                             .foregroundStyle(StudioColor.tertiaryText)
                     }
                     .padding(12)
-                    .studioPanel(radius: 10)
+                    .studioPanel(radius: 8)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(state.selectedID == item.id ? StudioColor.blue : Color.clear, lineWidth: 1.5)
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(state.selectedID == item.id ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
                     )
-                    .onTapGesture { state.select(item) }
+                    .onTapGesture {
+                        clearTextFocus()
+                        state.select(item)
+                    }
                 }
             }
             .padding(.horizontal, 24)
@@ -652,7 +926,7 @@ private struct EmptyStateView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(StudioColor.secondaryText)
             Text("没有找到素材")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 24, weight: .regular))
             Text("调整搜索或导入图片、视频、Prompt 文本。")
                 .foregroundStyle(StudioColor.secondaryText)
             Button("导入素材") {

@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 import PromptStudioCore
 
@@ -16,6 +17,7 @@ struct NewPromptSheet: View {
             form
         } footer: {
             Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
             Button("创建") {
                 state.createPrompt(
                     title: title.isEmpty ? "未命名 Prompt" : title,
@@ -124,6 +126,7 @@ struct EditPromptSheet: View {
             }
         } footer: {
             Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
             Button("保存") {
                 state.savePrompt(
                     title: title,
@@ -170,13 +173,13 @@ struct ImportSheet: View {
                     Image(systemName: "tray.and.arrow.down")
                         .font(.system(size: 42))
                     Text("拖拽图片、视频、文本到主窗口，或点击下方选择文件")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 15, weight: .regular))
                     Text("导入后会复制到本地资料库，并进入待完善信息状态。")
                         .foregroundStyle(StudioColor.secondaryText)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 220)
-                .studioPanel(radius: 14)
+                .studioPanel(radius: 8)
 
                 HStack(spacing: 12) {
                     ImportStep(title: "1", text: "复制到资料库")
@@ -186,6 +189,7 @@ struct ImportSheet: View {
             }
         } footer: {
             Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
             Button("选择文件") {
                 let urls = AppKitBridge.chooseImportFiles()
                 if !urls.isEmpty {
@@ -225,6 +229,7 @@ struct FilterSheet: View {
                 state.filter = PromptFilter()
                 dismiss()
             }
+            .buttonStyle(TextHoverButtonStyle())
             Button("应用") {
                 state.filter.type = type
                 state.filter.favoriteOnly = favoriteOnly
@@ -246,12 +251,13 @@ struct TagManagerSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(state.tags) { tag in
                     HStack {
-                        Circle().fill(StudioColor.blue).frame(width: 8, height: 8)
+                        Circle().fill(StudioColor.primaryAction).frame(width: 8, height: 8)
                         Text(tag.name)
                         Spacer()
                         Text("\(tag.count)")
                             .foregroundStyle(StudioColor.secondaryText)
                         Button("筛选") { state.setCollection(.tag(tag.name)) }
+                            .buttonStyle(TextHoverButtonStyle())
                     }
                     .frame(height: 34)
                     Divider().overlay(StudioColor.hairline)
@@ -280,7 +286,7 @@ struct VersionHistorySheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text(version.version)
-                                        .font(.system(size: 16, weight: .semibold))
+                                        .font(.system(size: 16, weight: .regular))
                                     Spacer()
                                     Text(version.createdAt.formatted(date: .numeric, time: .shortened))
                                         .font(.system(size: 12))
@@ -295,14 +301,15 @@ struct VersionHistorySheet: View {
                                         AppKitBridge.copyToPasteboard(version.prompt)
                                         state.toast = "已复制版本 Prompt"
                                     }
+                                    .buttonStyle(TextHoverButtonStyle())
                                     Button("恢复为新版本") {
                                         state.restoreVersion(version)
                                     }
+                                    .buttonStyle(TextHoverButtonStyle())
                                 }
-                                .buttonStyle(.plain)
                             }
                             .padding(14)
-                            .studioPanel(radius: 10)
+                            .studioPanel(radius: 8)
                         }
                     }
                 }
@@ -328,13 +335,13 @@ struct ReferencesSheet: View {
                                 .frame(height: 100)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             Text(reference.label)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 13, weight: .regular))
                             Text(reference.type)
                                 .font(.system(size: 12))
                                 .foregroundStyle(StudioColor.secondaryText)
                         }
                         .padding(10)
-                        .studioPanel(radius: 10)
+                        .studioPanel(radius: 8)
                     }
                     Button {
                         state.modal = .importAssets
@@ -346,8 +353,7 @@ struct ReferencesSheet: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 160)
                     }
-                    .buttonStyle(.plain)
-                    .studioPanel(radius: 10)
+                    .buttonStyle(PanelHoverButtonStyle())
                 }
             }
         } footer: {
@@ -376,6 +382,7 @@ struct VariantSheet: View {
             }
         } footer: {
             Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
             Button("生成文本变体") {
                 state.generateTextVariant()
                 dismiss()
@@ -397,7 +404,7 @@ struct ExportSheet: View {
                     .foregroundStyle(StudioColor.secondaryText)
                 if let item = state.selectedItem {
                     Text(item.title)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 18, weight: .regular))
                     Text(item.assetPath)
                         .font(.system(size: 12))
                         .foregroundStyle(StudioColor.tertiaryText)
@@ -406,6 +413,7 @@ struct ExportSheet: View {
             }
         } footer: {
             Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
             Button("选择目录并导出") {
                 state.exportSelected()
                 dismiss()
@@ -434,6 +442,7 @@ struct SettingsSheet: View {
             Button("在 Finder 打开资料库") {
                 AppKitBridge.revealInFinder(path: state.libraryURL.path)
             }
+            .buttonStyle(CapsuleButtonStyle())
             Button("关闭") { state.modal = nil }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
         }
@@ -448,20 +457,217 @@ struct PreviewSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text(state.selectedItem?.title ?? "预览")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 16, weight: .regular))
                 Spacer()
                 Button("关闭") { state.modal = nil }
+                    .buttonStyle(TextHoverButtonStyle())
             }
             .padding()
             Divider().overlay(StudioColor.hairline)
-            if let path = state.selectedItem?.assetPath {
-                ThumbnailImage(path: path)
-                    .scaledToFit()
-                    .padding(18)
+            if let item = state.selectedItem {
+                HStack(spacing: 0) {
+                    mediaPreview(item)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(18)
+
+                    Divider().overlay(StudioColor.hairline)
+
+                    previewPromptPanel(item)
+                        .frame(width: 320)
+                        .padding(18)
+                }
             }
         }
-        .frame(width: 920, height: 720)
+        .frame(width: 1040, height: 720)
         .background(StudioColor.appBackground)
+    }
+
+    @ViewBuilder
+    private func mediaPreview(_ item: PromptItem) -> some View {
+        if item.type == .video {
+            VideoPreviewPlayer(path: item.assetPath)
+        } else {
+            ImagePreview(path: item.assetPath)
+        }
+    }
+
+    private func previewPromptPanel(_ item: PromptItem) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title)
+                        .font(.system(size: 18, weight: .regular))
+                        .lineLimit(3)
+                    Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.format)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+
+                previewSection("提示词 (Prompt)", item.currentVersion?.prompt ?? "未填写 Prompt", minHeight: 140)
+                previewSection("负面提示词", item.currentVersion?.negativePrompt ?? "", minHeight: 84)
+
+                if let parameters = item.currentVersion?.parameters, !parameters.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        previewTitle("参数")
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], alignment: .leading, spacing: 8) {
+                            ForEach(parameters.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                                Text("\(key) \(value)")
+                                    .font(.system(size: 11, weight: .regular))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 26)
+                                    .frame(maxWidth: .infinity)
+                                    .background(Capsule().fill(StudioColor.control))
+                                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    state.copySelectedPrompt()
+                } label: {
+                    Label("复制提示词", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+            }
+        }
+        .foregroundStyle(StudioColor.text)
+    }
+
+    private func previewSection(_ title: String, _ text: String, minHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            previewTitle(title)
+            Text(text.isEmpty ? "未填写" : text)
+                .font(.system(size: 12.5))
+                .lineSpacing(3)
+                .foregroundStyle(text.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+                .studioPanel(radius: 8)
+        }
+    }
+
+    private func previewTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .tracking(1.2)
+            .foregroundStyle(StudioColor.secondaryText)
+    }
+}
+
+private struct ImagePreview: View {
+    let path: String
+    @StateObject private var loader = PreviewImageLoader()
+
+    var body: some View {
+        ZStack {
+            StudioColor.panel
+            if let image = loader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 34))
+                    Text("图片无法预览")
+                        .font(.system(size: 16, weight: .regular))
+                }
+                .foregroundStyle(StudioColor.secondaryText)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+        .task(id: path) {
+            await loader.load(path)
+        }
+    }
+}
+
+@MainActor
+private final class PreviewImageLoader: ObservableObject {
+    @Published var image: NSImage?
+
+    func load(_ path: String) async {
+        image = await Task.detached(priority: .utility) {
+            NSImage(contentsOfFile: path)
+        }.value
+    }
+}
+
+private struct VideoPreviewPlayer: View {
+    let path: String
+
+    var body: some View {
+        Group {
+            if FileManager.default.fileExists(atPath: path) {
+                NativeVideoPlayer(path: path)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "video.slash")
+                        .font(.system(size: 34))
+                    Text("视频文件不存在")
+                        .font(.system(size: 16, weight: .regular))
+                }
+                .foregroundStyle(StudioColor.secondaryText)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .studioPanel(radius: 8)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct NativeVideoPlayer: NSViewRepresentable {
+    let path: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.cgColor
+        context.coordinator.configure(view, path: path)
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        context.coordinator.configure(nsView, path: path)
+    }
+
+    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: Coordinator) {
+        coordinator.stop()
+        nsView.player = nil
+    }
+
+    final class Coordinator {
+        private var currentPath: String?
+        private var player: AVPlayer?
+
+        @MainActor
+        func configure(_ view: AVPlayerView, path: String) {
+            guard currentPath != path else { return }
+            stop()
+            currentPath = path
+            let player = AVPlayer(url: URL(fileURLWithPath: path))
+            self.player = player
+            view.player = player
+            player.play()
+        }
+
+        @MainActor
+        func stop() {
+            player?.pause()
+            player = nil
+            currentPath = nil
+        }
     }
 }
 
@@ -474,7 +680,7 @@ struct ErrorSheet: View {
                 .font(.system(size: 34))
                 .foregroundStyle(StudioColor.orange)
             Text("操作失败")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 20, weight: .regular))
             Text(message)
                 .foregroundStyle(StudioColor.secondaryText)
                 .multilineTextAlignment(.center)
@@ -500,7 +706,7 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Text(title)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 22, weight: .regular))
                 Spacer()
             }
             .padding(22)
@@ -537,7 +743,8 @@ private struct LabeledField<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             content
                 .textFieldStyle(.plain)
@@ -570,7 +777,8 @@ private struct LabeledEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             TextEditor(text: $text)
                 .font(.system(size: 13))
@@ -589,15 +797,15 @@ private struct ImportStep: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 14, weight: .regular))
                 .frame(width: 28, height: 28)
                 .foregroundStyle(StudioColor.primaryActionText)
                 .background(Circle().fill(StudioColor.primaryAction))
             Text(text)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 13, weight: .regular))
         }
         .padding(12)
-        .studioPanel(radius: 10)
+        .studioPanel(radius: 8)
     }
 }
 
@@ -619,7 +827,8 @@ private struct SettingsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             Text(value)
                 .font(.system(size: 13))
@@ -627,6 +836,6 @@ private struct SettingsRow: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .studioPanel(radius: 10)
+        .studioPanel(radius: 8)
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import PromptStudioCore
 import UniformTypeIdentifiers
@@ -43,9 +44,23 @@ enum AppKitBridge {
         let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
         let fileSize = attributes[.size] as? Int64 ?? 0
         let format = url.pathExtension.uppercased()
+        if let videoSize = videoSize(for: url) {
+            return (videoSize.width, videoSize.height, fileSize, format.isEmpty ? "MOV" : format)
+        }
         if let image = NSImage(contentsOf: url), let representation = image.representations.first {
             return (representation.pixelsWide, representation.pixelsHigh, fileSize, format)
         }
         return (1920, 1080, fileSize, format.isEmpty ? "PNG" : format)
+    }
+
+    private static func videoSize(for url: URL) -> (width: Int, height: Int)? {
+        guard ["mp4", "mov", "webm", "m4v"].contains(url.pathExtension.lowercased()) else { return nil }
+        let asset = AVURLAsset(url: url)
+        guard let track = asset.tracks(withMediaType: .video).first else { return nil }
+        let transformedSize = track.naturalSize.applying(track.preferredTransform)
+        let width = Int(abs(transformedSize.width).rounded())
+        let height = Int(abs(transformedSize.height).rounded())
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
     }
 }

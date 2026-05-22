@@ -10,12 +10,14 @@ struct PromptStudioApp: App {
                 .environmentObject(appState)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1180, minHeight: 760)
+                .background(WindowStartupConfigurator())
                 .task {
                     if appState.items.isEmpty {
                         appState.load()
                     }
                 }
         }
+        .defaultSize(width: 1440, height: 1024)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .newItem) {
@@ -37,7 +39,7 @@ struct PromptStudioApp: App {
                     .keyboardShortcut("1", modifiers: .command)
                 Button("列表视图") { appState.isListView = true }
                     .keyboardShortcut("2", modifiers: .command)
-                Button("预览") { appState.previewSelected() }
+                Button("预览") { appState.togglePreview() }
                     .keyboardShortcut(.space, modifiers: [])
             }
 
@@ -45,6 +47,39 @@ struct PromptStudioApp: App {
                 Button("设置") { appState.modal = .settings }
                     .keyboardShortcut(",", modifiers: .command)
             }
+        }
+    }
+}
+
+private struct WindowStartupConfigurator: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.configure(window: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.configure(window: nsView.window)
+        }
+    }
+
+    final class Coordinator {
+        private var didConfigure = false
+
+        @MainActor
+        func configure(window: NSWindow?) {
+            guard !didConfigure, let window else { return }
+            didConfigure = true
+            window.minSize = NSSize(width: 1180, height: 760)
+            window.setContentSize(NSSize(width: 1440, height: 1024))
+            window.center()
         }
     }
 }
