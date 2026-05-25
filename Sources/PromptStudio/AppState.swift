@@ -2,6 +2,16 @@ import Foundation
 import SwiftUI
 import PromptStudioCore
 
+struct ExportOptions {
+    var promptMarkdown: Bool
+    var pngImage: Bool
+    var jpegImage: Bool
+
+    var hasSelection: Bool {
+        promptMarkdown || pngImage || jpegImage
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     enum Modal: Identifiable, Equatable {
@@ -46,7 +56,9 @@ final class AppState: ObservableObject {
     @Published var models: [ModelProfile] = SeedData.models
     @Published var filter = PromptFilter() {
         didSet {
-            refreshFilteredItems()
+            if !isBatchingFilterUpdate {
+                refreshFilteredItems()
+            }
         }
     }
     @Published var selectedID: String?
@@ -60,6 +72,7 @@ final class AppState: ObservableObject {
     private var itemsByID: [String: PromptItem] = [:]
     private var pendingLastUsedTask: Task<Void, Never>?
     private var thumbnailGenerationID = UUID()
+    private var isBatchingFilterUpdate = false
 
     var libraryURL: URL {
         repository?.libraryURL ?? PromptRepository.defaultLibraryURL()
@@ -67,6 +80,12 @@ final class AppState: ObservableObject {
 
     var selectedItem: PromptItem? {
         selectedID.flatMap { itemsByID[$0] }
+    }
+
+    var masonryLayoutItems: [PromptItem] {
+        var layoutFilter = filter
+        layoutFilter.modelId = nil
+        return PromptFiltering.apply(items, filter: layoutFilter)
     }
 
     var trashCount: Int {
@@ -105,13 +124,15 @@ final class AppState: ObservableObject {
     }
 
     func setCollection(_ collection: LibraryCollection) {
-        filter.collection = collection
-        selectedID = filteredItems.first?.id
+        updateFilterSelectingFirst {
+            filter.collection = collection
+        }
     }
 
     func setModel(_ modelId: String?) {
-        filter.modelId = modelId == "all" ? nil : modelId
-        selectedID = filteredItems.first?.id
+        updateFilterSelectingFirst {
+            filter.modelId = modelId == "all" ? nil : modelId
+        }
     }
 
     func copySelectedPrompt() {
@@ -208,7 +229,15 @@ final class AppState: ObservableObject {
         save(item, toast: "已保存 Prompt")
     }
 
-    func createPrompt(title: String, type: PromptType, modelId: String, prompt: String, negativePrompt: String, tags: [String]) {
+    func createPrompt(
+        title: String,
+        type: PromptType,
+        modelId: String,
+        prompt: String,
+        negativePrompt: String,
+        tags: [String],
+        referenceURLs: [URL] = []
+    ) {
         let model = models.first(where: { $0.id == modelId }) ?? SeedData.models[1]
         let id = UUID().uuidString
         let version = PromptVersion(
@@ -219,28 +248,50 @@ final class AppState: ObservableObject {
             parameters: ["比例": "16:9", "质量": "high"],
             note: "新建 Prompt"
         )
-        let item = PromptItem(
-            id: id,
-            title: title,
-            type: type,
-            modelId: model.id,
-            modelName: model.name,
-            folderName: type == .video ? "完整项目框架开发" : "PromptStudio",
-            category: type.displayName,
-            assetPath: selectedItem?.assetPath ?? "",
-            aspectRatio: "16:9",
-            width: 1920,
-            height: 1080,
-            format: "PNG",
-            fileSize: 0,
-            favorite: false,
-            sortOrder: nextSortOrderForNewItem(),
-            tags: tags,
-            versions: [version],
-            description: "用户新建 Prompt"
-        )
-        save(item, toast: "已新建 Prompt")
-        selectedID = id
+
+        do {
+            let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
+                let copied = try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+                return (source, copied)
+            }
+            let references = copiedReferences.map { pair in
+                ReferenceAsset(
+                    type: pair.original.pathExtension.uppercased(),
+                    path: pair.copied.path,
+                    label: pair.original.deletingPathExtension().lastPathComponent
+                )
+            }
+            let previewPath = selectedItem?.assetPath ?? copiedReferences.first?.copied.path ?? ""
+            let previewInfo = previewPath.isEmpty
+                ? (width: 1920, height: 1080, fileSize: Int64(0), format: "PNG")
+                : AppKitBridge.imageInfo(for: URL(fileURLWithPath: previewPath))
+            let item = PromptItem(
+                id: id,
+                title: title,
+                type: type,
+                modelId: model.id,
+                modelName: model.name,
+                folderName: type == .video ? "完整项目框架开发" : "PromptStudio",
+                category: type.displayName,
+                assetPath: previewPath,
+                aspectRatio: Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
+                width: previewInfo.width,
+                height: previewInfo.height,
+                format: previewInfo.format,
+                fileSize: previewInfo.fileSize,
+                favorite: false,
+                sortOrder: nextSortOrderForNewItem(),
+                tags: tags,
+                referenceAssets: references,
+                versions: [version],
+                description: "用户新建 Prompt"
+            )
+            try repository?.saveItem(item)
+            reload(selecting: id)
+            showToast("已新建 Prompt")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
     }
 
     func importFiles(_ urls: [URL], targetFolderName: String? = nil) {
@@ -293,32 +344,42 @@ final class AppState: ObservableObject {
         }
     }
 
-    func exportSelected() {
+    func exportSelected(options: ExportOptions = ExportOptions(promptMarkdown: true, pngImage: false, jpegImage: false)) {
+        guard options.hasSelection else {
+            showToast("请选择导出内容")
+            return
+        }
         guard let item = selectedItem, let directory = AppKitBridge.chooseExportDirectory() else { return }
         do {
             let source = URL(fileURLWithPath: item.assetPath)
-            if FileManager.default.fileExists(atPath: source.path) {
-                let target = directory.appendingPathComponent(source.lastPathComponent)
-                if FileManager.default.fileExists(atPath: target.path) {
-                    try FileManager.default.removeItem(at: target)
-                }
-                try FileManager.default.copyItem(at: source, to: target)
+            let baseName = safeExportFileName(item.title)
+            var exportedCount = 0
+
+            if options.promptMarkdown {
+                let promptTarget = directory.appendingPathComponent("\(baseName)-提示词.md")
+                try overwriteText(markdownPrompt(for: item), to: promptTarget)
+                exportedCount += 1
             }
-            let promptTarget = directory.appendingPathComponent(item.title + "-prompt.md")
-            let promptText = """
-            # \(item.title)
 
-            Model: \(item.modelName)
-            Size: \(item.displaySize)
+            if options.pngImage {
+                guard FileManager.default.fileExists(atPath: source.path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let target = directory.appendingPathComponent("\(baseName).png")
+                try overwriteImage(from: source, to: target, format: .png)
+                exportedCount += 1
+            }
 
-            ## Prompt
-            \(item.currentVersion?.prompt ?? "")
+            if options.jpegImage {
+                guard FileManager.default.fileExists(atPath: source.path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let target = directory.appendingPathComponent("\(baseName).jpg")
+                try overwriteImage(from: source, to: target, format: .jpeg)
+                exportedCount += 1
+            }
 
-            ## Negative Prompt
-            \(item.currentVersion?.negativePrompt ?? "")
-            """
-            try promptText.write(to: promptTarget, atomically: true, encoding: .utf8)
-            showToast(FileManager.default.fileExists(atPath: source.path) ? "导出完成" : "源文件缺失，已导出 Prompt")
+            showToast(exportedCount > 1 ? "已导出 \(exportedCount) 个文件" : "导出完成")
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -452,13 +513,20 @@ final class AppState: ObservableObject {
         itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     }
 
-    private func refreshFilteredItems(selecting requestedID: String? = nil) {
+    private func updateFilterSelectingFirst(_ updates: () -> Void) {
+        isBatchingFilterUpdate = true
+        updates()
+        isBatchingFilterUpdate = false
+        refreshFilteredItems(preserveExistingSelection: false)
+    }
+
+    private func refreshFilteredItems(selecting requestedID: String? = nil, preserveExistingSelection: Bool = true) {
         let nextFilteredItems = PromptFiltering.apply(items, filter: filter)
         filteredItems = nextFilteredItems
 
         if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
             selectedID = requestedID
-        } else if let selectedID, nextFilteredItems.contains(where: { $0.id == selectedID }) {
+        } else if preserveExistingSelection, let selectedID, nextFilteredItems.contains(where: { $0.id == selectedID }) {
             return
         } else {
             selectedID = nextFilteredItems.first?.id
@@ -536,6 +604,45 @@ final class AppState: ObservableObject {
         let parts = number.split(separator: ".").compactMap { Int($0) }
         guard parts.count == 2 else { return "V1.1" }
         return "V\(parts[0]).\(parts[1] + 1)"
+    }
+
+    private func markdownPrompt(for item: PromptItem) -> String {
+        """
+        # \(item.title)
+
+        Model: \(item.modelName)
+        Size: \(item.displaySize)
+
+        ## Prompt
+        \(item.currentVersion?.prompt ?? "")
+
+        ## Negative Prompt
+        \(item.currentVersion?.negativePrompt ?? "")
+        """
+    }
+
+    private func overwriteText(_ text: String, to url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func overwriteImage(from source: URL, to target: URL, format: AppKitBridge.ImageExportFormat) throws {
+        if FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.removeItem(at: target)
+        }
+        try AppKitBridge.writeImage(from: source, to: target, format: format)
+    }
+
+    private func safeExportFileName(_ name: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let cleaned = name.components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "PromptStudio-Export" : cleaned
     }
 
     private static func normalizedAspectRatio(width: Int, height: Int) -> String {

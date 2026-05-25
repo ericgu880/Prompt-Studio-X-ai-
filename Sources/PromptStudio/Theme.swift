@@ -3,23 +3,56 @@ import SwiftUI
 enum StudioColor {
     static let appBackground = Color(hex: 0x0A0A0A)
     static let previewBackground = Color(hex: 0x0A0A0A)
-    static let sidebar = Color(hex: 0x0A0A0A)
-    static let panel = Color(hex: 0x191919)
-    static let panelRaised = Color(hex: 0x1A1C20)
-    static let control = Color(hex: 0x0A0A0A)
-    static let controlPressed = Color(hex: 0x1A1C20)
-    static let selection = Color(hex: 0x1A1C20)
+    static let sidebar = Color(hex: 0x333333)
+    static let panel = Color(hex: 0x141414)
+    static let panelRaised = Color(hex: 0x1E1E1E)
+    static let control = Color(hex: 0x1F1F1F)
+    static let controlPressed = Color(hex: 0x242424)
+    static let selection = Color(hex: 0x1F1F1F)
     static let hairline = Color(hex: 0x212327)
     static let text = Color(hex: 0xFFFFFF)
     static let secondaryText = Color(hex: 0xDADBDF)
-    static let tertiaryText = Color(hex: 0x7D8187)
+    static let tertiaryText = Color(hex: 0xA3A3A3)
+    static let mutedText = Color(hex: 0x7D8187)
     static let primaryAction = Color(hex: 0xFFFFFF)
     static let primaryActionText = Color(hex: 0x0A0A0A)
-    static let blue = Color(hex: 0xA0C3EC)
+    static let blue = Color(hex: 0x0285FF)
     static let blueSoft = Color(hex: 0x0D1726)
     static let orange = Color(hex: 0xFF7A17)
     static let dusk = Color(hex: 0x7C3AED)
     static let twilight = Color(hex: 0xC4B5FD)
+}
+
+enum StudioFont {
+    static let family = "PingFang SC"
+
+    static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom(family, size: size).weight(weight)
+    }
+
+    static func title(_ size: CGFloat = 18) -> Font {
+        font(size, weight: .semibold)
+    }
+
+    static func body(_ size: CGFloat = 14, weight: Font.Weight = .regular) -> Font {
+        font(size, weight: weight)
+    }
+
+    static func button(_ size: CGFloat = 14) -> Font {
+        font(size, weight: .medium)
+    }
+
+    static func caption(_ size: CGFloat = 12) -> Font {
+        font(size, weight: .regular)
+    }
+
+    static func badge(_ size: CGFloat = 11) -> Font {
+        font(size, weight: .medium)
+    }
+
+    static func symbol(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight)
+    }
 }
 
 enum StudioMotion {
@@ -143,7 +176,7 @@ private struct CapsuleButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 13, weight: .regular))
+            .font(StudioFont.button(13))
             .foregroundStyle(filled ? StudioColor.primaryActionText : StudioColor.text)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
@@ -196,7 +229,7 @@ private struct IconCircleButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 13, weight: .regular))
+            .font(StudioFont.body(13))
             .foregroundStyle(StudioColor.text)
             .frame(width: 28, height: 28)
             .background(Circle().fill(isHovered || configuration.isPressed ? StudioColor.selection : StudioColor.control))
@@ -254,7 +287,7 @@ private struct TextHoverButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 12, weight: .regular))
+            .font(StudioFont.caption(12))
             .foregroundStyle(isHovered ? StudioColor.text : StudioColor.secondaryText)
             .padding(.horizontal, 10)
             .frame(height: 28)

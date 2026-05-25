@@ -16,7 +16,7 @@ struct InspectorView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("未选择素材")
-                        .font(.system(size: 20, weight: .regular))
+                        .font(StudioFont.font(20))
                     Text("选择瀑布流中的图片后，这里会显示 Prompt、参数、标签和文件信息。")
                         .foregroundStyle(StudioColor.secondaryText)
                     Spacer()
@@ -66,7 +66,7 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(item.title)
-                        .font(.system(size: 17, weight: .regular))
+                        .font(StudioFont.font(17))
                         .lineLimit(2)
                     Spacer()
                     Button {
@@ -91,7 +91,7 @@ struct InspectorView: View {
             FlowLayout(spacing: 8) {
                 ForEach(item.tags, id: \.self) { tag in
                     Text("\(tag) ×")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(StudioFont.font(12))
                         .padding(.horizontal, 10)
                         .frame(height: 28)
                         .background(Capsule().fill(StudioColor.control))
@@ -115,19 +115,13 @@ struct InspectorView: View {
                 InlinePromptEditor(text: $draftPrompt, minHeight: 150, placeholder: "输入 Prompt")
             } else {
                 Text(item.currentVersion?.prompt ?? "未填写 Prompt")
-                    .font(.system(size: 12.5))
+                    .font(StudioFont.font(12.5))
                     .lineSpacing(3)
                     .foregroundStyle(StudioColor.text)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(minHeight: 96)
                     .studioPanel(radius: 8)
-            }
-            HStack {
-                Spacer()
-                Text("\((isEditing ? draftPrompt.count : (item.currentVersion?.prompt.count ?? 0)))/2000")
-                    .font(.system(size: 11))
-                    .foregroundStyle(StudioColor.secondaryText)
             }
         }
     }
@@ -139,21 +133,13 @@ struct InspectorView: View {
                 InlinePromptEditor(text: $draftNegativePrompt, minHeight: 96, placeholder: "输入负面提示词")
             } else {
                 Text(item.currentVersion?.negativePrompt ?? "")
-                    .font(.system(size: 12.5))
+                    .font(StudioFont.font(12.5))
                     .lineSpacing(3)
                     .foregroundStyle(StudioColor.secondaryText)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(minHeight: 62)
                     .studioPanel(radius: 8)
-            }
-            if isEditing {
-                HStack {
-                    Spacer()
-                    Text("\(draftNegativePrompt.count)/1000")
-                        .font(.system(size: 11))
-                        .foregroundStyle(StudioColor.secondaryText)
-                }
             }
         }
     }
@@ -172,7 +158,7 @@ struct InspectorView: View {
                     state.modal = .references
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .regular))
+                        .font(StudioFont.symbol(18))
                         .frame(width: 52, height: 48)
                 }
                 .buttonStyle(PanelHoverButtonStyle())
@@ -223,7 +209,7 @@ struct InspectorView: View {
             HStack(spacing: 8) {
                 ForEach(item.versions.prefix(4)) { version in
                     Text(version.version)
-                        .font(.system(size: 12, weight: .regular))
+                        .font(StudioFont.font(12))
                         .padding(.horizontal, 12)
                         .frame(height: 30)
                         .background(Capsule().fill(version.id == item.currentVersion?.id ? StudioColor.selection : StudioColor.control))
@@ -241,16 +227,9 @@ struct InspectorView: View {
                 infoGrid("格式", item.format, "颜色空间", "sRGB")
             }
             Button {
-                state.exportSelected()
+                state.modal = .export
             } label: {
-                Label("导出图片", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(CapsuleButtonStyle())
-            Button {
-                state.revealSelectedInFinder()
-            } label: {
-                Label("在 Finder 中显示", systemImage: "folder")
+                Label("导出", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(CapsuleButtonStyle())
@@ -260,10 +239,10 @@ struct InspectorView: View {
     private func infoLine(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 11))
+                .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.tertiaryText)
             Text(value)
-                .font(.system(size: 12, weight: .regular))
+                .font(StudioFont.font(12))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(2)
         }
@@ -279,10 +258,10 @@ struct InspectorView: View {
     private func infoPair(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 11))
+                .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.secondaryText)
             Text(value)
-                .font(.system(size: 12, weight: .regular))
+                .font(StudioFont.font(12))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +271,7 @@ struct InspectorView: View {
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .font(StudioFont.caption(12))
             .tracking(1.2)
             .foregroundStyle(StudioColor.secondaryText)
     }
@@ -345,14 +324,14 @@ private struct InlinePromptEditor: View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
                 Text(placeholder)
-                    .font(.system(size: 12.5))
+                    .font(StudioFont.font(12.5))
                     .foregroundStyle(StudioColor.tertiaryText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 15)
                     .allowsHitTesting(false)
             }
             TextEditor(text: $text)
-                .font(.system(size: 12.5))
+                .font(StudioFont.font(12.5))
                 .lineSpacing(3)
                 .foregroundStyle(StudioColor.text)
                 .scrollContentBackground(.hidden)

@@ -62,7 +62,7 @@ struct PromptStudioView: View {
 
             if let toast = state.toast {
                 Text(toast)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.text)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
@@ -206,7 +206,7 @@ private struct ResizeHandle: View {
     }
 }
 
-private struct SpacePreviewKeyMonitor: NSViewRepresentable {
+struct SpacePreviewKeyMonitor: NSViewRepresentable {
     let onSpace: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -282,7 +282,7 @@ private func loadDroppedFileURLs(from providers: [NSItemProvider]) async -> [URL
 private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var trashHovered = false
+    @State private var settingsHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -308,37 +308,37 @@ private struct SidebarView: View {
 
                     sidebarSection(nil) {
                         SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
+                        SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
                     }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 18)
-                .padding(.bottom, 120)
+                .padding(.bottom, 28)
             }
 
             Spacer(minLength: 0)
 
             Button {
-                state.setCollection(.trash)
+                state.modal = .settings
             } label: {
-                HStack {
-                    Image(systemName: "trash")
-                    Text("回收站")
-                    Spacer()
-                    Text("\(state.trashCount)")
+                HStack(spacing: 9) {
+                    Image(systemName: "gearshape")
                         .foregroundStyle(StudioColor.secondaryText)
+                        .frame(width: 17)
+                    Text("设置")
+                    Spacer()
                 }
-                .font(.system(size: 13, weight: .regular))
+                .font(StudioFont.font(13))
                 .foregroundStyle(StudioColor.text)
                 .frame(height: 42)
                 .padding(.horizontal, 10)
-                .background(trashBackground)
+                .background(settingsHovered ? StudioColor.panelRaised : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
-            .onHover { trashHovered = $0 }
-            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: trashHovered)
-            .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: state.filter.collection)
+            .onHover { settingsHovered = $0 }
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: settingsHovered)
             .padding(.horizontal, 14)
             .padding(.bottom, 20)
         }
@@ -350,17 +350,10 @@ private struct SidebarView: View {
         }
     }
 
-    private var trashBackground: Color {
-        if state.filter.collection == .trash {
-            return StudioColor.selection
-        }
-        return trashHovered ? StudioColor.panelRaised : Color.clear
-    }
-
     private var windowChrome: some View {
         HStack {
             Text("PromptStudio")
-                .font(.system(size: 15, weight: .regular))
+                .font(StudioFont.font(15))
                 .foregroundStyle(StudioColor.text)
             Spacer()
         }
@@ -406,7 +399,7 @@ private struct SidebarView: View {
         VStack(alignment: .leading, spacing: 10) {
             if let title {
                 Text(title)
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .font(StudioFont.caption(11))
                     .tracking(1.2)
                     .foregroundStyle(StudioColor.tertiaryText)
             }
@@ -440,10 +433,10 @@ private struct SidebarDisclosure: View {
                     Text(title)
                     Spacer()
                     Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .regular))
+                        .font(StudioFont.symbol(10))
                         .rotationEffect(.degrees(Double(180 * (1 - expansion))))
                 }
-                .font(.system(size: 14, weight: .regular))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -526,7 +519,7 @@ private struct SidebarRow: View {
                 Text("\(count)")
                     .foregroundStyle(StudioColor.secondaryText)
             }
-            .font(.system(size: 13, weight: .regular))
+            .font(StudioFont.font(13))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -586,10 +579,10 @@ private struct RecentRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             Text(item.title)
                 .lineLimit(1)
-                .font(.system(size: 12, weight: .regular))
+                .font(StudioFont.font(12))
             Spacer()
             Text(item.lastUsedAt.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 11))
+                .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.secondaryText)
         }
         .foregroundStyle(StudioColor.text)
@@ -629,7 +622,7 @@ private struct MainContentView: View {
                 } else if state.isListView {
                     PromptListView(items: state.filteredItems)
                 } else {
-                    MasonryGridView(items: state.filteredItems)
+                    MasonryGridView(items: state.filteredItems, layoutItems: state.masonryLayoutItems)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -647,6 +640,7 @@ private struct MainContentView: View {
         }
         return state.isListView ? "list" : "grid"
     }
+
 }
 
 private struct TopToolbarView: View {
@@ -664,7 +658,7 @@ private struct TopToolbarView: View {
                     set: { state.filter.query = $0 }
                 ))
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
             }
             .padding(.horizontal, 14)
@@ -678,14 +672,6 @@ private struct TopToolbarView: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onHover { searchHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
-
-            Button {
-                state.modal = .filters
-            } label: {
-                Label("筛选", systemImage: "line.3.horizontal.decrease")
-                    .frame(minWidth: 76)
-            }
-            .buttonStyle(CapsuleButtonStyle())
 
             Button {
                 withAnimation(StudioMotion.spring(reduceMotion: reduceMotion)) {
@@ -728,30 +714,50 @@ private struct SidebarGlassBackground: NSViewRepresentable {
 
 private struct ModelTabsView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 18) {
-                ForEach(state.models) { model in
-                    let active = state.filter.modelId == model.id || (state.filter.modelId == nil && model.id == "all")
-                    ModelTabButton(model: model, active: active)
+        GeometryReader { proxy in
+            HStack(spacing: 8) {
+                ForEach(quickModels(for: proxy.size.width)) { model in
+                    CompactModelChip(model: model, active: activeModelID == model.id)
                 }
+
                 Button {
                     state.modal = .settings
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .regular))
+                        .font(StudioFont.symbol(15))
                 }
                 .buttonStyle(IconCircleButtonStyle())
                 .foregroundStyle(StudioColor.text)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: state.filter.modelId)
+        .frame(height: 32)
+    }
+
+    private var activeModelID: String {
+        state.filter.modelId ?? "all"
+    }
+
+    private func quickModels(for width: CGFloat) -> [ModelProfile] {
+        let limit: Int
+        if width >= 1120 {
+            limit = 8
+        } else if width >= 980 {
+            limit = 7
+        } else if width >= 840 {
+            limit = 6
+        } else if width >= 700 {
+            limit = 5
+        } else {
+            limit = 4
+        }
+        return Array(state.models.prefix(limit))
     }
 }
 
-private struct ModelTabButton: View {
+private struct CompactModelChip: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: ModelProfile
@@ -760,43 +766,57 @@ private struct ModelTabButton: View {
 
     var body: some View {
         Button {
-            state.setModel(model.id)
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                state.setModel(model.id)
+            }
         } label: {
             Text(model.name)
-                .font(.system(size: 13, weight: .regular))
+                .font(StudioFont.font(12))
                 .foregroundStyle(active || isHovered ? StudioColor.text : StudioColor.secondaryText)
-                .padding(.horizontal, active ? 12 : 10)
-                .frame(height: 32)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
                 .background(Capsule().fill(active || isHovered ? StudioColor.selection : Color.clear))
                 .overlay(
                     Capsule()
-                        .stroke(active ? StudioColor.primaryAction.opacity(0.72) : (isHovered ? StudioColor.hairline : Color.clear), lineWidth: 1)
+                        .strokeBorder(active ? StudioColor.primaryAction.opacity(0.72) : (isHovered ? StudioColor.hairline : Color.clear), lineWidth: 1)
                 )
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
-        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
     }
 }
 
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
     let items: [PromptItem]
+    let layoutItems: [PromptItem]
     @State private var draggedItemID: String?
 
     var body: some View {
         GeometryReader { proxy in
             let columnCount = max(2, min(4, Int(proxy.size.width / 250)))
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
-            let columns = distribute(items, columnCount: columnCount)
+            let visibleIDs = Set(items.map(\.id))
+            let columns = distribute(layoutItems, columnCount: columnCount)
             ScrollView {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
                         LazyVStack(spacing: 12) {
                             ForEach(column) { item in
-                                AssetCardView(item: item, width: width, draggedItemID: $draggedItemID)
+                                if visibleIDs.contains(item.id) {
+                                    AssetCardView(item: item, width: width, draggedItemID: $draggedItemID)
+                                } else {
+                                    Color.clear
+                                        .frame(width: width, height: AssetCardMetrics.totalHeight(for: item, width: width))
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
                             }
                         }
                     }
@@ -804,6 +824,11 @@ private struct MasonryGridView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
+            .scrollIndicators(.hidden)
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
         }
     }
 
@@ -828,6 +853,26 @@ private struct MasonryGridView: View {
     }
 }
 
+private enum AssetCardMetrics {
+    static let cardCornerRadius: CGFloat = 12
+    static let selectionCornerRadius: CGFloat = 15
+    static let selectionOutset: CGFloat = 3
+
+    static func contentWidth(for width: CGFloat) -> CGFloat {
+        max(120, width - selectionOutset * 2)
+    }
+
+    static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
+        let parts = item.displayAspectRatio.split(separator: ":").compactMap { Double($0) }
+        guard parts.count == 2, parts[0] > 0 else { return width * 1.25 }
+        return max(170, min(430, width * CGFloat(parts[1] / parts[0])))
+    }
+
+    static func totalHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
+        contentHeight(for: item, width: contentWidth(for: width)) + selectionOutset * 2
+    }
+}
+
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -840,8 +885,8 @@ private struct AssetCardView: View {
     }
 
     var body: some View {
-        let contentWidth = max(120, width - Self.selectionOutset * 2)
-        let contentHeight = cardHeight(for: item, width: contentWidth)
+        let contentWidth = AssetCardMetrics.contentWidth(for: width)
+        let contentHeight = AssetCardMetrics.contentHeight(for: item, width: contentWidth)
         ZStack(alignment: .topLeading) {
             ThumbnailImage(path: item.thumbnailPath)
                 .frame(width: contentWidth, height: contentHeight)
@@ -861,7 +906,7 @@ private struct AssetCardView: View {
             }
 
             Text(item.format)
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .font(StudioFont.caption(11))
                 .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 9)
                 .frame(height: 24)
@@ -872,17 +917,17 @@ private struct AssetCardView: View {
                 Spacer()
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.title)
-                        .font(.system(size: 14, weight: .regular))
+                        .font(StudioFont.font(14))
                         .lineLimit(1)
                     Text("\(item.modelName) · \(item.displayAspectRatio)")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(StudioFont.font(12))
                         .foregroundStyle(StudioColor.secondaryText)
 
                     if isSelected {
                         HStack(spacing: 8) {
                             ForEach(item.tags.prefix(3), id: \.self) { tag in
                                 Text(tag)
-                                    .font(.system(size: 11, weight: .regular))
+                                    .font(StudioFont.font(11))
                                     .padding(.horizontal, 9)
                                     .frame(height: 24)
                                     .background(Capsule().fill(StudioColor.selection))
@@ -912,24 +957,16 @@ private struct AssetCardView: View {
 
         }
         .frame(width: contentWidth, height: contentHeight)
-        .clipShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous))
+        .padding(AssetCardMetrics.selectionOutset)
         .overlay(
-            RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous)
-                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.88) : Color.clear, lineWidth: isSelected ? 2 : 0)
-                .padding(isSelected ? -Self.selectionOutset : 0)
+            RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous)
+                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.88) : Color.clear, lineWidth: isSelected ? 2 : 0)
         )
-        .padding(Self.selectionOutset)
-        .frame(width: width, height: contentHeight + Self.selectionOutset * 2)
-        .contentShape(RoundedRectangle(cornerRadius: Self.selectionCornerRadius, style: .continuous))
-        .onTapGesture {
-            clearTextFocus()
-            state.select(item)
-        }
-        .onTapGesture(count: 2) {
-            clearTextFocus()
-            state.select(item)
-            state.previewSelected()
-        }
+        .frame(width: width, height: contentHeight + AssetCardMetrics.selectionOutset * 2)
+        .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
+        .highPriorityGesture(cardSelectionGesture)
+        .simultaneousGesture(cardPreviewGesture)
         .onDrag {
             draggedItemID = item.id
             return NSItemProvider(object: item.id as NSString)
@@ -945,17 +982,36 @@ private struct AssetCardView: View {
             )
         )
         .opacity(draggedItemID == item.id ? 0.72 : 1)
-        .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSelected)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
+    }
+
+    private var cardSelectionGesture: some Gesture {
+        TapGesture(count: 1)
+            .onEnded {
+                selectImmediately()
+            }
+    }
+
+    private var cardPreviewGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded {
+                selectImmediately()
+                state.previewSelected()
+            }
+    }
+
+    private func selectImmediately() {
+        clearTextFocus()
+        state.select(item)
     }
 
     private var dragPreview: some View {
         ThumbnailImage(path: item.thumbnailPath)
             .frame(width: 120, height: 90)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous)
                     .stroke(StudioColor.primaryAction.opacity(0.7), lineWidth: 1)
             )
             .offset(x: 60, y: 45)
@@ -964,15 +1020,9 @@ private struct AssetCardView: View {
     private func cardAction(_ systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: .regular))
+                .font(StudioFont.symbol(14))
         }
         .buttonStyle(IconCircleButtonStyle())
-    }
-
-    private func cardHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
-        let parts = item.displayAspectRatio.split(separator: ":").compactMap { Double($0) }
-        guard parts.count == 2, parts[0] > 0 else { return width * 1.25 }
-        return max(170, min(430, width * CGFloat(parts[1] / parts[0])))
     }
 
     private func gradientHeight(for cardHeight: CGFloat) -> CGFloat {
@@ -980,10 +1030,6 @@ private struct AssetCardView: View {
         let normalHeight = min(128, max(86, cardHeight * 0.36))
         return isSelected ? selectedHeight : normalHeight
     }
-
-    private static let cardCornerRadius: CGFloat = 12
-    private static let selectionCornerRadius: CGFloat = 15
-    private static let selectionOutset: CGFloat = 3
 }
 
 private struct AssetCardDropDelegate: DropDelegate {
@@ -1020,14 +1066,14 @@ private struct PromptListView: View {
                             .frame(width: 66, height: 52)
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(item.title).font(.system(size: 14, weight: .regular))
+                            Text(item.title).font(StudioFont.font(14))
                             Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.tags.joined(separator: " / "))")
-                                .font(.system(size: 12))
+                                .font(StudioFont.font(12))
                                 .foregroundStyle(StudioColor.secondaryText)
                         }
                         Spacer()
                         Text(item.updatedAt.formatted(date: .numeric, time: .shortened))
-                            .font(.system(size: 12))
+                            .font(StudioFont.font(12))
                             .foregroundStyle(StudioColor.tertiaryText)
                     }
                     .padding(12)
@@ -1054,10 +1100,10 @@ private struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: 44))
+                .font(StudioFont.symbol(44))
                 .foregroundStyle(StudioColor.secondaryText)
             Text("没有找到素材")
-                .font(.system(size: 24, weight: .regular))
+                .font(StudioFont.font(24))
             Text("调整搜索或导入图片、视频、Prompt 文本。")
                 .foregroundStyle(StudioColor.secondaryText)
             Button("导入素材") {
@@ -1084,7 +1130,7 @@ struct ThumbnailImage: View {
                 ZStack {
                     StudioColor.panelRaised
                     Image(systemName: "photo")
-                        .font(.system(size: 24))
+                        .font(StudioFont.symbol(24))
                         .foregroundStyle(StudioColor.secondaryText)
                 }
             }

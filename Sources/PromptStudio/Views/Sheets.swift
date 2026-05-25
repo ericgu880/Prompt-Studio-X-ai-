@@ -1,6 +1,7 @@
 import AVKit
 import SwiftUI
 import PromptStudioCore
+import UniformTypeIdentifiers
 
 struct NewPromptSheet: View {
     @EnvironmentObject private var state: AppState
@@ -10,63 +11,390 @@ struct NewPromptSheet: View {
     @State private var modelId = "nano_banana_2"
     @State private var prompt = ""
     @State private var negativePrompt = ""
-    @State private var tags = "风景, 人物"
+    @State private var tags = ["风景", "人物"]
+    @State private var tagDraft = ""
+    @State private var referenceURLs: [URL] = []
+    @State private var isReferenceDropTarget = false
 
     var body: some View {
-        PromptFormShell(title: "新建 Prompt") {
-            form
-        } footer: {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(StudioColor.hairline)
+
+            ScrollView {
+                form
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 22)
+            }
+
+            Divider().overlay(StudioColor.hairline)
+            footer
+        }
+        .foregroundStyle(StudioColor.text)
+        .background(
+            LinearGradient(
+                colors: [StudioColor.panelRaised.opacity(0.96), StudioColor.panel.opacity(0.98)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(StudioColor.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: 940, height: 790)
+        .onChange(of: type) { _, newValue in
+            if !modelOptions.contains(where: { $0.id == modelId }) {
+                modelId = defaultModelID(for: newValue)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 18) {
+            Image(systemName: "wand.and.stars")
+                .font(StudioFont.symbol(28, weight: .medium))
+                .foregroundStyle(StudioColor.blue)
+                .frame(width: 34)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("新建 Prompt")
+                    .font(StudioFont.font(28, weight: .semibold))
+                Text("创建一条新的图片或视频 Prompt，并保存到资源库")
+                    .font(StudioFont.font(14))
+                    .foregroundStyle(StudioColor.tertiaryText)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+    }
+
+    private var form: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            NewPromptField(title: "标题", help: "为这条 Prompt 起一个清晰、易识别的名称") {
+                NewPromptTextField(placeholder: "例如：日落海滩全景", text: $title)
+            }
+
+            HStack(alignment: .top, spacing: 22) {
+                NewPromptField(title: "类型", help: "选择 Prompt 的应用类型") {
+                    NewPromptMenuField(
+                        icon: type == .video ? "video" : "photo",
+                        title: type.displayName,
+                        accent: StudioColor.blue
+                    ) {
+                        Button("图片 Prompt") { type = .image }
+                        Button("视频 Prompt") { type = .video }
+                    }
+                }
+
+                NewPromptField(title: "模型", help: "选择使用的模型") {
+                    NewPromptMenuField(
+                        icon: "cube",
+                        title: activeModelName,
+                        accent: StudioColor.dusk
+                    ) {
+                        ForEach(modelOptions) { model in
+                            Button(model.name) { modelId = model.id }
+                        }
+                    }
+                }
+            }
+
+            NewPromptField(title: "Prompt", help: "描述你想要生成的画面或内容，越详细越好") {
+                NewPromptEditor(placeholder: "请输入 Prompt 内容...", text: $prompt, minHeight: 130)
+            }
+
+            NewPromptField(title: "负面提示词", help: "描述你不希望在生成结果中出现的内容") {
+                NewPromptEditor(placeholder: "请输入负面提示词（可选）", text: $negativePrompt, minHeight: 96)
+            }
+
+            NewPromptField(title: "标签", help: "添加关键词标签，便于分类与检索") {
+                tagInput
+            }
+
+            NewPromptField(title: "参考图（可选）", help: "上传参考图可帮助模型更好地理解你的意图") {
+                referenceUpload
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 14) {
+            Spacer()
             Button("取消") { dismiss() }
-                .buttonStyle(TextHoverButtonStyle())
+                .buttonStyle(NewPromptSecondaryButtonStyle())
             Button("创建") {
                 state.createPrompt(
-                    title: title.isEmpty ? "未命名 Prompt" : title,
+                    title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名 Prompt" : title,
                     type: type,
                     modelId: modelId,
                     prompt: prompt,
                     negativePrompt: negativePrompt,
-                    tags: parsedTags
+                    tags: tags,
+                    referenceURLs: referenceURLs
                 )
                 dismiss()
             }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
+            .buttonStyle(NewPromptPrimaryButtonStyle())
         }
-        .frame(width: 720, height: 680)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 18)
+        .background(StudioColor.panel.opacity(0.96))
     }
 
-    private var form: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            LabeledField("标题") {
-                TextField("这里是一个标题", text: $title)
+    private var tagInput: some View {
+        HStack(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                HStack(spacing: 7) {
+                    Text(tag)
+                    Button {
+                        tags.removeAll { $0 == tag }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(StudioFont.symbol(10, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.text)
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(StudioColor.blueSoft))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.blue.opacity(0.55), lineWidth: 1))
             }
+
+            TextField("输入后回车创建标签", text: $tagDraft)
+                .textFieldStyle(.plain)
+                .font(StudioFont.font(13))
+                .onSubmit(addTagFromDraft)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 50)
+        .background(StudioColor.control.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(StudioColor.hairline)
+        )
+    }
+
+    private var referenceUpload: some View {
+        Button {
+            appendReferenceImages(AppKitBridge.chooseReferenceImages())
+        } label: {
+            VStack(spacing: 12) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(StudioFont.symbol(24))
+                    .frame(width: 48, height: 48)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.control))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+
+                VStack(spacing: 5) {
+                    Text(referenceURLs.isEmpty ? "将图片拖拽到此处，或点击上传" : "已选择 \(referenceURLs.count) 张参考图")
+                        .font(StudioFont.font(14, weight: .medium))
+                    Text(referenceURLs.isEmpty ? "支持 JPG、PNG、WEBP，单张不超过 20MB" : referenceURLs.map(\.lastPathComponent).joined(separator: "、"))
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(StudioColor.tertiaryText)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 118)
+            .background(isReferenceDropTarget ? StudioColor.blueSoft.opacity(0.9) : StudioColor.control.opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .foregroundStyle(isReferenceDropTarget ? StudioColor.blue : StudioColor.blue.opacity(0.75))
+            )
+        }
+        .buttonStyle(.plain)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
+    }
+
+    private var modelOptions: [ModelProfile] {
+        let matching = state.models.filter { $0.id != "all" && $0.type == type }
+        return matching.isEmpty ? state.models.filter { $0.id != "all" } : matching
+    }
+
+    private var activeModelName: String {
+        state.models.first(where: { $0.id == modelId })?.name ?? defaultModelID(for: type)
+    }
+
+    private func defaultModelID(for type: PromptType) -> String {
+        state.models.first(where: { $0.id != "all" && $0.type == type })?.id ?? "nano_banana_2"
+    }
+
+    private func addTagFromDraft() {
+        let next = tagDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !next.isEmpty, !tags.contains(next) else {
+            tagDraft = ""
+            return
+        }
+        tags.append(next)
+        tagDraft = ""
+    }
+
+    private func appendReferenceImages(_ urls: [URL]) {
+        let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
+        let next = urls.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+        for url in next where !referenceURLs.contains(url) {
+            referenceURLs.append(url)
+        }
+    }
+
+    private func handleReferenceDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            handled = true
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let itemURL = item as? URL {
+                    url = itemURL
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard let url else { return }
+                DispatchQueue.main.async {
+                    appendReferenceImages([url])
+                }
+            }
+        }
+        return handled
+    }
+}
+
+private struct NewPromptField<Content: View>: View {
+    let title: String
+    let help: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(StudioFont.font(15, weight: .semibold))
+                Image(systemName: "info.circle")
+                    .font(StudioFont.symbol(12))
+                    .foregroundStyle(StudioColor.tertiaryText)
+                Text(help)
+                    .font(StudioFont.font(12.5))
+                    .foregroundStyle(StudioColor.tertiaryText)
+            }
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct NewPromptTextField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(StudioFont.font(14))
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .frame(maxWidth: .infinity)
+            .background(StudioColor.control.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+}
+
+private struct NewPromptMenuField<Content: View>: View {
+    let icon: String
+    let title: String
+    let accent: Color
+    @ViewBuilder let menu: Content
+
+    var body: some View {
+        Menu {
+            menu
+        } label: {
             HStack(spacing: 12) {
-                LabeledField("类型") {
-                    Picker("", selection: $type) {
-                        ForEach(PromptType.allCases) { type in
-                            Text(type.displayName).tag(type)
-                        }
-                    }
-                    .labelsHidden()
-                }
-                LabeledField("模型") {
-                    Picker("", selection: $modelId) {
-                        ForEach(state.models.filter { $0.id != "all" }) { model in
-                            Text(model.name).tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
-                }
+                Image(systemName: icon)
+                    .font(StudioFont.symbol(16, weight: .medium))
+                    .foregroundStyle(accent)
+                    .frame(width: 22)
+                Text(title)
+                    .font(StudioFont.font(14, weight: .medium))
+                    .foregroundStyle(StudioColor.text)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(StudioFont.symbol(10, weight: .medium))
+                    .foregroundStyle(StudioColor.tertiaryText)
             }
-            LabeledEditor("Prompt", text: $prompt, minHeight: 140)
-            LabeledEditor("负面提示词", text: $negativePrompt, minHeight: 86)
-            LabeledField("标签（逗号分隔）") {
-                TextField("风景, 人物, 写实", text: $tags)
-            }
+            .padding(.horizontal, 16)
+            .frame(height: 46)
+            .frame(maxWidth: .infinity)
+            .background(StudioColor.control.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
     }
+}
 
-    private var parsedTags: [String] {
-        tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+private struct NewPromptEditor: View {
+    let placeholder: String
+    @Binding var text: String
+    let minHeight: CGFloat
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if text.isEmpty {
+                Text(placeholder)
+                    .font(StudioFont.font(13.5))
+                    .foregroundStyle(StudioColor.tertiaryText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $text)
+                .font(StudioFont.font(13.5))
+                .lineSpacing(3)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: minHeight)
+        }
+        .background(StudioColor.control.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+}
+
+private struct NewPromptPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(StudioFont.font(14, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 28)
+            .frame(height: 38)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(configuration.isPressed ? StudioColor.blue.opacity(0.72) : StudioColor.blue))
+            .opacity(configuration.isPressed ? 0.86 : 1)
+    }
+}
+
+private struct NewPromptSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(StudioFont.font(14, weight: .medium))
+            .foregroundStyle(StudioColor.text)
+            .padding(.horizontal, 26)
+            .frame(height: 38)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(configuration.isPressed ? StudioColor.controlPressed : StudioColor.control))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
     }
 }
 
@@ -171,9 +499,9 @@ struct ImportSheet: View {
             VStack(spacing: 18) {
                 VStack(spacing: 12) {
                     Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 42))
+                        .font(StudioFont.symbol(42))
                     Text("拖拽图片、视频、文本到主窗口，或点击下方选择文件")
-                        .font(.system(size: 15, weight: .regular))
+                        .font(StudioFont.font(15))
                     Text("导入后会复制到本地资料库，并进入待完善信息状态。")
                         .foregroundStyle(StudioColor.secondaryText)
                 }
@@ -263,7 +591,7 @@ struct TagManagerSheet: View {
                     Divider().overlay(StudioColor.hairline)
                 }
                 Text("MVP 支持标签查看和筛选；重命名、合并和颜色将在下一步接入。")
-                    .font(.system(size: 12))
+                    .font(StudioFont.font(12))
                     .foregroundStyle(StudioColor.secondaryText)
             }
         } footer: {
@@ -286,15 +614,15 @@ struct VersionHistorySheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text(version.version)
-                                        .font(.system(size: 16, weight: .regular))
+                                        .font(StudioFont.font(16))
                                     Spacer()
                                     Text(version.createdAt.formatted(date: .numeric, time: .shortened))
-                                        .font(.system(size: 12))
+                                        .font(StudioFont.font(12))
                                         .foregroundStyle(StudioColor.secondaryText)
                                 }
                                 Text(version.prompt)
                                     .lineLimit(4)
-                                    .font(.system(size: 13))
+                                    .font(StudioFont.font(13))
                                     .foregroundStyle(StudioColor.secondaryText)
                                 HStack {
                                     Button("复制") {
@@ -328,39 +656,93 @@ struct ReferencesSheet: View {
     var body: some View {
         PromptFormShell(title: "参考图管理") {
             if let item = state.selectedItem {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 12)], spacing: 12) {
-                    ForEach(item.referenceAssets) { reference in
-                        VStack(alignment: .leading, spacing: 8) {
-                            ThumbnailImage(path: reference.path)
-                                .frame(height: 100)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            Text(reference.label)
-                                .font(.system(size: 13, weight: .regular))
-                            Text(reference.type)
-                                .font(.system(size: 12))
-                                .foregroundStyle(StudioColor.secondaryText)
-                        }
-                        .padding(10)
-                        .studioPanel(radius: 8)
+                VStack(alignment: .leading, spacing: 18) {
+                    if item.referenceAssets.isEmpty {
+                        Text("当前素材还没有参考图。")
+                            .font(StudioFont.font(13))
+                            .foregroundStyle(StudioColor.secondaryText)
                     }
-                    Button {
-                        state.modal = .importAssets
-                    } label: {
-                        VStack(spacing: 10) {
-                            Image(systemName: "plus")
-                            Text("添加参考图")
+
+                    LazyVGrid(columns: referenceColumns, alignment: .leading, spacing: 16) {
+                        ForEach(item.referenceAssets) { reference in
+                            ReferenceAssetCard(reference: reference)
                         }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 160)
+                        AddReferenceCard {
+                            state.modal = .importAssets
+                        }
                     }
-                    .buttonStyle(PanelHoverButtonStyle())
                 }
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         } footer: {
             Button("关闭") { state.modal = nil }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
         }
-        .frame(width: 680, height: 520)
+        .frame(width: 760, height: 560)
+    }
+
+    private var referenceColumns: [GridItem] {
+        [
+            GridItem(.adaptive(minimum: 170, maximum: 190), spacing: 16, alignment: .top)
+        ]
+    }
+}
+
+private struct ReferenceAssetCard: View {
+    let reference: ReferenceAsset
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ThumbnailImage(path: reference.path)
+                .frame(maxWidth: .infinity)
+                .frame(height: 108)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(reference.label)
+                    .font(StudioFont.font(13, weight: .medium))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 36, alignment: .topLeading)
+
+                Text(reference.type.isEmpty ? "参考图" : reference.type)
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(12)
+        .frame(height: 198, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .studioPanel(radius: 8)
+    }
+}
+
+private struct AddReferenceCard: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: "plus")
+                    .font(StudioFont.symbol(24, weight: .regular))
+                Text("添加参考图")
+                    .font(StudioFont.font(13, weight: .medium))
+            }
+            .foregroundStyle(StudioColor.text)
+            .frame(maxWidth: .infinity)
+            .frame(height: 198)
+            .background(StudioColor.control)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(StudioColor.hairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -396,31 +778,88 @@ struct VariantSheet: View {
 struct ExportSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
+    @State private var exportPromptMarkdown = true
+    @State private var exportPNG = true
+    @State private var exportJPEG = false
 
     var body: some View {
         PromptFormShell(title: "导出") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("导出当前素材副本和 Markdown Prompt 文件。")
+                Text("选择需要导出的文件。Prompt 本地保存不限制长度，导出的 Markdown 会保留完整文本。")
                     .foregroundStyle(StudioColor.secondaryText)
                 if let item = state.selectedItem {
                     Text(item.title)
-                        .font(.system(size: 18, weight: .regular))
-                    Text(item.assetPath)
-                        .font(.system(size: 12))
-                        .foregroundStyle(StudioColor.tertiaryText)
-                        .lineLimit(2)
+                        .font(StudioFont.font(18))
+                    VStack(spacing: 10) {
+                        ExportOptionRow(
+                            title: "提示词.md",
+                            subtitle: "导出当前 Prompt、负面 Prompt、模型和尺寸信息",
+                            isOn: $exportPromptMarkdown
+                        )
+                        ExportOptionRow(
+                            title: "图片.png",
+                            subtitle: item.type == .image ? "将当前图片导出为 PNG" : "当前素材不是图片，暂不支持 PNG 导出",
+                            isOn: $exportPNG
+                        )
+                        .disabled(item.type != .image)
+                        .opacity(item.type == .image ? 1 : 0.5)
+                        ExportOptionRow(
+                            title: "图片.jpg",
+                            subtitle: item.type == .image ? "将当前图片导出为 JPG" : "当前素材不是图片，暂不支持 JPG 导出",
+                            isOn: $exportJPEG
+                        )
+                        .disabled(item.type != .image)
+                        .opacity(item.type == .image ? 1 : 0.5)
+                    }
+                    .padding(.top, 6)
+                    .onAppear {
+                        if item.type != .image {
+                            exportPNG = false
+                            exportJPEG = false
+                        }
+                    }
                 }
             }
         } footer: {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
-            Button("选择目录并导出") {
-                state.exportSelected()
+            Button("导出") {
+                state.exportSelected(
+                    options: ExportOptions(
+                        promptMarkdown: exportPromptMarkdown,
+                        pngImage: exportPNG,
+                        jpegImage: exportJPEG
+                    )
+                )
                 dismiss()
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))
         }
-        .frame(width: 560, height: 360)
+        .frame(width: 520, height: 430)
+    }
+}
+
+private struct ExportOptionRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(StudioFont.font(14))
+                    .foregroundStyle(StudioColor.text)
+                Text(subtitle)
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .studioPanel(radius: 8)
     }
 }
 
@@ -457,7 +896,7 @@ struct PreviewSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text(state.selectedItem?.title ?? "预览")
-                    .font(.system(size: 16, weight: .regular))
+                    .font(StudioFont.font(16))
                 Spacer()
                 Button("关闭") { state.modal = nil }
                     .buttonStyle(TextHoverButtonStyle())
@@ -480,6 +919,11 @@ struct PreviewSheet: View {
         }
         .frame(width: 1040, height: 720)
         .background(StudioColor.appBackground)
+        .background {
+            SpacePreviewKeyMonitor {
+                state.togglePreview()
+            }
+        }
     }
 
     @ViewBuilder
@@ -496,10 +940,10 @@ struct PreviewSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.title)
-                        .font(.system(size: 18, weight: .regular))
+                        .font(StudioFont.font(18))
                         .lineLimit(3)
                     Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.format)")
-                        .font(.system(size: 12))
+                        .font(StudioFont.font(12))
                         .foregroundStyle(StudioColor.secondaryText)
                 }
 
@@ -512,7 +956,7 @@ struct PreviewSheet: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], alignment: .leading, spacing: 8) {
                             ForEach(parameters.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
                                 Text("\(key) \(value)")
-                                    .font(.system(size: 11, weight: .regular))
+                                    .font(StudioFont.font(11))
                                     .padding(.horizontal, 10)
                                     .frame(height: 26)
                                     .frame(maxWidth: .infinity)
@@ -539,7 +983,7 @@ struct PreviewSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             previewTitle(title)
             Text(text.isEmpty ? "未填写" : text)
-                .font(.system(size: 12.5))
+                .font(StudioFont.font(12.5))
                 .lineSpacing(3)
                 .foregroundStyle(text.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
                 .padding(12)
@@ -550,7 +994,7 @@ struct PreviewSheet: View {
 
     private func previewTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .font(StudioFont.caption(12))
             .tracking(1.2)
             .foregroundStyle(StudioColor.secondaryText)
     }
@@ -570,9 +1014,9 @@ private struct ImagePreview: View {
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "photo")
-                        .font(.system(size: 34))
+                        .font(StudioFont.symbol(34))
                     Text("图片无法预览")
-                        .font(.system(size: 16, weight: .regular))
+                        .font(StudioFont.font(16))
                 }
                 .foregroundStyle(StudioColor.secondaryText)
             }
@@ -608,9 +1052,9 @@ private struct VideoPreviewPlayer: View {
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "video.slash")
-                        .font(.system(size: 34))
+                        .font(StudioFont.symbol(34))
                     Text("视频文件不存在")
-                        .font(.system(size: 16, weight: .regular))
+                        .font(StudioFont.font(16))
                 }
                 .foregroundStyle(StudioColor.secondaryText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -677,10 +1121,10 @@ struct ErrorSheet: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 34))
+                .font(StudioFont.symbol(34))
                 .foregroundStyle(StudioColor.orange)
             Text("操作失败")
-                .font(.system(size: 20, weight: .regular))
+                .font(StudioFont.font(20))
             Text(message)
                 .foregroundStyle(StudioColor.secondaryText)
                 .multilineTextAlignment(.center)
@@ -706,7 +1150,7 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Text(title)
-                    .font(.system(size: 22, weight: .regular))
+                    .font(StudioFont.font(22))
                 Spacer()
             }
             .padding(22)
@@ -743,12 +1187,12 @@ private struct LabeledField<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(StudioFont.caption(12))
                 .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             content
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(StudioFont.font(13))
                 .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 36)
@@ -777,11 +1221,11 @@ private struct LabeledEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(StudioFont.caption(12))
                 .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             TextEditor(text: $text)
-                .font(.system(size: 13))
+                .font(StudioFont.font(13))
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .frame(minHeight: minHeight)
@@ -797,12 +1241,12 @@ private struct ImportStep: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(title)
-                .font(.system(size: 14, weight: .regular))
+                .font(StudioFont.font(14))
                 .frame(width: 28, height: 28)
                 .foregroundStyle(StudioColor.primaryActionText)
                 .background(Circle().fill(StudioColor.primaryAction))
             Text(text)
-                .font(.system(size: 13, weight: .regular))
+                .font(StudioFont.font(13))
         }
         .padding(12)
         .studioPanel(radius: 8)
@@ -827,11 +1271,11 @@ private struct SettingsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(StudioFont.caption(12))
                 .tracking(1.2)
                 .foregroundStyle(StudioColor.secondaryText)
             Text(value)
-                .font(.system(size: 13))
+                .font(StudioFont.font(13))
                 .lineLimit(2)
         }
         .padding(12)

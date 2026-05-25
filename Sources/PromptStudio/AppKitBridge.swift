@@ -5,6 +5,11 @@ import PromptStudioCore
 import UniformTypeIdentifiers
 
 enum AppKitBridge {
+    enum ImageExportFormat {
+        case png
+        case jpeg
+    }
+
     static func copyToPasteboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -22,6 +27,17 @@ enum AppKitBridge {
     }
 
     @MainActor
+    static func chooseReferenceImages() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.title = "选择参考图"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.png, .jpeg, .webP]
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    @MainActor
     static func chooseExportDirectory() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "选择导出目录"
@@ -34,6 +50,30 @@ enum AppKitBridge {
     static func revealInFinder(path: String) {
         let url = URL(fileURLWithPath: path)
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    static func writeImage(from source: URL, to target: URL, format: ImageExportFormat) throws {
+        guard let image = NSImage(contentsOf: source),
+              let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        let fileType: NSBitmapImageRep.FileType
+        let properties: [NSBitmapImageRep.PropertyKey: Any]
+        switch format {
+        case .png:
+            fileType = .png
+            properties = [:]
+        case .jpeg:
+            fileType = .jpeg
+            properties = [.compressionFactor: 0.92]
+        }
+
+        guard let data = bitmap.representation(using: fileType, properties: properties) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: target, options: .atomic)
     }
 
     static func openPreview(path: String) {

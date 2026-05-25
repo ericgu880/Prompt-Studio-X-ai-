@@ -8,6 +8,7 @@ struct PromptStudioApp: App {
         WindowGroup {
             PromptStudioView()
                 .environmentObject(appState)
+                .environment(\.font, StudioFont.body())
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1180, minHeight: 760)
                 .background(WindowStartupConfigurator())
