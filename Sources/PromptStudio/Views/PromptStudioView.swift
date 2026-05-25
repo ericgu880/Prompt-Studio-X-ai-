@@ -622,7 +622,7 @@ private struct MainContentView: View {
                 } else if state.isListView {
                     PromptListView(items: state.filteredItems)
                 } else {
-                    MasonryGridView(items: state.filteredItems, layoutItems: state.masonryLayoutItems)
+                    MasonryGridView(items: state.filteredItems)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -795,36 +795,44 @@ private struct CompactModelChip: View {
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
     let items: [PromptItem]
-    let layoutItems: [PromptItem]
     @State private var draggedItemID: String?
 
     var body: some View {
         GeometryReader { proxy in
             let columnCount = max(2, min(4, Int(proxy.size.width / 250)))
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
-            let visibleIDs = Set(items.map(\.id))
-            let columns = distribute(layoutItems, columnCount: columnCount)
-            ScrollView {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(Array(columns.enumerated()), id: \.offset) { _, column in
-                        LazyVStack(spacing: 12) {
-                            ForEach(column) { item in
-                                if visibleIDs.contains(item.id) {
-                                    AssetCardView(item: item, width: width, draggedItemID: $draggedItemID)
-                                } else {
-                                    Color.clear
-                                        .frame(width: width, height: AssetCardMetrics.totalHeight(for: item, width: width))
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
-                            }
+            let layout = makeMasonryLayout(items, columnCount: columnCount, width: width)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    ZStack(alignment: .topLeading) {
+                        ForEach(layout.placements) { placement in
+                            AssetCardView(
+                                item: placement.item,
+                                width: width,
+                                draggedItemID: $draggedItemID
+                            )
+                            .offset(x: placement.x, y: placement.y)
+                            .zIndex(state.selectedID == placement.item.id ? 1 : 0)
                         }
                     }
+                    .id(Self.topAnchorID)
+                    .frame(
+                        width: max(0, proxy.size.width - 48),
+                        height: layout.height,
+                        alignment: .topLeading
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 24)
+                .scrollIndicators(.hidden)
+                .onChange(of: state.filter) { _, _ in
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        scrollProxy.scrollTo(Self.topAnchorID, anchor: .top)
+                    }
+                }
             }
-            .scrollIndicators(.hidden)
         }
         .transaction { transaction in
             transaction.animation = nil
@@ -832,25 +840,43 @@ private struct MasonryGridView: View {
         }
     }
 
-    private func distribute(_ items: [PromptItem], columnCount: Int) -> [[PromptItem]] {
-        var columns = Array(repeating: [PromptItem](), count: columnCount)
+    private func makeMasonryLayout(_ items: [PromptItem], columnCount: Int, width: CGFloat) -> MasonryLayoutResult {
+        var placements: [MasonryPlacement] = []
         var heights = Array(repeating: CGFloat.zero, count: columnCount)
         for item in items {
             let index = heights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            columns[index].append(item)
-            heights[index] += estimatedHeight(for: item)
+            let height = AssetCardMetrics.totalHeight(for: item, width: width)
+            placements.append(
+                MasonryPlacement(
+                    item: item,
+                    x: CGFloat(index) * (width + 12),
+                    y: heights[index],
+                    height: height
+                )
+            )
+            heights[index] += height + 12
         }
-        return columns
+        return MasonryLayoutResult(
+            placements: placements,
+            height: max(0, (heights.max() ?? 12) - 12)
+        )
     }
 
-    private func estimatedHeight(for item: PromptItem) -> CGFloat {
-        switch item.displayAspectRatio {
-        case "16:9": 176
-        case "1:1": 245
-        case "4:5": 310
-        default: 365
-        }
-    }
+    private static let topAnchorID = "masonry-grid-top"
+}
+
+private struct MasonryLayoutResult {
+    let placements: [MasonryPlacement]
+    let height: CGFloat
+}
+
+private struct MasonryPlacement: Identifiable {
+    let item: PromptItem
+    let x: CGFloat
+    let y: CGFloat
+    let height: CGFloat
+
+    var id: String { item.id }
 }
 
 private enum AssetCardMetrics {
