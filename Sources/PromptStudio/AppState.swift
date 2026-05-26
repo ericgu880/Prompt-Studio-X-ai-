@@ -19,7 +19,18 @@ final class AppState: ObservableObject {
         let count: Int
 
         var id: String { folder.id }
-        var collection: LibraryCollection { .folder(folder.name) }
+        var collection: LibraryCollection { .folder(folder.id) }
+    }
+
+    struct FolderTreeRow: Identifiable, Equatable {
+        let folder: LibraryFolder
+        let count: Int
+        let level: Int
+        let hasChildren: Bool
+        let isExpanded: Bool
+
+        var id: String { folder.id }
+        var collection: LibraryCollection { .folder(folder.id) }
     }
 
     struct InspectorEditRequest: Equatable {
@@ -29,7 +40,7 @@ final class AppState: ObservableObject {
 
     struct FolderEditorRequest: Identifiable, Equatable {
         enum Mode: Equatable {
-            case create(PromptType)
+            case create(parentId: String?)
             case rename(String)
         }
 
@@ -37,7 +48,7 @@ final class AppState: ObservableObject {
         let mode: Mode
         let title: String
         let initialName: String
-        let type: PromptType
+        let parentName: String?
     }
 
     struct FolderDeleteRequest: Identifiable, Equatable {
@@ -108,6 +119,7 @@ final class AppState: ObservableObject {
     @Published var isListView = false
     @Published var isImporting = false
     @Published var inspectorEditRequest: InspectorEditRequest?
+    @Published var expandedFolderIDs: Set<String> = []
 
     private var repository: PromptRepository?
     private var itemsByID: [String: PromptItem] = [:]
@@ -147,11 +159,13 @@ final class AppState: ObservableObject {
                 tags: SeedData.tags
             )
             try repository.seedFoldersIfNeeded(SeedData.folders)
+            try migrateFolderHierarchyIfNeeded(repository: repository)
             try repository.repairSeedAssetPaths(from: seedItems)
             self.repository = repository
             let persistedModels = try repository.loadModelProfiles()
             self.models = SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels)
             self.folders = try repository.loadFolders()
+            self.expandedFolderIDs = Set(self.folders.map(\.id))
             self.items = try repository.loadItems()
             self.tags = try repository.loadTags()
             refreshFilteredItems(selecting: filteredItems.first?.id)
@@ -347,7 +361,8 @@ final class AppState: ObservableObject {
                 type: type,
                 modelId: model.id,
                 modelName: model.name,
-                folderName: defaultFolderName(for: type),
+                folderId: defaultFolder().id,
+                folderName: defaultFolder().name,
                 category: type.displayName,
                 assetPath: previewPath,
                 aspectRatio: Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
@@ -370,7 +385,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func importFiles(_ urls: [URL], targetFolderName: String? = nil, acceptedType: PromptType? = nil) {
+    func importFiles(_ urls: [URL], targetFolderID: String? = nil, acceptedType: PromptType? = nil) {
         guard let repository else { return }
         isImporting = true
         defer { isImporting = false }
@@ -378,6 +393,7 @@ final class AppState: ObservableObject {
             var importedIDs: [String] = []
             var skippedCount = 0
             var nextSortOrder = nextSortOrderForNewItem() - max(0, urls.count - 1)
+            let targetFolder = targetFolderID.flatMap(folder(withID:)) ?? currentImportFolder()
             for url in urls {
                 let isVideo = ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
                 let type: PromptType = isVideo ? .video : .image
@@ -394,7 +410,8 @@ final class AppState: ObservableObject {
                     type: type,
                     modelId: type == .video ? "seedance_2" : "nano_banana_2",
                     modelName: type == .video ? "Seedance 2.0" : "Nano Banana 2",
-                    folderName: targetFolderName ?? currentImportFolderName(for: type),
+                    folderId: targetFolder.id,
+                    folderName: targetFolder.name,
                     category: type.displayName,
                     assetPath: copied.path,
                     aspectRatio: Self.normalizedAspectRatio(width: info.width, height: info.height),
@@ -526,27 +543,33 @@ final class AppState: ObservableObject {
         }
     }
 
-    func moveItem(_ itemID: String, toFolder folderName: String, acceptedType: PromptType?) {
+    func moveItem(_ itemID: String, toFolderID folderID: String) {
         guard var item = itemsByID[itemID], !item.isDeleted else { return }
-        if let acceptedType, item.type != acceptedType {
-            showToast("只能移动同类型素材到该文件夹")
-            return
-        }
-        guard item.folderName != folderName else {
+        guard let folder = folder(withID: folderID) else { return }
+        guard item.folderId != folder.id else {
             selectedID = item.id
             showToast("素材已在当前文件夹")
             return
         }
 
-        item.folderName = folderName
+        item.folderId = folder.id
+        item.folderName = folder.name
         item.category = item.type.displayName
         item.updatedAt = Date()
-        save(item, toast: "已移动到 \(folderName)")
+        save(item, toast: "已移动到 \(folder.name)")
+    }
+
+    func moveItem(_ itemID: String, toFolder folderName: String, acceptedType: PromptType?) {
+        guard let folder = folders.first(where: { $0.name == folderName }) else { return }
+        moveItem(itemID, toFolderID: folder.id)
     }
 
     func folderRows(for type: PromptType) -> [FolderRow] {
+        folderRows()
+    }
+
+    func folderRows() -> [FolderRow] {
         folders
-            .filter { $0.type == type }
             .sorted {
                 if $0.sortOrder == $1.sortOrder {
                     return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -556,39 +579,94 @@ final class AppState: ObservableObject {
             .map { folder in
                 FolderRow(
                     folder: folder,
-                    count: items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }.count
+                    count: itemCount(in: folder, includingDescendants: true)
                 )
             }
+    }
+
+    func folderTreeRows() -> [FolderTreeRow] {
+        let children = Dictionary(grouping: folders, by: { $0.parentId })
+        func sorted(_ folders: [LibraryFolder]) -> [LibraryFolder] {
+            folders.sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+        }
+
+        var rows: [FolderTreeRow] = []
+        func append(parentID: String?, level: Int) {
+            for folder in sorted(children[parentID] ?? []) {
+                let hasChildren = !(children[folder.id] ?? []).isEmpty
+                let isExpanded = expandedFolderIDs.contains(folder.id)
+                rows.append(
+                    FolderTreeRow(
+                        folder: folder,
+                        count: itemCount(in: folder, includingDescendants: true),
+                        level: level,
+                        hasChildren: hasChildren,
+                        isExpanded: isExpanded
+                    )
+                )
+                if hasChildren, isExpanded {
+                    append(parentID: folder.id, level: level + 1)
+                }
+            }
+        }
+        append(parentID: nil, level: 0)
+        return rows
+    }
+
+    func toggleFolderExpansion(_ folderID: String) {
+        if expandedFolderIDs.contains(folderID) {
+            expandedFolderIDs.remove(folderID)
+        } else {
+            expandedFolderIDs.insert(folderID)
+        }
     }
 
     func selectFolder(_ folder: LibraryFolder) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            setCollection(.folder(folder.name))
+            setCollection(.folder(folder.id))
         }
     }
 
-    func beginCreateFolder(type: PromptType) {
+    func beginCreateFolder(parentId: String? = nil) {
+        let parentName = parentId.flatMap(folder(withID:))?.name
         modal = .folderEditor(
             FolderEditorRequest(
-                mode: .create(type),
-                title: "新增文件夹",
+                mode: .create(parentId: parentId),
+                title: parentName == nil ? "新增文件夹" : "新增子文件夹",
                 initialName: "",
-                type: type
+                parentName: parentName
             )
         )
     }
 
+    func beginCreateFolder(type: PromptType) {
+        beginCreateFolder(parentId: nil)
+    }
+
+    func beginCreateSiblingFolder(_ folder: LibraryFolder) {
+        beginCreateFolder(parentId: folder.parentId)
+    }
+
+    func beginCreateChildFolder(_ folder: LibraryFolder) {
+        expandedFolderIDs.insert(folder.id)
+        beginCreateFolder(parentId: folder.id)
+    }
+
     func beginRenameFolder(_ folder: LibraryFolder) {
-        guard let type = folder.type else { return }
         selectFolder(folder)
         modal = .folderEditor(
             FolderEditorRequest(
                 mode: .rename(folder.id),
                 title: "重命名文件夹",
                 initialName: folder.name,
-                type: type
+                parentName: folder.parentId.flatMap(folder(withID:))?.name
             )
         )
     }
@@ -599,7 +677,7 @@ final class AppState: ObservableObject {
             FolderDeleteRequest(
                 folderID: folder.id,
                 folderName: folder.name,
-                itemCount: itemCount(in: folder)
+                itemCount: itemCount(in: folder, includingDescendants: true)
             )
         )
     }
@@ -607,35 +685,38 @@ final class AppState: ObservableObject {
     @discardableResult
     func submitFolderEditor(_ request: FolderEditorRequest, name: String) -> Bool {
         switch request.mode {
-        case .create(let type):
-            return createFolder(type: type, name: name)
+        case .create(let parentId):
+            return createFolder(parentId: parentId, name: name)
         case .rename(let folderID):
             return renameFolder(id: folderID, name: name)
         }
     }
 
     @discardableResult
-    func createFolder(type: PromptType, name: String) -> Bool {
+    func createFolder(parentId: String?, name: String) -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             showToast("文件夹名称不能为空")
             return false
         }
-        guard !folders.contains(where: { $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
-            showToast("已存在同名文件夹")
+        guard !folders.contains(where: { $0.parentId == parentId && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast("同级已存在同名文件夹")
             return false
         }
 
-        let sortOrder = (folders.filter { $0.type == type }.map(\.sortOrder).max() ?? -1) + 1
+        let sortOrder = (folders.filter { $0.parentId == parentId }.map(\.sortOrder).max() ?? -1) + 1
         let folder = LibraryFolder(
-            id: uniqueFolderID(type: type, name: trimmedName),
+            id: uniqueFolderID(name: trimmedName),
             name: trimmedName,
-            type: type,
+            parentId: parentId,
             sortOrder: sortOrder
         )
         do {
             try repository?.saveFolder(folder)
             reload(selecting: selectedID)
+            if let parentId {
+                expandedFolderIDs.insert(parentId)
+            }
             selectFolder(folder)
             showToast("已新增文件夹")
             return true
@@ -652,9 +733,9 @@ final class AppState: ObservableObject {
             showToast("文件夹名称不能为空")
             return false
         }
-        guard let folder = folders.first(where: { $0.id == id }), let type = folder.type else { return false }
-        guard !folders.contains(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
-            showToast("已存在同名文件夹")
+        guard let folder = folders.first(where: { $0.id == id }) else { return false }
+        guard !folders.contains(where: { $0.id != id && $0.parentId == folder.parentId && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast("同级已存在同名文件夹")
             return false
         }
 
@@ -662,16 +743,13 @@ final class AppState: ObservableObject {
             try repository?.renameFolder(id: id, name: trimmedName)
             var updatedItems = items
             var selectedAfterRename = selectedID
-            for index in updatedItems.indices where updatedItems[index].type == type && updatedItems[index].folderName == folder.name {
+            for index in updatedItems.indices where updatedItems[index].folderId == folder.id {
                 updatedItems[index].folderName = trimmedName
                 updatedItems[index].updatedAt = Date()
                 try repository?.saveItem(updatedItems[index])
                 if selectedAfterRename == nil {
                     selectedAfterRename = updatedItems[index].id
                 }
-            }
-            if case .folder(let activeFolder) = filter.collection, activeFolder == folder.name {
-                filter.collection = .folder(trimmedName)
             }
             reload(selecting: selectedAfterRename)
             showToast("已重命名文件夹")
@@ -683,14 +761,15 @@ final class AppState: ObservableObject {
     }
 
     func deleteFolderMovingItemsToTrash(id: String) {
-        guard let folder = folders.first(where: { $0.id == id }), let type = folder.type else { return }
+        guard let folder = folders.first(where: { $0.id == id }) else { return }
         do {
             let deletedAt = Date()
-            for item in items where !item.isDeleted && item.type == type && item.folderName == folder.name {
+            let folderIDs = descendantFolderIDs(of: folder.id, includingSelf: true)
+            for item in items where !item.isDeleted && folderIDs.contains(item.folderId) {
                 try repository?.markDeleted(itemID: item.id, deletedAt: deletedAt)
             }
-            try repository?.deleteFolder(id: id)
-            if case .folder(let activeFolder) = filter.collection, activeFolder == folder.name {
+            try repository?.deleteFolders(ids: Array(folderIDs))
+            if case .folder(let activeFolderID) = filter.collection, folderIDs.contains(activeFolderID) {
                 filter.collection = .all
                 filter.type = nil
             }
@@ -702,16 +781,16 @@ final class AppState: ObservableObject {
     }
 
     func importFiles(to folder: LibraryFolder) {
-        guard let type = folder.type else { return }
         selectFolder(folder)
-        let urls = AppKitBridge.chooseImportFiles(acceptedType: type)
+        let urls = AppKitBridge.chooseImportFiles()
         guard !urls.isEmpty else { return }
-        importFiles(urls, targetFolderName: folder.name, acceptedType: type)
+        importFiles(urls, targetFolderID: folder.id)
     }
 
     func exportFolder(_ folderID: String) {
-        guard let folder = folders.first(where: { $0.id == folderID }), let type = folder.type else { return }
-        let folderItems = items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }
+        guard let folder = folders.first(where: { $0.id == folderID }) else { return }
+        let folderIDs = descendantFolderIDs(of: folder.id, includingSelf: true)
+        let folderItems = items.filter { !$0.isDeleted && folderIDs.contains($0.folderId) }
         guard !folderItems.isEmpty else {
             showToast("文件夹为空")
             return
@@ -741,9 +820,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func itemCount(in folder: LibraryFolder) -> Int {
-        guard let type = folder.type else { return 0 }
-        return items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }.count
+    private func itemCount(in folder: LibraryFolder, includingDescendants: Bool = false) -> Int {
+        let folderIDs = includingDescendants ? descendantFolderIDs(of: folder.id, includingSelf: true) : [folder.id]
+        return items.filter { !$0.isDeleted && folderIDs.contains($0.folderId) }.count
     }
 
     func saveModelFilterLabel(id: String, name: String, type: PromptType) {
@@ -844,6 +923,62 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func migrateFolderHierarchyIfNeeded(repository: PromptRepository) throws {
+        var loadedFolders = try repository.loadFolders()
+        if loadedFolders.isEmpty {
+            try repository.seedFoldersIfNeeded(SeedData.folders)
+            loadedFolders = try repository.loadFolders()
+        }
+
+        let hasLegacyTypedFolders = loadedFolders.contains { $0.type != nil }
+        if hasLegacyTypedFolders {
+            var keptByName: [String: LibraryFolder] = [:]
+            var duplicateIDs: [String] = []
+
+            for folder in loadedFolders.sorted(by: { $0.sortOrder < $1.sortOrder }) {
+                let key = folder.name.lowercased()
+                if keptByName[key] == nil {
+                    var normalized = folder
+                    normalized.type = nil
+                    try repository.saveFolder(normalized)
+                    keptByName[key] = normalized
+                } else {
+                    duplicateIDs.append(folder.id)
+                }
+            }
+
+            if !duplicateIDs.isEmpty {
+                try repository.deleteFolders(ids: duplicateIDs)
+            }
+            loadedFolders = try repository.loadFolders()
+        }
+
+        if !loadedFolders.contains(where: { $0.id == SeedData.uncategorizedFolderID }) {
+            try repository.saveFolder(
+                LibraryFolder(id: SeedData.uncategorizedFolderID, name: "未分类", sortOrder: (loadedFolders.map(\.sortOrder).max() ?? 98) + 1)
+            )
+            loadedFolders = try repository.loadFolders()
+        }
+
+        let foldersByID = Dictionary(uniqueKeysWithValues: loadedFolders.map { ($0.id, $0) })
+        let foldersByName = Dictionary(grouping: loadedFolders, by: { $0.name.lowercased() })
+        let fallback = foldersByID[SeedData.uncategorizedFolderID] ?? loadedFolders.first
+
+        for var item in try repository.loadItems() {
+            let existingFolder = foldersByID[item.folderId]
+            let matchedFolder = existingFolder
+                ?? foldersByName[item.folderName.lowercased()]?.first
+                ?? fallback
+            guard let matchedFolder else { continue }
+            if item.folderId != matchedFolder.id || item.folderName != matchedFolder.name {
+                item.folderId = matchedFolder.id
+                item.folderName = matchedFolder.name
+                item.updatedAt = Date()
+                try repository.saveItem(item)
+            }
+        }
+    }
+
     private func uniqueModelID(for name: String) -> String {
         let base = name
             .lowercased()
@@ -863,7 +998,7 @@ final class AppState: ObservableObject {
         return candidate
     }
 
-    private func uniqueFolderID(type: PromptType, name: String) -> String {
+    private func uniqueFolderID(name: String) -> String {
         let base = name
             .lowercased()
             .unicodeScalars
@@ -872,14 +1007,34 @@ final class AppState: ObservableObject {
             .split(separator: "_")
             .joined(separator: "_")
         let normalized = base.isEmpty ? "folder" : base
-        var candidate = "\(type.rawValue)_\(normalized)"
+        var candidate = "folder_\(normalized)"
         var index = 2
         let existingIDs = Set(folders.map(\.id))
         while existingIDs.contains(candidate) {
-            candidate = "\(type.rawValue)_\(normalized)_\(index)"
+            candidate = "folder_\(normalized)_\(index)"
             index += 1
         }
         return candidate
+    }
+
+    private func folder(withID id: String) -> LibraryFolder? {
+        folders.first { $0.id == id }
+    }
+
+    private func descendantFolderIDs(of folderID: String, includingSelf: Bool) -> Set<String> {
+        let children = Dictionary(grouping: folders, by: { $0.parentId })
+        var ids = Set<String>()
+        if includingSelf {
+            ids.insert(folderID)
+        }
+        func appendChildren(of id: String) {
+            for child in children[id] ?? [] {
+                ids.insert(child.id)
+                appendChildren(of: child.id)
+            }
+        }
+        appendChildren(of: folderID)
+        return ids
     }
 
     private func reload(selecting id: String? = nil) {
@@ -1057,17 +1212,17 @@ final class AppState: ObservableObject {
         (items.map(\.sortOrder).min() ?? 0) - 1
     }
 
-    private func currentImportFolderName(for type: PromptType) -> String {
-        if case .folder(let folderName) = filter.collection {
-            return folderName
+    private func currentImportFolder() -> LibraryFolder {
+        if case .folder(let folderID) = filter.collection, let folder = folder(withID: folderID) {
+            return folder
         }
-        return defaultFolderName(for: type)
+        return defaultFolder()
     }
 
-    private func defaultFolderName(for type: PromptType) -> String {
-        folders.first(where: { $0.type == type })?.name
-            ?? SeedData.folders.first(where: { $0.type == type })?.name
-            ?? "PromptStudio"
+    private func defaultFolder() -> LibraryFolder {
+        folder(withID: SeedData.defaultFolderID)
+            ?? folders.first(where: { $0.parentId == nil })
+            ?? LibraryFolder(id: SeedData.uncategorizedFolderID, name: "未分类", sortOrder: 0)
     }
 
     private func ensureImportedItemVisible(_ itemID: String) {

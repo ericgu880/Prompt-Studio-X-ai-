@@ -36,6 +36,7 @@ func sampleItem(
         type: .image,
         modelId: modelId,
         modelName: modelId,
+        folderId: "folder-promptstudio",
         folderName: "PromptStudio",
         category: "图片 Prompt",
         assetPath: assetPath,
@@ -68,6 +69,18 @@ func testSearchFiltering() throws {
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(collection: .tag("插画"))).map(\.id) == [item.id], "tag collection should isolate illustration item")
 }
 
+func testFolderFilteringUsesStableFolderID() throws {
+    var first = sampleItem(title: "同名文件夹 A", prompt: "first")
+    var second = sampleItem(title: "同名文件夹 B", prompt: "second")
+    first.folderId = "folder-a"
+    first.folderName = "同名文件夹"
+    second.folderId = "folder-b"
+    second.folderName = "同名文件夹"
+
+    let filtered = PromptFiltering.apply([first, second], filter: PromptFilter(collection: .folder("folder-b")))
+    try expect(filtered.map(\.id) == [second.id], "folder filtering should use folderId rather than folderName")
+}
+
 func testSQLiteRoundTrip() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let item = sampleItem(title: "版本测试", prompt: "initial prompt")
@@ -76,6 +89,7 @@ func testSQLiteRoundTrip() throws {
     var loaded = try repository.loadItems()
     try expect(loaded.count == 1, "repository should load one saved item")
     try expect(loaded[0].versions.first?.prompt == "initial prompt", "initial version should persist")
+    try expect(loaded[0].folderId == "folder-promptstudio", "folderId should persist")
 
     loaded[0].versions.append(
         PromptVersion(promptItemId: loaded[0].id, version: "V1.1", prompt: "updated prompt", note: "edit")
@@ -171,21 +185,24 @@ func testFolderSeedIsIdempotent() throws {
 
 func testFolderCRUDRoundTrip() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
-    let folder = LibraryFolder(id: "folder-1", name: "旧文件夹", type: .image, sortOrder: 3)
+    let parent = LibraryFolder(id: "folder-parent", name: "父文件夹", sortOrder: 1)
+    let folder = LibraryFolder(id: "folder-1", name: "旧文件夹", parentId: parent.id, type: .image, sortOrder: 3)
 
+    try repository.saveFolder(parent)
     try repository.saveFolder(folder)
-    try expect(try repository.loadFolders().first?.name == "旧文件夹", "saved folder should load")
+    try expect(try repository.loadFolders().contains(where: { $0.parentId == parent.id && $0.name == "旧文件夹" }), "saved child folder should load with parent")
 
     try repository.renameFolder(id: folder.id, name: "新文件夹")
     let renamed = try repository.loadFolders()
-    try expect(renamed.first?.name == "新文件夹", "renamed folder should persist")
+    try expect(renamed.first(where: { $0.id == folder.id })?.name == "新文件夹", "renamed folder should persist")
 
     try repository.deleteFolder(id: folder.id)
-    try expect(try repository.loadFolders().isEmpty, "deleted folder should be removed")
+    try expect(try repository.loadFolders().contains(where: { $0.id == folder.id }) == false, "deleted folder should be removed")
 }
 
 do {
     try testSearchFiltering()
+    try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testTrashAndRestore()
     try testAspectRatioDisplayNormalizesImportedSizes()

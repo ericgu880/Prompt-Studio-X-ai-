@@ -43,10 +43,18 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header(item)
                 Divider().overlay(StudioColor.hairline)
-                referenceSection(item)
-                promptSection(item)
-                negativeSection(item)
-                tagSection(item)
+                if !item.referenceAssets.isEmpty {
+                    referenceSection(item)
+                }
+                if isEditing || hasPrompt(item) {
+                    promptSection(item)
+                }
+                if isEditing || hasNegativePrompt(item) {
+                    negativeSection(item)
+                }
+                if isEditing || !item.tags.isEmpty {
+                    tagSection(item)
+                }
                 actionSection(item)
                 if !isEditing {
                     versionSection(item)
@@ -72,16 +80,9 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(item.title)
-                        .font(StudioFont.font(17))
+                        .font(StudioFont.font(15))
                         .lineLimit(2)
                     Spacer()
-                    Button {
-                        state.toggleFavorite(item)
-                    } label: {
-                        Image(systemName: item.favorite ? "star.fill" : "star")
-                            .foregroundStyle(item.favorite ? StudioColor.orange : StudioColor.text)
-                    }
-                    .buttonStyle(IconCircleButtonStyle())
                 }
                 infoLine("模型", item.modelName)
                 infoLine("尺寸", "\(item.displayAspectRatio) (\(item.width) x \(item.height))")
@@ -120,7 +121,7 @@ struct InspectorView: View {
             if isEditing {
                 InlinePromptEditor(text: $draftPrompt, minHeight: 150, placeholder: "输入 Prompt")
             } else {
-                Text(item.currentVersion?.prompt ?? "未填写 Prompt")
+                Text(item.currentVersion?.prompt ?? "")
                     .font(StudioFont.font(12.5))
                     .lineSpacing(3)
                     .foregroundStyle(StudioColor.text)
@@ -154,20 +155,12 @@ struct InspectorView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("参考图")
             HStack(spacing: 10) {
-                ForEach(item.referenceAssets.prefix(3)) { reference in
+                ForEach(item.referenceAssets.prefix(4)) { reference in
                     ThumbnailImage(path: reference.path)
                         .frame(width: 48, height: 48)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
                 }
-                Button {
-                    state.modal = .references
-                } label: {
-                    Image(systemName: "plus")
-                        .font(StudioFont.symbol(18))
-                        .frame(width: 52, height: 48)
-                }
-                .buttonStyle(PanelHoverButtonStyle())
             }
         }
     }
@@ -280,6 +273,14 @@ struct InspectorView: View {
             .font(StudioFont.caption(12))
             .tracking(1.2)
             .foregroundStyle(StudioColor.secondaryText)
+    }
+
+    private func hasPrompt(_ item: PromptItem) -> Bool {
+        item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func hasNegativePrompt(_ item: PromptItem) -> Bool {
+        item.currentVersion?.negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     private func fileSizeText(_ bytes: Int64) -> String {

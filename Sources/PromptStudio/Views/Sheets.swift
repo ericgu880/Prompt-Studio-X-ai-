@@ -977,11 +977,11 @@ struct FolderEditorSheet: View {
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
 
-                LabeledField("类型") {
+                LabeledField("位置") {
                     HStack(spacing: 8) {
-                        Image(systemName: request.type == .video ? "video" : "photo")
+                        Image(systemName: "folder")
                             .foregroundStyle(StudioColor.secondaryText)
-                        Text(request.type == .video ? "视频 Prompt" : "图片 Prompt")
+                        Text(request.parentName ?? "根目录")
                             .foregroundStyle(StudioColor.text)
                         Spacer()
                     }
@@ -1024,7 +1024,7 @@ struct FolderDeleteConfirmationSheet: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("确定删除「\(request.folderName)」？")
                     .font(StudioFont.font(16, weight: .semibold))
-                Text("文件夹内 \(request.itemCount) 个素材将移入回收站，可从回收站恢复。文件夹本身会从侧栏中移除。")
+                Text("文件夹及其子文件夹内 \(request.itemCount) 个素材将移入回收站，可从回收站恢复。文件夹树会从侧栏中移除。")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

@@ -67,6 +67,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var type: PromptType
     public var modelId: String
     public var modelName: String
+    public var folderId: String
     public var folderName: String
     public var category: String
     public var assetPath: String
@@ -93,6 +94,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         type: PromptType,
         modelId: String,
         modelName: String,
+        folderId: String = "",
         folderName: String,
         category: String,
         assetPath: String,
@@ -118,6 +120,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.type = type
         self.modelId = modelId
         self.modelName = modelName
+        self.folderId = folderId
         self.folderName = folderName
         self.category = category
         self.assetPath = assetPath
@@ -291,7 +294,7 @@ public enum PromptFiltering {
                 return false
             case .recent where item.isDeleted:
                 return false
-            case .folder(let folder) where item.folderName != folder || item.isDeleted:
+            case .folder(let folderID) where item.folderId != folderID || item.isDeleted:
                 return false
             case .tag(let tag) where !item.tags.contains(tag) || item.isDeleted:
                 return false

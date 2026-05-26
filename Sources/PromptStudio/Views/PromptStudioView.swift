@@ -308,11 +308,10 @@ private struct SidebarView: View {
             .padding(.top, 16)
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     sidebarSection("资源库") {
                         SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                        SidebarDisclosure(title: "图片 Prompt", icon: "photo", rows: imageRows, acceptedDropType: .image)
-                        SidebarDisclosure(title: "视频 Prompt", icon: "video", rows: videoRows, acceptedDropType: .video)
+                        FolderTreeView()
                     }
 
                     sidebarSection(nil) {
@@ -321,7 +320,7 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 18)
+                .padding(.top, 14)
                 .padding(.bottom, 28)
             }
 
@@ -372,16 +371,8 @@ private struct SidebarView: View {
         .padding(.horizontal, 18)
     }
 
-    private var imageRows: [AppState.FolderRow] {
-        state.folderRows(for: .image)
-    }
-
     private var allCount: Int {
         state.items.filter { !$0.isDeleted }.count
-    }
-
-    private var videoRows: [AppState.FolderRow] {
-        state.folderRows(for: .video)
     }
 
     @ViewBuilder
@@ -395,6 +386,173 @@ private struct SidebarView: View {
             }
             content()
         }
+    }
+}
+
+private struct FolderTreeView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(state.folderTreeRows()) { row in
+                FolderTreeRowView(row: row)
+            }
+        }
+    }
+}
+
+private struct FolderTreeRowView: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let row: AppState.FolderTreeRow
+    @State private var isHovered = false
+    @State private var isDropTargeted = false
+
+    var body: some View {
+        let active = state.filter.collection == row.collection
+        HStack(spacing: 0) {
+            treeIndent
+
+            Button {
+                state.selectFolder(row.folder)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(StudioColor.text)
+                        .frame(width: 17)
+                    Text(row.folder.name)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 8)
+                    Text("\(row.count)")
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.text)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .background(rowBackground(active: active))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(alignment: .leading) {
+                    disclosureButton
+                        .offset(x: -10)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isDropTargeted ? StudioColor.primaryAction.opacity(0.76) : Color.clear, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .onHover { isHovered = $0 }
+        .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let itemID = object as? String else { return }
+                Task { @MainActor in
+                    state.moveItem(itemID, toFolderID: row.folder.id)
+                }
+            }
+            return true
+        }
+        .contextMenu {
+            folderContextMenu(row.folder)
+        }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
+        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
+    }
+
+    private var treeIndent: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<row.level, id: \.self) { _ in
+                Rectangle()
+                    .fill(StudioColor.text.opacity(0.22))
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 10)
+            }
+        }
+        .frame(height: 34)
+    }
+
+    @ViewBuilder
+    private var disclosureButton: some View {
+        if row.hasChildren {
+            Button {
+                state.toggleFolderExpansion(row.folder.id)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(StudioFont.symbol(9, weight: .semibold))
+                    .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
+                    .frame(width: 10)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(StudioColor.secondaryText)
+        } else {
+            Color.clear.frame(width: 10, height: 10)
+        }
+    }
+
+    @ViewBuilder
+    private func folderContextMenu(_ folder: LibraryFolder) -> some View {
+        Button {
+            state.selectFolder(folder)
+        } label: {
+            Label("打开文件夹", systemImage: "folder")
+        }
+
+        Button {
+            state.beginCreateSiblingFolder(folder)
+        } label: {
+            Label("新增文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            state.beginCreateChildFolder(folder)
+        } label: {
+            Label("新增子文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            state.beginRenameFolder(folder)
+        } label: {
+            Label("重命名", systemImage: "pencil")
+        }
+
+        Divider()
+
+        Button {
+            state.importFiles(to: folder)
+        } label: {
+            Label("导入到此文件夹", systemImage: "square.and.arrow.down")
+        }
+
+        Button {
+            state.exportFolder(folder.id)
+        } label: {
+            Label("导出文件夹...", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            state.beginDeleteFolder(folder)
+        } label: {
+            Label("删除文件夹", systemImage: "trash")
+        }
+    }
+
+    private func rowBackground(active: Bool) -> Color {
+        if isDropTargeted {
+            return StudioColor.primaryAction.opacity(0.16)
+        }
+        if active {
+            return StudioColor.selection
+        }
+        return isHovered ? StudioColor.panelRaised : Color.clear
     }
 }
 
@@ -445,6 +603,7 @@ private struct SidebarDisclosure: View {
                         title: row.folder.name,
                         count: row.count,
                         collection: row.collection,
+                        tint: StudioColor.text,
                         folder: row.folder,
                         dropFolderName: row.folder.name,
                         acceptedDropType: acceptedDropType
@@ -518,14 +677,6 @@ private struct SidebarRow: View {
             .background(rowBackground(active: active))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(alignment: .leading) {
-                if active {
-                    Capsule()
-                        .fill(StudioColor.primaryAction)
-                        .frame(width: 3, height: 18)
-                        .offset(x: -8)
-                }
-            }
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(isDropTargeted ? StudioColor.primaryAction.opacity(0.76) : Color.clear, lineWidth: 1)
@@ -643,10 +794,10 @@ private struct MainContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TopToolbarView()
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .padding(.bottom, 10)
+                TopToolbarView()
+                    .padding(.horizontal, 24)
+                    .padding(.top, 24)
+                    .padding(.bottom, 10)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     AppKitBridge.zoomKeyWindow()
@@ -1099,16 +1250,16 @@ private struct AssetCardView: View {
                 ForEach(contextFolderRows) { row in
                     Button {
                         runContextAction {
-                            state.moveItem(item.id, toFolder: row.folder.name, acceptedType: item.type)
+                            state.moveItem(item.id, toFolderID: row.folder.id)
                         }
                     } label: {
-                        if item.folderName == row.folder.name {
+                        if item.folderId == row.folder.id {
                             Label(row.folder.name, systemImage: "checkmark")
                         } else {
                             Text(row.folder.name)
                         }
                     }
-                    .disabled(item.folderName == row.folder.name)
+                    .disabled(item.folderId == row.folder.id)
                 }
             } label: {
                 Label("移动到文件夹", systemImage: "folder")
@@ -1210,7 +1361,7 @@ private struct AssetCardView: View {
     }
 
     private var contextFolderRows: [AppState.FolderRow] {
-        state.folderRows(for: item.type == .video ? .video : .image)
+        state.folderRows()
     }
 
     private func runContextAction(_ action: () -> Void) {

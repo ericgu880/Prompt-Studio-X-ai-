@@ -2,20 +2,9 @@ import Foundation
 import PromptStudioCore
 
 enum SeedData {
-    static let imageFolderNames = [
-        "PromptStudio",
-        "UX Pro Max Skill",
-        "G-Stack 实战方法",
-        "Inshennx/优化合集",
-        "灵感实验室"
-    ]
-
-    static let videoFolderNames = [
-        "PromptStudio-X AI",
-        "完整项目框架开发",
-        "讨论跟踪 AIGC 平台",
-        "视频创作实验室"
-    ]
+    static let rootFolderID = "folder-project"
+    static let defaultFolderID = "folder-promptstudio"
+    static let uncategorizedFolderID = "folder-uncategorized"
 
     static let models: [ModelProfile] = [
         ModelProfile(id: "all", name: "全部模型", type: .image, parameters: []),
@@ -36,13 +25,20 @@ enum SeedData {
         Tag(name: "摄影设计", count: 65)
     ]
 
-    static let folders: [LibraryFolder] =
-        imageFolderNames.enumerated().map { index, name in
-            LibraryFolder(id: "image-\(index)", name: name, type: .image, sortOrder: index)
-        }
-        + videoFolderNames.enumerated().map { index, name in
-            LibraryFolder(id: "video-\(index)", name: name, type: .video, sortOrder: index)
-        }
+    static let folders: [LibraryFolder] = [
+        LibraryFolder(id: rootFolderID, name: "项目", sortOrder: 0),
+        LibraryFolder(id: "folder-summary", name: "项总", parentId: rootFolderID, sortOrder: 0),
+        LibraryFolder(id: "folder-reference", name: "实拍高清图", parentId: "folder-summary", sortOrder: 0),
+        LibraryFolder(id: defaultFolderID, name: "PromptStudio", parentId: "folder-reference", sortOrder: 0),
+        LibraryFolder(id: "folder-ux-pro", name: "UX Pro Max Skill", parentId: rootFolderID, sortOrder: 1),
+        LibraryFolder(id: "folder-g-stack", name: "G-Stack 实战方法", parentId: rootFolderID, sortOrder: 2),
+        LibraryFolder(id: "folder-inshennx", name: "Inshennx/优化合集", parentId: rootFolderID, sortOrder: 3),
+        LibraryFolder(id: "folder-lab", name: "灵感实验室", parentId: rootFolderID, sortOrder: 4),
+        LibraryFolder(id: "folder-project-dev", name: "完整项目框架开发", parentId: rootFolderID, sortOrder: 5),
+        LibraryFolder(id: "folder-aigc-follow", name: "讨论跟踪 AIGC 平台", parentId: rootFolderID, sortOrder: 6),
+        LibraryFolder(id: "folder-video-lab", name: "视频创作实验室", parentId: rootFolderID, sortOrder: 7),
+        LibraryFolder(id: uncategorizedFolderID, name: "未分类", sortOrder: 99)
+    ]
 
     static func orderedModels(_ persisted: [ModelProfile]) -> [ModelProfile] {
         let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
@@ -122,6 +118,7 @@ enum SeedData {
                 type: type,
                 modelId: modelId,
                 modelName: modelName,
+                folderId: modelId.contains("seedance") ? "folder-project-dev" : defaultFolderID,
                 folderName: modelId.contains("seedance") ? "完整项目框架开发" : "PromptStudio",
                 category: type == .video ? "视频 Prompt" : "图片 Prompt",
                 assetPath: url(asset),

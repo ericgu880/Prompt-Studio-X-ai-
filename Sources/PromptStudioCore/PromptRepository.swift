@@ -56,6 +56,7 @@ public final class PromptRepository: @unchecked Sendable {
                 type TEXT NOT NULL,
                 modelId TEXT NOT NULL,
                 modelName TEXT NOT NULL,
+                folderId TEXT NOT NULL DEFAULT '',
                 folderName TEXT NOT NULL,
                 category TEXT NOT NULL,
                 assetPath TEXT NOT NULL,
@@ -128,6 +129,7 @@ public final class PromptRepository: @unchecked Sendable {
                 type: PromptType(rawValue: required(row, "type")) ?? .image,
                 modelId: required(row, "modelId"),
                 modelName: required(row, "modelName"),
+                folderId: required(row, "folderId"),
                 folderName: required(row, "folderName"),
                 category: required(row, "category"),
                 assetPath: required(row, "assetPath"),
@@ -196,10 +198,10 @@ public final class PromptRepository: @unchecked Sendable {
         try database.run(
             """
             INSERT OR REPLACE INTO prompt_items (
-                id, title, type, modelId, modelName, folderName, category, assetPath, thumbnailPath,
+                id, title, type, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
                 lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             values: [
                 .text(item.id),
@@ -207,6 +209,7 @@ public final class PromptRepository: @unchecked Sendable {
                 .text(item.type.rawValue),
                 .text(item.modelId),
                 .text(item.modelName),
+                .text(item.folderId),
                 .text(item.folderName),
                 .text(item.category),
                 .text(item.assetPath),
@@ -363,6 +366,12 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
+    public func deleteFolders(ids: [String]) throws {
+        for id in ids {
+            try deleteFolder(id: id)
+        }
+    }
+
     public func deleteFolder(id: String) throws {
         try database.run("DELETE FROM library_folders WHERE id = ?;", values: [.text(id)])
     }
@@ -419,6 +428,9 @@ public final class PromptRepository: @unchecked Sendable {
                     values: [.int(Int64(index)), .text(required(row, "id"))]
                 )
             }
+        }
+        if !columnNames.contains("folderId") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN folderId TEXT NOT NULL DEFAULT '';")
         }
     }
 
