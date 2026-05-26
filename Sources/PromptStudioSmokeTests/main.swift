@@ -153,6 +153,37 @@ func testLastUsedUpdatePersistsForRecentSorting() throws {
     try expect(recent.first?.id == older.id, "updated lastUsedAt should drive recent sorting")
 }
 
+func testFolderSeedIsIdempotent() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let folders = [
+        LibraryFolder(id: "image-a", name: "图片 A", type: .image, sortOrder: 0),
+        LibraryFolder(id: "video-a", name: "视频 A", type: .video, sortOrder: 0)
+    ]
+
+    try repository.seedFoldersIfNeeded(folders)
+    try repository.seedFoldersIfNeeded(folders)
+
+    let loaded = try repository.loadFolders()
+    try expect(loaded.count == 2, "folder seed should not duplicate rows")
+    try expect(loaded.map(\.name).contains("图片 A"), "seeded image folder should load")
+    try expect(loaded.map(\.name).contains("视频 A"), "seeded video folder should load")
+}
+
+func testFolderCRUDRoundTrip() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let folder = LibraryFolder(id: "folder-1", name: "旧文件夹", type: .image, sortOrder: 3)
+
+    try repository.saveFolder(folder)
+    try expect(try repository.loadFolders().first?.name == "旧文件夹", "saved folder should load")
+
+    try repository.renameFolder(id: folder.id, name: "新文件夹")
+    let renamed = try repository.loadFolders()
+    try expect(renamed.first?.name == "新文件夹", "renamed folder should persist")
+
+    try repository.deleteFolder(id: folder.id)
+    try expect(try repository.loadFolders().isEmpty, "deleted folder should be removed")
+}
+
 do {
     try testSearchFiltering()
     try testSQLiteRoundTrip()
@@ -161,6 +192,8 @@ do {
     try testSeedAssetRepairKeepsExistingUserData()
     try testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset()
     try testLastUsedUpdatePersistsForRecentSorting()
+    try testFolderSeedIsIdempotent()
+    try testFolderCRUDRoundTrip()
     print("PromptStudioSmokeTests passed")
 } catch {
     fputs("PromptStudioSmokeTests failed: \(error.localizedDescription)\n", stderr)

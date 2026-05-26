@@ -15,14 +15,30 @@ enum AppKitBridge {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    static func copyFileToPasteboard(path: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        let url = URL(fileURLWithPath: path)
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.writeObjects([url as NSURL])
+    }
+
     @MainActor
-    static func chooseImportFiles() -> [URL] {
+    static func chooseImportFiles(acceptedType: PromptType? = nil) -> [URL] {
         let panel = NSOpenPanel()
         panel.title = "导入 PromptStudio 素材"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .movie, .text, .json, .commaSeparatedText]
+        switch acceptedType {
+        case .image:
+            panel.allowedContentTypes = [.png, .jpeg, .webP, .gif]
+        case .video:
+            panel.allowedContentTypes = [.movie]
+        case .text:
+            panel.allowedContentTypes = [.text, .json, .commaSeparatedText]
+        case nil:
+            panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .movie, .text, .json, .commaSeparatedText]
+        }
         return panel.runModal() == .OK ? panel.urls : []
     }
 
@@ -50,6 +66,11 @@ enum AppKitBridge {
     static func revealInFinder(path: String) {
         let url = URL(fileURLWithPath: path)
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    static func openDefaultApplication(path: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        return NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     static func writeImage(from source: URL, to target: URL, format: ImageExportFormat) throws {

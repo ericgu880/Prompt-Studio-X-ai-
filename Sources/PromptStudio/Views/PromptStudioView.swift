@@ -163,6 +163,15 @@ struct PromptStudioView: View {
         case .settings:
             SettingsSheet()
                 .environmentObject(state)
+        case .modelFilterManager:
+            ModelFilterManagerSheet()
+                .environmentObject(state)
+        case .folderEditor(let request):
+            FolderEditorSheet(request: request)
+                .environmentObject(state)
+        case .folderDeleteConfirmation(let request):
+            FolderDeleteConfirmationSheet(request: request)
+                .environmentObject(state)
         case .preview:
             PreviewSheet()
                 .environmentObject(state)
@@ -345,7 +354,7 @@ private struct SidebarView: View {
         .background {
             ZStack {
                 SidebarGlassBackground()
-                StudioColor.sidebar.opacity(0.18)
+                StudioColor.sidebar.opacity(0.34)
             }
         }
     }
@@ -361,37 +370,16 @@ private struct SidebarView: View {
         .padding(.horizontal, 18)
     }
 
-    private var imageRows: [(String, Int, LibraryCollection)] {
-        [
-            ("PromptStudio", folderCount("PromptStudio"), .folder("PromptStudio")),
-            ("UX Pro Max Skill", folderCount("UX Pro Max Skill"), .folder("UX Pro Max Skill")),
-            ("G-Stack 实战方法", folderCount("G-Stack 实战方法"), .folder("G-Stack 实战方法")),
-            ("Inshennx/优化合集", folderCount("Inshennx/优化合集"), .folder("Inshennx/优化合集")),
-            ("灵感实验室", folderCount("灵感实验室"), .folder("灵感实验室"))
-        ]
+    private var imageRows: [AppState.FolderRow] {
+        state.folderRows(for: .image)
     }
 
     private var allCount: Int {
         state.items.filter { !$0.isDeleted }.count
     }
 
-    private var videoRows: [(String, Int, LibraryCollection)] {
-        [
-            ("PromptStudio-X AI", folderCount("PromptStudio-X AI"), .folder("PromptStudio-X AI")),
-            ("完整项目框架开发", folderCount("完整项目框架开发"), .folder("完整项目框架开发")),
-            ("讨论跟踪 AIGC 平台", folderCount("讨论跟踪 AIGC 平台"), .folder("讨论跟踪 AIGC 平台")),
-            ("视频创作实验室", folderCount("视频创作实验室"), .folder("视频创作实验室"))
-        ]
-    }
-
-    private var recentItems: [PromptItem] {
-        state.items
-            .filter { !$0.isDeleted }
-            .sorted { $0.lastUsedAt > $1.lastUsedAt }
-    }
-
-    private func folderCount(_ name: String) -> Int {
-        state.items.filter { !$0.isDeleted && $0.folderName == name }.count
+    private var videoRows: [AppState.FolderRow] {
+        state.folderRows(for: .video)
     }
 
     @ViewBuilder
@@ -411,7 +399,7 @@ private struct SidebarView: View {
 private struct SidebarDisclosure: View {
     let title: String
     let icon: String
-    let rows: [(String, Int, LibraryCollection)]
+    let rows: [AppState.FolderRow]
     let acceptedDropType: PromptType?
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -449,13 +437,14 @@ private struct SidebarDisclosure: View {
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
 
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(rows, id: \.0) { row in
+                ForEach(rows) { row in
                     SidebarRow(
                         icon: "folder",
-                        title: row.0,
-                        count: row.1,
-                        collection: row.2,
-                        dropFolderName: row.0,
+                        title: row.folder.name,
+                        count: row.count,
+                        collection: row.collection,
+                        folder: row.folder,
+                        dropFolderName: row.folder.name,
                         acceptedDropType: acceptedDropType
                     )
                         .padding(.leading, 16)
@@ -498,6 +487,7 @@ private struct SidebarRow: View {
     let collection: LibraryCollection
     var isActive = false
     var tint: Color = StudioColor.secondaryText
+    var folder: LibraryFolder?
     var dropFolderName: String?
     var acceptedDropType: PromptType?
     @State private var isHovered = false
@@ -551,9 +541,57 @@ private struct SidebarRow: View {
             }
             return true
         }
+        .contextMenu {
+            if let folder {
+                folderContextMenu(folder)
+            }
+        }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
         .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
+    }
+
+    @ViewBuilder
+    private func folderContextMenu(_ folder: LibraryFolder) -> some View {
+        Button {
+            state.selectFolder(folder)
+        } label: {
+            Label("打开文件夹", systemImage: "folder")
+        }
+
+        Button {
+            state.beginCreateFolder(type: folder.type ?? .image)
+        } label: {
+            Label("新增文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            state.beginRenameFolder(folder)
+        } label: {
+            Label("重命名", systemImage: "pencil")
+        }
+
+        Divider()
+
+        Button {
+            state.importFiles(to: folder)
+        } label: {
+            Label("导入到此文件夹", systemImage: "square.and.arrow.down")
+        }
+
+        Button {
+            state.exportFolder(folder.id)
+        } label: {
+            Label("导出文件夹...", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            state.beginDeleteFolder(folder)
+        } label: {
+            Label("删除文件夹", systemImage: "trash")
+        }
     }
 
     private func rowBackground(active: Bool) -> Color {
@@ -605,8 +643,8 @@ private struct MainContentView: View {
         VStack(spacing: 0) {
             TopToolbarView()
                 .padding(.horizontal, 24)
-                .padding(.top, 20)
-                .padding(.bottom, 14)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     AppKitBridge.zoomKeyWindow()
@@ -614,7 +652,7 @@ private struct MainContentView: View {
 
             ModelTabsView()
                 .padding(.horizontal, 24)
-                .padding(.bottom, 16)
+                .padding(.bottom, 12)
 
             Group {
                 if state.filteredItems.isEmpty {
@@ -662,6 +700,7 @@ private struct TopToolbarView: View {
                 .foregroundStyle(StudioColor.text)
             }
             .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity)
             .frame(height: 44)
             .background(searchHovered ? StudioColor.panelRaised : StudioColor.panel)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -673,23 +712,6 @@ private struct TopToolbarView: View {
             .onHover { searchHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
 
-            Button {
-                withAnimation(StudioMotion.spring(reduceMotion: reduceMotion)) {
-                    state.isListView = false
-                }
-            } label: {
-                Image(systemName: "square.grid.2x2")
-            }
-            .buttonStyle(CapsuleButtonStyle(accent: !state.isListView))
-
-            Button {
-                withAnimation(StudioMotion.spring(reduceMotion: reduceMotion)) {
-                    state.isListView = true
-                }
-            } label: {
-                Image(systemName: "list.bullet")
-            }
-            .buttonStyle(CapsuleButtonStyle(accent: state.isListView))
         }
     }
 }
@@ -723,13 +745,15 @@ private struct ModelTabsView: View {
                 }
 
                 Button {
-                    state.modal = .settings
+                    state.modal = .modelFilterManager
                 } label: {
                     Image(systemName: "plus")
                         .font(StudioFont.symbol(15))
                 }
                 .buttonStyle(IconCircleButtonStyle())
                 .foregroundStyle(StudioColor.text)
+                .help("管理筛选标签")
+                .accessibilityLabel("管理筛选标签")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
@@ -960,7 +984,6 @@ private struct AssetCardView: View {
                                     .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                             }
                         }
-                        .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
                     }
 
                     if isSelected {
@@ -973,7 +996,6 @@ private struct AssetCardView: View {
                             cardAction("ellipsis") { state.modal = .export }
                         }
                         .padding(.top, 2)
-                        .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
                     }
                 }
                 .padding(14)
@@ -993,6 +1015,9 @@ private struct AssetCardView: View {
         .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
         .highPriorityGesture(cardSelectionGesture)
         .simultaneousGesture(cardPreviewGesture)
+        .contextMenu {
+            assetContextMenu
+        }
         .onDrag {
             draggedItemID = item.id
             return NSItemProvider(object: item.id as NSString)
@@ -1009,6 +1034,10 @@ private struct AssetCardView: View {
         )
         .opacity(draggedItemID == item.id ? 0.72 : 1)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
     }
 
     private var cardSelectionGesture: some Gesture {
@@ -1028,7 +1057,163 @@ private struct AssetCardView: View {
 
     private func selectImmediately() {
         clearTextFocus()
-        state.select(item)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            state.select(item)
+        }
+    }
+
+    @ViewBuilder
+    private var assetContextMenu: some View {
+        Button {
+            runContextAction {
+                state.previewSelected()
+            }
+        } label: {
+            Label("预览", systemImage: "eye")
+        }
+
+        Button {
+            runContextAction {
+                state.openSelectedInDefaultApplication()
+            }
+        } label: {
+            Label("用默认应用打开", systemImage: "arrow.up.right.square")
+        }
+
+        Button {
+            runContextAction {
+                state.revealSelectedInFinder()
+            }
+        } label: {
+            Label("在 Finder 中显示", systemImage: "folder")
+        }
+
+        Divider()
+
+        if !item.isDeleted {
+            Menu {
+                ForEach(contextFolderRows) { row in
+                    Button {
+                        runContextAction {
+                            state.moveItem(item.id, toFolder: row.folder.name, acceptedType: item.type)
+                        }
+                    } label: {
+                        if item.folderName == row.folder.name {
+                            Label(row.folder.name, systemImage: "checkmark")
+                        } else {
+                            Text(row.folder.name)
+                        }
+                    }
+                    .disabled(item.folderName == row.folder.name)
+                }
+            } label: {
+                Label("移动到文件夹", systemImage: "folder")
+            }
+        }
+
+        Button {
+            runContextAction {
+                state.modal = .export
+            }
+        } label: {
+            Label("导出...", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button {
+            runContextAction {
+                state.requestInlineEdit(item)
+            }
+        } label: {
+            Label("编辑 Prompt", systemImage: "pencil")
+        }
+
+        Button {
+            runContextAction {
+                state.copySelectedPrompt()
+            }
+        } label: {
+            Label("复制提示词", systemImage: "doc.on.doc")
+        }
+        .disabled(!hasPrompt)
+
+        Button {
+            runContextAction {
+                state.copySelectedFile()
+            }
+        } label: {
+            Label("复制文件", systemImage: "doc")
+        }
+
+        Button {
+            runContextAction {
+                state.copySelectedFilePath()
+            }
+        } label: {
+            Label("复制文件路径", systemImage: "text.badge.checkmark")
+        }
+
+        Divider()
+
+        Button {
+            runContextAction {
+                state.toggleFavorite(item)
+            }
+        } label: {
+            Label(item.favorite ? "取消收藏" : "收藏", systemImage: item.favorite ? "star.slash" : "star")
+        }
+
+        Button {
+            runContextAction {
+                state.modal = .versionHistory
+            }
+        } label: {
+            Label("历史版本", systemImage: "clock")
+        }
+
+        Button {
+            runContextAction {
+                state.modal = .references
+            }
+        } label: {
+            Label("参考图管理", systemImage: "photo.on.rectangle")
+        }
+
+        Divider()
+
+        if item.isDeleted {
+            Button {
+                runContextAction {
+                    state.restoreSelected()
+                }
+            } label: {
+                Label("恢复", systemImage: "arrow.uturn.backward")
+            }
+        } else {
+            Button {
+                runContextAction {
+                    state.moveSelectedToTrash()
+                }
+            } label: {
+                Label("移到回收站", systemImage: "trash")
+            }
+        }
+    }
+
+    private var hasPrompt: Bool {
+        item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private var contextFolderRows: [AppState.FolderRow] {
+        state.folderRows(for: item.type == .video ? .video : .image)
+    }
+
+    private func runContextAction(_ action: () -> Void) {
+        selectImmediately()
+        action()
     }
 
     private var dragPreview: some View {

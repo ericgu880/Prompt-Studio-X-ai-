@@ -10,7 +10,7 @@ struct PromptStudioApp: App {
                 .environmentObject(appState)
                 .environment(\.font, StudioFont.body())
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 1180, minHeight: 760)
+                .frame(minWidth: 1180, minHeight: 720)
                 .background(WindowStartupConfigurator())
                 .task {
                     if appState.items.isEmpty {
@@ -18,7 +18,7 @@ struct PromptStudioApp: App {
                     }
                 }
         }
-        .defaultSize(width: 1440, height: 1024)
+        .defaultSize(width: WindowStartupConfigurator.defaultContentSize.width, height: WindowStartupConfigurator.defaultContentSize.height)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .newItem) {
@@ -53,6 +53,9 @@ struct PromptStudioApp: App {
 }
 
 private struct WindowStartupConfigurator: NSViewRepresentable {
+    static let defaultContentSize = NSSize(width: 1440, height: 900)
+    static let minimumContentSize = NSSize(width: 1180, height: 720)
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -78,8 +81,24 @@ private struct WindowStartupConfigurator: NSViewRepresentable {
         func configure(window: NSWindow?) {
             guard !didConfigure, let window else { return }
             didConfigure = true
-            window.minSize = NSSize(width: 1180, height: 760)
-            window.setContentSize(NSSize(width: 1440, height: 1024))
+            window.isRestorable = false
+            applyDefaultWindowFrame(to: window)
+        }
+
+        @MainActor
+        private func applyDefaultWindowFrame(to window: NSWindow) {
+            window.minSize = WindowStartupConfigurator.minimumContentSize
+            if window.styleMask.contains(.fullScreen) {
+                window.toggleFullScreen(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    Task { @MainActor in
+                        window.setContentSize(WindowStartupConfigurator.defaultContentSize)
+                        window.center()
+                    }
+                }
+                return
+            }
+            window.setContentSize(WindowStartupConfigurator.defaultContentSize)
             window.center()
         }
     }

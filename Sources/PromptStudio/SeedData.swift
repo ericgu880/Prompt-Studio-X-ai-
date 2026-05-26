@@ -2,6 +2,21 @@ import Foundation
 import PromptStudioCore
 
 enum SeedData {
+    static let imageFolderNames = [
+        "PromptStudio",
+        "UX Pro Max Skill",
+        "G-Stack 实战方法",
+        "Inshennx/优化合集",
+        "灵感实验室"
+    ]
+
+    static let videoFolderNames = [
+        "PromptStudio-X AI",
+        "完整项目框架开发",
+        "讨论跟踪 AIGC 平台",
+        "视频创作实验室"
+    ]
+
     static let models: [ModelProfile] = [
         ModelProfile(id: "all", name: "全部模型", type: .image, parameters: []),
         ModelProfile(id: "nano_banana_2", name: "Nano banana 2", type: .image, parameters: ["aspectRatio", "style", "seed", "quality"]),
@@ -20,6 +35,14 @@ enum SeedData {
         Tag(name: "写实", count: 73),
         Tag(name: "摄影设计", count: 65)
     ]
+
+    static let folders: [LibraryFolder] =
+        imageFolderNames.enumerated().map { index, name in
+            LibraryFolder(id: "image-\(index)", name: name, type: .image, sortOrder: index)
+        }
+        + videoFolderNames.enumerated().map { index, name in
+            LibraryFolder(id: "video-\(index)", name: name, type: .video, sortOrder: index)
+        }
 
     static func orderedModels(_ persisted: [ModelProfile]) -> [ModelProfile] {
         let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })

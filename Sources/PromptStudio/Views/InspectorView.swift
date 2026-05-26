@@ -22,13 +22,19 @@ struct InspectorView: View {
                     Spacer()
                 }
                 .padding(22)
-                .padding(.top, 16)
+                .padding(.top, 2)
                 .foregroundStyle(StudioColor.text)
             }
         }
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, _ in
             stopEditing()
+        }
+        .onChange(of: state.inspectorEditRequest) { _, request in
+            guard let request,
+                  let item = state.selectedItem,
+                  request.itemID == item.id else { return }
+            startEditing(item)
         }
     }
 
@@ -48,7 +54,7 @@ struct InspectorView: View {
                 }
             }
             .padding(20)
-            .padding(.top, 24)
+            .padding(.top, 4)
         }
     }
 

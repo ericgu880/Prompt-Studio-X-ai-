@@ -871,6 +871,7 @@ struct SettingsSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 SettingsRow(title: "资料库位置", value: state.libraryURL.path)
                 SettingsRow(title: "默认导入方式", value: "复制到资料库")
+                ViewModeSettingsRow(isListView: $state.isListView)
                 SettingsRow(title: "本地数据库", value: state.libraryURL.appendingPathComponent("database/promptstudio.sqlite").path)
                 SettingsRow(title: "模型数量", value: "\(state.models.count - 1)")
                 SettingsRow(title: "隐私", value: "不经授权不上传图片、Prompt 或 API Key")
@@ -885,7 +886,229 @@ struct SettingsSheet: View {
             Button("关闭") { state.modal = nil }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
         }
-        .frame(width: 680, height: 520)
+        .frame(width: 680, height: 560)
+    }
+}
+
+struct ModelFilterManagerSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+    @State private var newType: PromptType = .image
+
+    private var editableModels: [ModelProfile] {
+        state.models.filter { $0.id != "all" }
+    }
+
+    var body: some View {
+        PromptFormShell(title: "筛选标签管理") {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("管理首页模型筛选栏中显示的标签。已有标签可修改名称和类型，新标签会保存到本地资料库。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("现有筛选标签")
+                        .font(StudioFont.caption(12))
+                        .tracking(1.2)
+                        .foregroundStyle(StudioColor.secondaryText)
+
+                    ForEach(editableModels) { model in
+                        ModelFilterEditorRow(model: model)
+                            .environmentObject(state)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("新增筛选标签")
+                        .font(StudioFont.caption(12))
+                        .tracking(1.2)
+                        .foregroundStyle(StudioColor.secondaryText)
+
+                    HStack(spacing: 10) {
+                        TextField("例如：Flux 1.1 Pro", text: $newName)
+                            .textFieldStyle(.plain)
+                            .font(StudioFont.font(13))
+                            .foregroundStyle(StudioColor.text)
+                            .padding(.horizontal, 12)
+                            .frame(height: 38)
+                            .background(StudioColor.control)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+                        PromptTypeSegment(type: $newType)
+
+                        Button {
+                            state.createModelFilterLabel(name: newName, type: newType)
+                            newName = ""
+                        } label: {
+                            Label("新增", systemImage: "plus")
+                                .frame(minWidth: 76)
+                        }
+                        .buttonStyle(CapsuleButtonStyle(filled: true))
+                    }
+                    .padding(12)
+                    .studioPanel(radius: 8)
+                }
+            }
+        } footer: {
+            Button("关闭") { dismiss() }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+        }
+        .frame(width: 760, height: 620)
+    }
+}
+
+struct FolderEditorSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    let request: AppState.FolderEditorRequest
+    @State private var name: String
+
+    init(request: AppState.FolderEditorRequest) {
+        self.request = request
+        self._name = State(initialValue: request.initialName)
+    }
+
+    var body: some View {
+        PromptFormShell(title: request.title) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("文件夹用于整理本地 Prompt 素材，不会创建或移动 Finder 里的真实目录。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+
+                LabeledField("类型") {
+                    HStack(spacing: 8) {
+                        Image(systemName: request.type == .video ? "video" : "photo")
+                            .foregroundStyle(StudioColor.secondaryText)
+                        Text(request.type == .video ? "视频 Prompt" : "图片 Prompt")
+                            .foregroundStyle(StudioColor.text)
+                        Spacer()
+                    }
+                }
+
+                LabeledField("文件夹名称") {
+                    TextField("输入文件夹名称", text: $name)
+                }
+            }
+        } footer: {
+            Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
+            Button(primaryButtonTitle) {
+                if state.submitFolderEditor(request, name: name) {
+                    dismiss()
+                }
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+        }
+        .frame(width: 460, height: 330)
+    }
+
+    private var primaryButtonTitle: String {
+        switch request.mode {
+        case .create:
+            "新增"
+        case .rename:
+            "保存"
+        }
+    }
+}
+
+struct FolderDeleteConfirmationSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    let request: AppState.FolderDeleteRequest
+
+    var body: some View {
+        PromptFormShell(title: "删除文件夹") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("确定删除「\(request.folderName)」？")
+                    .font(StudioFont.font(16, weight: .semibold))
+                Text("文件夹内 \(request.itemCount) 个素材将移入回收站，可从回收站恢复。文件夹本身会从侧栏中移除。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } footer: {
+            Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
+            Button("移入回收站并删除") {
+                state.deleteFolderMovingItemsToTrash(id: request.folderID)
+                dismiss()
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+        }
+        .frame(width: 500, height: 300)
+    }
+}
+
+private struct ModelFilterEditorRow: View {
+    @EnvironmentObject private var state: AppState
+    let model: ModelProfile
+    @State private var name: String
+    @State private var type: PromptType
+
+    init(model: ModelProfile) {
+        self.model = model
+        self._name = State(initialValue: model.name)
+        self._type = State(initialValue: model.type)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            TextField("筛选标签名称", text: $name)
+                .textFieldStyle(.plain)
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.text)
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(StudioColor.control)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+            PromptTypeSegment(type: $type)
+
+            Button {
+                state.saveModelFilterLabel(id: model.id, name: name, type: type)
+            } label: {
+                Text("保存").frame(minWidth: 56)
+            }
+            .buttonStyle(CapsuleButtonStyle(accent: hasChanges))
+        }
+        .padding(12)
+        .studioPanel(radius: 8)
+    }
+
+    private var hasChanges: Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines) != model.name || type != model.type
+    }
+}
+
+private struct PromptTypeSegment: View {
+    @Binding var type: PromptType
+
+    var body: some View {
+        HStack(spacing: 6) {
+            typeButton("图片", .image)
+            typeButton("视频", .video)
+        }
+        .padding(4)
+        .background(StudioColor.control)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func typeButton(_ title: String, _ value: PromptType) -> some View {
+        Button {
+            type = value
+        } label: {
+            Text(title)
+                .font(StudioFont.font(12))
+                .foregroundStyle(type == value ? StudioColor.primaryActionText : StudioColor.text)
+                .frame(width: 44, height: 28)
+                .background(Capsule().fill(type == value ? StudioColor.primaryAction : Color.clear))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1281,5 +1504,49 @@ private struct SettingsRow: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .studioPanel(radius: 8)
+    }
+}
+
+private struct ViewModeSettingsRow: View {
+    @Binding var isListView: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("视图模式")
+                .font(StudioFont.caption(12))
+                .tracking(1.2)
+                .foregroundStyle(StudioColor.secondaryText)
+
+            HStack(spacing: 10) {
+                Button {
+                    setListView(false)
+                } label: {
+                    Label("网格", systemImage: "square.grid.2x2")
+                        .frame(minWidth: 86)
+                }
+                .buttonStyle(CapsuleButtonStyle(accent: !isListView))
+
+                Button {
+                    setListView(true)
+                } label: {
+                    Label("列表", systemImage: "list.bullet")
+                        .frame(minWidth: 86)
+                }
+                .buttonStyle(CapsuleButtonStyle(accent: isListView))
+
+                Spacer()
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .studioPanel(radius: 8)
+    }
+
+    private func setListView(_ value: Bool) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isListView = value
+        }
     }
 }

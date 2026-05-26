@@ -102,6 +102,15 @@ public final class PromptRepository: @unchecked Sendable {
                 parametersJSON TEXT NOT NULL,
                 defaultNegativePrompt TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS library_folders (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                parentId TEXT,
+                type TEXT,
+                count INTEGER NOT NULL,
+                sortOrder INTEGER NOT NULL
+            );
             """
         )
         try migratePromptItemsSchema()
@@ -153,6 +162,13 @@ public final class PromptRepository: @unchecked Sendable {
             for item in items {
                 try saveItem(item)
             }
+        }
+    }
+
+    public func seedFoldersIfNeeded(_ folders: [LibraryFolder]) throws {
+        guard try loadFolders().isEmpty else { return }
+        for folder in folders {
+            try saveFolder(folder)
         }
     }
 
@@ -310,6 +326,45 @@ public final class PromptRepository: @unchecked Sendable {
                 defaultNegativePrompt: required(row, "defaultNegativePrompt")
             )
         }
+    }
+
+    public func saveFolder(_ folder: LibraryFolder) throws {
+        try database.run(
+            "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder) VALUES (?, ?, ?, ?, ?, ?);",
+            values: [
+                .text(folder.id),
+                .text(folder.name),
+                folder.parentId.map { .text($0) } ?? .null,
+                folder.type.map { .text($0.rawValue) } ?? .null,
+                .int(Int64(folder.count)),
+                .int(Int64(folder.sortOrder))
+            ]
+        )
+    }
+
+    public func loadFolders() throws -> [LibraryFolder] {
+        let rows = try database.query("SELECT * FROM library_folders ORDER BY sortOrder ASC, name ASC;")
+        return rows.map { row in
+            LibraryFolder(
+                id: required(row, "id"),
+                name: required(row, "name"),
+                parentId: row["parentId"] ?? nil,
+                type: (row["type"] ?? nil).flatMap(PromptType.init(rawValue:)),
+                count: int(row, "count"),
+                sortOrder: int(row, "sortOrder")
+            )
+        }
+    }
+
+    public func renameFolder(id: String, name: String) throws {
+        try database.run(
+            "UPDATE library_folders SET name = ? WHERE id = ?;",
+            values: [.text(name), .text(id)]
+        )
+    }
+
+    public func deleteFolder(id: String) throws {
+        try database.run("DELETE FROM library_folders WHERE id = ?;", values: [.text(id)])
     }
 
     private func saveVersion(_ version: PromptVersion) throws {

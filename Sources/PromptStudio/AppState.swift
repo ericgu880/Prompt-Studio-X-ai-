@@ -14,6 +14,39 @@ struct ExportOptions {
 
 @MainActor
 final class AppState: ObservableObject {
+    struct FolderRow: Identifiable, Equatable {
+        let folder: LibraryFolder
+        let count: Int
+
+        var id: String { folder.id }
+        var collection: LibraryCollection { .folder(folder.name) }
+    }
+
+    struct InspectorEditRequest: Equatable {
+        let token = UUID()
+        let itemID: String
+    }
+
+    struct FolderEditorRequest: Identifiable, Equatable {
+        enum Mode: Equatable {
+            case create(PromptType)
+            case rename(String)
+        }
+
+        let id = UUID()
+        let mode: Mode
+        let title: String
+        let initialName: String
+        let type: PromptType
+    }
+
+    struct FolderDeleteRequest: Identifiable, Equatable {
+        let id = UUID()
+        let folderID: String
+        let folderName: String
+        let itemCount: Int
+    }
+
     enum Modal: Identifiable, Equatable {
         case newPrompt
         case editPrompt
@@ -25,6 +58,9 @@ final class AppState: ObservableObject {
         case variants
         case export
         case settings
+        case modelFilterManager
+        case folderEditor(FolderEditorRequest)
+        case folderDeleteConfirmation(FolderDeleteRequest)
         case preview
         case error(String)
 
@@ -40,6 +76,9 @@ final class AppState: ObservableObject {
             case .variants: "variants"
             case .export: "export"
             case .settings: "settings"
+            case .modelFilterManager: "modelFilterManager"
+            case .folderEditor(let request): "folderEditor-\(request.id)"
+            case .folderDeleteConfirmation(let request): "folderDelete-\(request.id)"
             case .preview: "preview"
             case .error(let message): "error-\(message)"
             }
@@ -54,6 +93,7 @@ final class AppState: ObservableObject {
     }
     @Published var tags: [Tag] = []
     @Published var models: [ModelProfile] = SeedData.models
+    @Published var folders: [LibraryFolder] = []
     @Published var filter = PromptFilter() {
         didSet {
             if !isBatchingFilterUpdate {
@@ -67,6 +107,7 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     @Published var isListView = false
     @Published var isImporting = false
+    @Published var inspectorEditRequest: InspectorEditRequest?
 
     private var repository: PromptRepository?
     private var itemsByID: [String: PromptItem] = [:]
@@ -105,10 +146,12 @@ final class AppState: ObservableObject {
                 models: SeedData.models,
                 tags: SeedData.tags
             )
+            try repository.seedFoldersIfNeeded(SeedData.folders)
             try repository.repairSeedAssetPaths(from: seedItems)
             self.repository = repository
             let persistedModels = try repository.loadModelProfiles()
             self.models = SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels)
+            self.folders = try repository.loadFolders()
             self.items = try repository.loadItems()
             self.tags = try repository.loadTags()
             refreshFilteredItems(selecting: filteredItems.first?.id)
@@ -145,6 +188,39 @@ final class AppState: ObservableObject {
         if let id = selectedID {
             scheduleLastUsedUpdate(itemID: id)
         }
+    }
+
+    func requestInlineEdit(_ item: PromptItem) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            select(item)
+            inspectorEditRequest = InspectorEditRequest(itemID: item.id)
+        }
+    }
+
+    func openSelectedInDefaultApplication() {
+        guard let item = selectedItem else { return }
+        guard AppKitBridge.openDefaultApplication(path: item.assetPath) else {
+            showToast("源文件不存在")
+            return
+        }
+        showToast("已用默认应用打开")
+    }
+
+    func copySelectedFilePath() {
+        guard let item = selectedItem else { return }
+        AppKitBridge.copyToPasteboard(item.assetPath)
+        showToast("已复制文件路径")
+    }
+
+    func copySelectedFile() {
+        guard let item = selectedItem else { return }
+        guard AppKitBridge.copyFileToPasteboard(path: item.assetPath) else {
+            showToast("源文件不存在")
+            return
+        }
+        showToast("已复制文件")
     }
 
     func toggleFavorite(_ item: PromptItem) {
@@ -271,7 +347,7 @@ final class AppState: ObservableObject {
                 type: type,
                 modelId: model.id,
                 modelName: model.name,
-                folderName: type == .video ? "完整项目框架开发" : "PromptStudio",
+                folderName: defaultFolderName(for: type),
                 category: type.displayName,
                 assetPath: previewPath,
                 aspectRatio: Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
@@ -294,16 +370,21 @@ final class AppState: ObservableObject {
         }
     }
 
-    func importFiles(_ urls: [URL], targetFolderName: String? = nil) {
+    func importFiles(_ urls: [URL], targetFolderName: String? = nil, acceptedType: PromptType? = nil) {
         guard let repository else { return }
         isImporting = true
         defer { isImporting = false }
         do {
             var importedIDs: [String] = []
+            var skippedCount = 0
             var nextSortOrder = nextSortOrderForNewItem() - max(0, urls.count - 1)
             for url in urls {
                 let isVideo = ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
                 let type: PromptType = isVideo ? .video : .image
+                if let acceptedType, type != acceptedType {
+                    skippedCount += 1
+                    continue
+                }
                 let copied = try repository.copyAssetIntoLibrary(from: url, type: type)
                 let info = AppKitBridge.imageInfo(for: copied)
                 let id = UUID().uuidString
@@ -333,12 +414,16 @@ final class AppState: ObservableObject {
                 importedIDs.append(id)
                 selectedID = id
             }
+            guard !importedIDs.isEmpty else {
+                showToast(skippedCount > 0 ? "没有符合当前文件夹类型的素材" : "未导入素材")
+                return
+            }
             reload(selecting: selectedID)
             if let firstImportedID = importedIDs.first {
                 ensureImportedItemVisible(firstImportedID)
             }
             prepareMissingThumbnails()
-            showToast("导入完成")
+            showToast(skippedCount > 0 ? "导入完成，已跳过 \(skippedCount) 个不匹配文件" : "导入完成")
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -459,6 +544,241 @@ final class AppState: ObservableObject {
         save(item, toast: "已移动到 \(folderName)")
     }
 
+    func folderRows(for type: PromptType) -> [FolderRow] {
+        folders
+            .filter { $0.type == type }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            .map { folder in
+                FolderRow(
+                    folder: folder,
+                    count: items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }.count
+                )
+            }
+    }
+
+    func selectFolder(_ folder: LibraryFolder) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            setCollection(.folder(folder.name))
+        }
+    }
+
+    func beginCreateFolder(type: PromptType) {
+        modal = .folderEditor(
+            FolderEditorRequest(
+                mode: .create(type),
+                title: "新增文件夹",
+                initialName: "",
+                type: type
+            )
+        )
+    }
+
+    func beginRenameFolder(_ folder: LibraryFolder) {
+        guard let type = folder.type else { return }
+        selectFolder(folder)
+        modal = .folderEditor(
+            FolderEditorRequest(
+                mode: .rename(folder.id),
+                title: "重命名文件夹",
+                initialName: folder.name,
+                type: type
+            )
+        )
+    }
+
+    func beginDeleteFolder(_ folder: LibraryFolder) {
+        selectFolder(folder)
+        modal = .folderDeleteConfirmation(
+            FolderDeleteRequest(
+                folderID: folder.id,
+                folderName: folder.name,
+                itemCount: itemCount(in: folder)
+            )
+        )
+    }
+
+    @discardableResult
+    func submitFolderEditor(_ request: FolderEditorRequest, name: String) -> Bool {
+        switch request.mode {
+        case .create(let type):
+            return createFolder(type: type, name: name)
+        case .rename(let folderID):
+            return renameFolder(id: folderID, name: name)
+        }
+    }
+
+    @discardableResult
+    func createFolder(type: PromptType, name: String) -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            showToast("文件夹名称不能为空")
+            return false
+        }
+        guard !folders.contains(where: { $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast("已存在同名文件夹")
+            return false
+        }
+
+        let sortOrder = (folders.filter { $0.type == type }.map(\.sortOrder).max() ?? -1) + 1
+        let folder = LibraryFolder(
+            id: uniqueFolderID(type: type, name: trimmedName),
+            name: trimmedName,
+            type: type,
+            sortOrder: sortOrder
+        )
+        do {
+            try repository?.saveFolder(folder)
+            reload(selecting: selectedID)
+            selectFolder(folder)
+            showToast("已新增文件夹")
+            return true
+        } catch {
+            modal = .error(error.localizedDescription)
+            return false
+        }
+    }
+
+    @discardableResult
+    func renameFolder(id: String, name: String) -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            showToast("文件夹名称不能为空")
+            return false
+        }
+        guard let folder = folders.first(where: { $0.id == id }), let type = folder.type else { return false }
+        guard !folders.contains(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast("已存在同名文件夹")
+            return false
+        }
+
+        do {
+            try repository?.renameFolder(id: id, name: trimmedName)
+            var updatedItems = items
+            var selectedAfterRename = selectedID
+            for index in updatedItems.indices where updatedItems[index].type == type && updatedItems[index].folderName == folder.name {
+                updatedItems[index].folderName = trimmedName
+                updatedItems[index].updatedAt = Date()
+                try repository?.saveItem(updatedItems[index])
+                if selectedAfterRename == nil {
+                    selectedAfterRename = updatedItems[index].id
+                }
+            }
+            if case .folder(let activeFolder) = filter.collection, activeFolder == folder.name {
+                filter.collection = .folder(trimmedName)
+            }
+            reload(selecting: selectedAfterRename)
+            showToast("已重命名文件夹")
+            return true
+        } catch {
+            modal = .error(error.localizedDescription)
+            return false
+        }
+    }
+
+    func deleteFolderMovingItemsToTrash(id: String) {
+        guard let folder = folders.first(where: { $0.id == id }), let type = folder.type else { return }
+        do {
+            let deletedAt = Date()
+            for item in items where !item.isDeleted && item.type == type && item.folderName == folder.name {
+                try repository?.markDeleted(itemID: item.id, deletedAt: deletedAt)
+            }
+            try repository?.deleteFolder(id: id)
+            if case .folder(let activeFolder) = filter.collection, activeFolder == folder.name {
+                filter.collection = .all
+                filter.type = nil
+            }
+            reload()
+            showToast("文件夹已删除，素材已移入回收站")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    func importFiles(to folder: LibraryFolder) {
+        guard let type = folder.type else { return }
+        selectFolder(folder)
+        let urls = AppKitBridge.chooseImportFiles(acceptedType: type)
+        guard !urls.isEmpty else { return }
+        importFiles(urls, targetFolderName: folder.name, acceptedType: type)
+    }
+
+    func exportFolder(_ folderID: String) {
+        guard let folder = folders.first(where: { $0.id == folderID }), let type = folder.type else { return }
+        let folderItems = items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }
+        guard !folderItems.isEmpty else {
+            showToast("文件夹为空")
+            return
+        }
+        guard let directory = AppKitBridge.chooseExportDirectory() else { return }
+        let targetDirectory = directory.appendingPathComponent(safeExportFileName(folder.name), isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+            var exportedCount = 0
+            for item in folderItems {
+                let baseName = safeExportFileName(item.title)
+                let promptTarget = uniqueExportURL(in: targetDirectory, baseName: "\(baseName)-提示词", extension: "md")
+                try overwriteText(markdownPrompt(for: item), to: promptTarget)
+                exportedCount += 1
+
+                let source = URL(fileURLWithPath: item.assetPath)
+                if FileManager.default.fileExists(atPath: source.path) {
+                    let fileExtension = source.pathExtension.isEmpty ? item.format.lowercased() : source.pathExtension
+                    let assetTarget = uniqueExportURL(in: targetDirectory, baseName: baseName, extension: fileExtension)
+                    try FileManager.default.copyItem(at: source, to: assetTarget)
+                    exportedCount += 1
+                }
+            }
+            showToast("已导出 \(exportedCount) 个文件")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    private func itemCount(in folder: LibraryFolder) -> Int {
+        guard let type = folder.type else { return 0 }
+        return items.filter { !$0.isDeleted && $0.type == type && $0.folderName == folder.name }.count
+    }
+
+    func saveModelFilterLabel(id: String, name: String, type: PromptType) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            showToast("筛选标签名称不能为空")
+            return
+        }
+        guard var model = models.first(where: { $0.id == id }), model.id != "all" else { return }
+        let oldName = model.name
+        model.name = trimmedName
+        model.type = type
+        persist(model: model, replacingItemModelName: oldName == trimmedName ? nil : trimmedName)
+    }
+
+    func createModelFilterLabel(name: String, type: PromptType) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            showToast("筛选标签名称不能为空")
+            return
+        }
+        guard !models.contains(where: { $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame }) else {
+            showToast("已存在同名筛选标签")
+            return
+        }
+
+        let model = ModelProfile(
+            id: uniqueModelID(for: trimmedName),
+            name: trimmedName,
+            type: type,
+            parameters: type == .video ? ["duration", "camera", "motion"] : ["aspectRatio", "style", "seed"]
+        )
+        persist(model: model, replacingItemModelName: nil)
+    }
+
     func generateTextVariant() {
         guard var item = selectedItem, let current = item.currentVersion else { return }
         item.versions.append(
@@ -499,8 +819,72 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func persist(model: ModelProfile, replacingItemModelName newItemModelName: String?) {
+        do {
+            try repository?.saveModelProfile(model)
+            if let newItemModelName {
+                var updatedItems = items
+                var changed = false
+                for index in updatedItems.indices where updatedItems[index].modelId == model.id {
+                    updatedItems[index].modelName = newItemModelName
+                    updatedItems[index].updatedAt = Date()
+                    try repository?.saveItem(updatedItems[index])
+                    changed = true
+                }
+                if changed {
+                    items = updatedItems
+                }
+            }
+            let persistedModels = try repository?.loadModelProfiles() ?? models
+            models = SeedData.orderedModels(persistedModels)
+            refreshFilteredItems(selecting: selectedID)
+            showToast("筛选标签已保存")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    private func uniqueModelID(for name: String) -> String {
+        let base = name
+            .lowercased()
+            .unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) ? Character($0) : "_" }
+            .reduce(into: "") { $0.append($1) }
+            .split(separator: "_")
+            .joined(separator: "_")
+        let normalized = base.isEmpty ? "model" : base
+        var candidate = "custom_\(normalized)"
+        var index = 2
+        let existingIDs = Set(models.map(\.id))
+        while existingIDs.contains(candidate) {
+            candidate = "custom_\(normalized)_\(index)"
+            index += 1
+        }
+        return candidate
+    }
+
+    private func uniqueFolderID(type: PromptType, name: String) -> String {
+        let base = name
+            .lowercased()
+            .unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) ? Character($0) : "_" }
+            .reduce(into: "") { $0.append($1) }
+            .split(separator: "_")
+            .joined(separator: "_")
+        let normalized = base.isEmpty ? "folder" : base
+        var candidate = "\(type.rawValue)_\(normalized)"
+        var index = 2
+        let existingIDs = Set(folders.map(\.id))
+        while existingIDs.contains(candidate) {
+            candidate = "\(type.rawValue)_\(normalized)_\(index)"
+            index += 1
+        }
+        return candidate
+    }
+
     private func reload(selecting id: String? = nil) {
         do {
+            folders = try repository?.loadFolders() ?? []
             items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
             refreshFilteredItems(selecting: id)
@@ -635,6 +1019,17 @@ final class AppState: ObservableObject {
         try AppKitBridge.writeImage(from: source, to: target, format: format)
     }
 
+    private func uniqueExportURL(in directory: URL, baseName: String, extension fileExtension: String) -> URL {
+        let cleanExtension = fileExtension.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        var candidate = directory.appendingPathComponent(baseName).appendingPathExtension(cleanExtension)
+        var index = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(baseName)-\(index)").appendingPathExtension(cleanExtension)
+            index += 1
+        }
+        return candidate
+    }
+
     private func safeExportFileName(_ name: String) -> String {
         let invalidCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
             .union(.newlines)
@@ -666,7 +1061,13 @@ final class AppState: ObservableObject {
         if case .folder(let folderName) = filter.collection {
             return folderName
         }
-        return type == .video ? "完整项目框架开发" : "PromptStudio"
+        return defaultFolderName(for: type)
+    }
+
+    private func defaultFolderName(for type: PromptType) -> String {
+        folders.first(where: { $0.type == type })?.name
+            ?? SeedData.folders.first(where: { $0.type == type })?.name
+            ?? "PromptStudio"
     }
 
     private func ensureImportedItemVisible(_ itemID: String) {
