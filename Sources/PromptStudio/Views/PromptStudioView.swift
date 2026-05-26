@@ -354,7 +354,9 @@ private struct SidebarView: View {
         .background {
             ZStack {
                 SidebarGlassBackground()
+                    .ignoresSafeArea(.container, edges: .top)
                 StudioColor.sidebar.opacity(0.34)
+                    .ignoresSafeArea(.container, edges: .top)
             }
         }
     }
