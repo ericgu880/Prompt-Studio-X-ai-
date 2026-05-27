@@ -31,13 +31,13 @@ enum AppKitBridge {
         panel.allowsMultipleSelection = true
         switch acceptedType {
         case .image:
-            panel.allowedContentTypes = [.png, .jpeg, .webP, .gif]
+            panel.allowedContentTypes = [.image]
         case .video:
-            panel.allowedContentTypes = [.movie]
+            panel.allowedContentTypes = [.movie, .video]
         case .text:
-            panel.allowedContentTypes = [.text, .json, .commaSeparatedText]
+            panel.allowedContentTypes = [.text, .json, .commaSeparatedText, .plainText, .utf8PlainText]
         case nil:
-            panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .movie, .text, .json, .commaSeparatedText]
+            panel.allowedContentTypes = [.item]
         }
         return panel.runModal() == .OK ? panel.urls : []
     }
@@ -102,21 +102,51 @@ enum AppKitBridge {
     }
 
     @MainActor
+    static func isTextInputActive() -> Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        if responder is NSTextView || responder is NSTextField {
+            return true
+        }
+        return String(describing: type(of: responder)).contains("Text")
+    }
+
+    @MainActor
     static func zoomKeyWindow() {
         NSApp.keyWindow?.zoom(nil)
     }
 
     static func imageInfo(for url: URL) -> (width: Int, height: Int, fileSize: Int64, format: String) {
+        fileInfo(for: url, assetKind: assetKind(for: url))
+    }
+
+    static func fileInfo(for url: URL, assetKind: AssetKind) -> (width: Int, height: Int, fileSize: Int64, format: String) {
         let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
         let fileSize = attributes[.size] as? Int64 ?? 0
         let format = url.pathExtension.uppercased()
-        if let videoSize = videoSize(for: url) {
+        if assetKind == .video, let videoSize = videoSize(for: url) {
             return (videoSize.width, videoSize.height, fileSize, format.isEmpty ? "MOV" : format)
         }
-        if let image = NSImage(contentsOf: url), let representation = image.representations.first {
+        if assetKind == .image, let image = NSImage(contentsOf: url), let representation = image.representations.first {
             return (representation.pixelsWide, representation.pixelsHigh, fileSize, format)
         }
-        return (1920, 1080, fileSize, format.isEmpty ? "PNG" : format)
+        return (0, 0, fileSize, format.isEmpty ? "FILE" : format)
+    }
+
+    static func assetKind(for url: URL) -> AssetKind {
+        let ext = url.pathExtension.lowercased()
+        if let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
+            if contentType.conforms(to: .image) { return .image }
+            if contentType.conforms(to: .movie) || contentType.conforms(to: .video) { return .video }
+            if contentType.conforms(to: .audio) { return .audio }
+            if contentType.conforms(to: .json) { return .json }
+            if contentType.conforms(to: .text) {
+                return AssetKind.infer(fileExtension: ext) == .markdown ? .markdown : .text
+            }
+            if contentType.conforms(to: .pdf) {
+                return .document
+            }
+        }
+        return AssetKind.infer(fileExtension: ext)
     }
 
     private static func videoSize(for url: URL) -> (width: Int, height: Int)? {

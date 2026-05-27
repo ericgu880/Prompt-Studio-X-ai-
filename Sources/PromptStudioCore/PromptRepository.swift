@@ -36,6 +36,9 @@ public final class PromptRepository: @unchecked Sendable {
             url,
             url.appendingPathComponent("assets/images"),
             url.appendingPathComponent("assets/videos"),
+            url.appendingPathComponent("assets/audio"),
+            url.appendingPathComponent("assets/documents"),
+            url.appendingPathComponent("assets/data"),
             url.appendingPathComponent("assets/references"),
             url.appendingPathComponent("thumbnails"),
             url.appendingPathComponent("database"),
@@ -54,6 +57,7 @@ public final class PromptRepository: @unchecked Sendable {
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 type TEXT NOT NULL,
+                assetKind TEXT NOT NULL DEFAULT 'image',
                 modelId TEXT NOT NULL,
                 modelName TEXT NOT NULL,
                 folderId TEXT NOT NULL DEFAULT '',
@@ -127,6 +131,7 @@ public final class PromptRepository: @unchecked Sendable {
                 id: id,
                 title: required(row, "title"),
                 type: PromptType(rawValue: required(row, "type")) ?? .image,
+                assetKind: AssetKind(rawValue: required(row, "assetKind")) ?? .unknown,
                 modelId: required(row, "modelId"),
                 modelName: required(row, "modelName"),
                 folderId: required(row, "folderId"),
@@ -198,15 +203,16 @@ public final class PromptRepository: @unchecked Sendable {
         try database.run(
             """
             INSERT OR REPLACE INTO prompt_items (
-                id, title, type, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
+                id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
                 lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             values: [
                 .text(item.id),
                 .text(item.title),
                 .text(item.type.rawValue),
+                .text(item.assetKind.rawValue),
                 .text(item.modelId),
                 .text(item.modelName),
                 .text(item.folderId),
@@ -247,10 +253,12 @@ public final class PromptRepository: @unchecked Sendable {
                 .text(itemID)
             ]
         )
+        try refreshTags(from: try loadItems())
     }
 
     public func permanentlyDelete(itemID: String) throws {
         try database.run("DELETE FROM prompt_items WHERE id = ?;", values: [.text(itemID)])
+        try refreshTags(from: try loadItems())
     }
 
     public func updateLastUsed(itemID: String, at date: Date = Date()) throws {
@@ -277,7 +285,24 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func copyAssetIntoLibrary(from sourceURL: URL, type: PromptType) throws -> URL {
-        let directory = libraryURL.appendingPathComponent(type == .video ? "assets/videos" : "assets/images")
+        try copyAssetIntoLibrary(from: sourceURL, assetKind: type == .video ? .video : .image)
+    }
+
+    public func copyAssetIntoLibrary(from sourceURL: URL, assetKind: AssetKind) throws -> URL {
+        let directoryName: String
+        switch assetKind {
+        case .image:
+            directoryName = "assets/images"
+        case .video:
+            directoryName = "assets/videos"
+        case .audio:
+            directoryName = "assets/audio"
+        case .document, .markdown:
+            directoryName = "assets/documents"
+        case .json, .text, .data, .unknown:
+            directoryName = "assets/data"
+        }
+        let directory = libraryURL.appendingPathComponent(directoryName)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(UUID().uuidString + "-" + sourceURL.lastPathComponent)
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -432,6 +457,21 @@ public final class PromptRepository: @unchecked Sendable {
         if !columnNames.contains("folderId") {
             try database.execute("ALTER TABLE prompt_items ADD COLUMN folderId TEXT NOT NULL DEFAULT '';")
         }
+        if !columnNames.contains("assetKind") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN assetKind TEXT NOT NULL DEFAULT 'image';")
+            let rows = try database.query("SELECT id, assetPath, type FROM prompt_items;")
+            for row in rows {
+                let id = required(row, "id")
+                let path = required(row, "assetPath")
+                let ext = URL(fileURLWithPath: path).pathExtension
+                let promptType = PromptType(rawValue: required(row, "type"))
+                let assetKind = AssetKind.infer(fileExtension: ext, fallbackType: promptType)
+                try database.run(
+                    "UPDATE prompt_items SET assetKind = ? WHERE id = ?;",
+                    values: [.text(assetKind.rawValue), .text(id)]
+                )
+            }
+        }
     }
 
     private func refreshTags(from items: [PromptItem]) throws {
@@ -446,6 +486,11 @@ public final class PromptRepository: @unchecked Sendable {
                 "INSERT INTO tags (id, name, color, count) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET count = excluded.count;",
                 values: [.text(UUID().uuidString), .text(name), .text("#3B82F6"), .int(Int64(count))]
             )
+        }
+        let existingRows = try database.query("SELECT name FROM tags;")
+        let existingNames = existingRows.map { required($0, "name") }
+        for name in existingNames where counts[name] == nil {
+            try database.run("DELETE FROM tags WHERE name = ?;", values: [.text(name)])
         }
     }
 

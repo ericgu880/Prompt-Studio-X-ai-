@@ -17,11 +17,19 @@ struct PromptStudioView: View {
             GeometryReader { proxy in
                 let layout = constrainedLayout(totalWidth: proxy.size.width)
 
-                HStack(spacing: 0) {
-                    SidebarView()
-                        .frame(width: layout.sidebar)
+                ZStack(alignment: .topLeading) {
+                    HStack(spacing: 0) {
+                        SidebarView()
+                            .frame(width: layout.sidebar)
 
-                    ResizeHandle {
+                        MainContentView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        InspectorView()
+                            .frame(width: layout.inspector)
+                    }
+
+                    SplitResizeHotZone {
                         sidebarDragStartWidth = nil
                     } onDragChanged: { translation in
                         if sidebarDragStartWidth == nil {
@@ -32,11 +40,11 @@ struct PromptStudioView: View {
                             totalWidth: proxy.size.width
                         )
                     }
+                    .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
+                    .position(x: layout.sidebar, y: proxy.size.height / 2)
+                    .ignoresSafeArea(.container, edges: .vertical)
 
-                    MainContentView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    ResizeHandle {
+                    SplitResizeHotZone {
                         inspectorDragStartWidth = nil
                     } onDragChanged: { translation in
                         if inspectorDragStartWidth == nil {
@@ -47,9 +55,9 @@ struct PromptStudioView: View {
                             totalWidth: proxy.size.width
                         )
                     }
-
-                    InspectorView()
-                        .frame(width: layout.inspector)
+                    .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
+                    .position(x: proxy.size.width - layout.inspector, y: proxy.size.height / 2)
+                    .ignoresSafeArea(.container, edges: .vertical)
                 }
             }
             .background(StudioColor.appBackground)
@@ -127,6 +135,8 @@ struct PromptStudioView: View {
     private static let inspectorMinWidth: CGFloat = 292
     private static let inspectorMaxWidth: CGFloat = 480
     private static let mainMinWidth: CGFloat = 560
+    private static let resizeHotZoneWidth: CGFloat = 16
+    private static let resizeHotZoneVerticalBleed: CGFloat = 80
 
     @ViewBuilder
     private func sheet(for modal: AppState.Modal) -> some View {
@@ -181,37 +191,61 @@ struct PromptStudioView: View {
     }
 }
 
-private struct ResizeHandle: View {
+private struct SplitResizeHotZone: View {
     let onDragEnded: () -> Void
     let onDragChanged: (CGFloat) -> Void
     @State private var isHovered = false
     @State private var isDragging = false
+    @State private var cursorIsPushed = false
 
     var body: some View {
         let active = isHovered || isDragging
-        Rectangle()
-            .fill(active ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline)
-            .frame(width: 1)
+        ZStack {
+            Color.clear
+
+            Rectangle()
+                .fill(active ? StudioColor.text.opacity(isDragging ? 0.16 : 0.11) : StudioColor.hairline.opacity(0.22))
+                .frame(width: 1)
+        }
             .contentShape(Rectangle())
             .onHover { hovering in
                 isHovered = hovering
                 if hovering {
-                    NSCursor.resizeLeftRight.push()
+                    pushResizeCursorIfNeeded()
                 } else {
-                    NSCursor.pop()
+                    popResizeCursorIfNeeded()
                 }
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         isDragging = true
+                        pushResizeCursorIfNeeded()
                         onDragChanged(value.translation.width)
                     }
                     .onEnded { _ in
                         isDragging = false
+                        if !isHovered {
+                            popResizeCursorIfNeeded()
+                        }
                         onDragEnded()
                     }
             )
+            .onDisappear {
+                popResizeCursorIfNeeded()
+            }
+    }
+
+    private func pushResizeCursorIfNeeded() {
+        guard !cursorIsPushed else { return }
+        NSCursor.resizeLeftRight.push()
+        cursorIsPushed = true
+    }
+
+    private func popResizeCursorIfNeeded() {
+        guard cursorIsPushed else { return }
+        NSCursor.pop()
+        cursorIsPushed = false
     }
 }
 
@@ -769,7 +803,7 @@ private struct RecentRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ThumbnailImage(path: item.thumbnailPath)
+            AssetMediaView(item: item)
                 .frame(width: 22, height: 22)
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             Text(item.title)
@@ -1095,7 +1129,7 @@ private struct AssetCardView: View {
         let contentWidth = AssetCardMetrics.contentWidth(for: width)
         let contentHeight = AssetCardMetrics.contentHeight(for: item, width: contentWidth)
         ZStack(alignment: .topLeading) {
-            ThumbnailImage(path: item.thumbnailPath)
+            AssetMediaView(item: item)
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
@@ -1112,7 +1146,7 @@ private struct AssetCardView: View {
                 .frame(height: gradientHeight(for: contentHeight))
             }
 
-            Text(item.format)
+            Text(assetBadgeText)
                 .font(StudioFont.caption(11))
                 .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 9)
@@ -1374,7 +1408,7 @@ private struct AssetCardView: View {
     }
 
     private var dragPreview: some View {
-        ThumbnailImage(path: item.thumbnailPath)
+        AssetMediaView(item: item)
             .frame(width: 120, height: 90)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous))
@@ -1397,6 +1431,10 @@ private struct AssetCardView: View {
         let selectedHeight = min(210, max(132, cardHeight * 0.54))
         let normalHeight = min(128, max(86, cardHeight * 0.36))
         return isSelected ? selectedHeight : normalHeight
+    }
+
+    private var assetBadgeText: String {
+        item.format.isEmpty ? item.assetKind.displayName.uppercased() : item.format.uppercased()
     }
 }
 
@@ -1430,7 +1468,7 @@ private struct PromptListView: View {
             LazyVStack(spacing: 8) {
                 ForEach(items) { item in
                     HStack(spacing: 12) {
-                        ThumbnailImage(path: item.thumbnailPath)
+                        AssetMediaView(item: item)
                             .frame(width: 66, height: 52)
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
@@ -1472,7 +1510,7 @@ private struct EmptyStateView: View {
                 .foregroundStyle(StudioColor.secondaryText)
             Text("没有找到素材")
                 .font(StudioFont.font(24))
-            Text("调整搜索或导入图片、视频、Prompt 文本。")
+            Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
                 .foregroundStyle(StudioColor.secondaryText)
             Button("导入素材") {
                 state.modal = .importAssets
@@ -1481,6 +1519,59 @@ private struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(StudioColor.text)
+    }
+}
+
+struct AssetMediaView: View {
+    let item: PromptItem
+
+    var body: some View {
+        if item.assetKind.supportsGeneratedThumbnail {
+            ThumbnailImage(path: item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath)
+        } else {
+            FileKindPlaceholder(assetKind: item.assetKind, format: item.format)
+        }
+    }
+}
+
+private struct FileKindPlaceholder: View {
+    let assetKind: AssetKind
+    let format: String
+
+    var body: some View {
+        ZStack {
+            StudioColor.panelRaised
+            VStack(spacing: 10) {
+                Image(systemName: symbolName)
+                    .font(StudioFont.symbol(30))
+                    .foregroundStyle(StudioColor.text)
+                Text(format.isEmpty ? assetKind.displayName.uppercased() : format.uppercased())
+                    .font(StudioFont.caption(11))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var symbolName: String {
+        switch assetKind {
+        case .image:
+            "photo"
+        case .video:
+            "film"
+        case .audio:
+            "waveform"
+        case .markdown:
+            "text.alignleft"
+        case .json, .data:
+            "curlybraces"
+        case .document:
+            "doc.richtext"
+        case .text:
+            "doc.text"
+        case .unknown:
+            "doc"
+        }
     }
 }
 

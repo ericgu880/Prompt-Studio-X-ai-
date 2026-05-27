@@ -30,6 +30,7 @@ enum ThumbnailService {
     @discardableResult
     static func generateThumbnail(for item: PromptItem, libraryURL: URL) throws -> String? {
         guard FileManager.default.fileExists(atPath: item.assetPath) else { return nil }
+        guard item.assetKind.supportsGeneratedThumbnail else { return nil }
 
         let sourceURL = URL(fileURLWithPath: item.assetPath)
         let destinationURL = thumbnailURL(itemID: item.id, libraryURL: libraryURL)
@@ -42,7 +43,7 @@ enum ThumbnailService {
             return destinationURL.path
         }
 
-        if item.type == .video {
+        if item.assetKind == .video {
             return try generateVideoThumbnail(from: sourceURL, to: destinationURL)
         }
 

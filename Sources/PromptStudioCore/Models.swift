@@ -1,5 +1,89 @@
 import Foundation
 
+public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case image
+    case video
+    case audio
+    case markdown
+    case json
+    case document
+    case text
+    case data
+    case unknown
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .image:
+            "图片"
+        case .video:
+            "视频"
+        case .audio:
+            "音频"
+        case .markdown:
+            "Markdown"
+        case .json:
+            "JSON"
+        case .document:
+            "文档"
+        case .text:
+            "文本"
+        case .data:
+            "数据"
+        case .unknown:
+            "文件"
+        }
+    }
+
+    public var promptType: PromptType {
+        switch self {
+        case .video:
+            .video
+        case .image:
+            .image
+        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+            .text
+        }
+    }
+
+    public var supportsGeneratedThumbnail: Bool {
+        self == .image || self == .video
+    }
+
+    public static func infer(fileExtension: String, fallbackType: PromptType? = nil) -> AssetKind {
+        let ext = fileExtension.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tif", "tiff", "bmp", "avif"].contains(ext) {
+            return .image
+        }
+        if ["mp4", "mov", "m4v", "webm", "avi", "mkv", "hevc"].contains(ext) {
+            return .video
+        }
+        if ["mp3", "m4a", "wav", "aac", "aiff", "aif", "flac", "ogg", "opus"].contains(ext) {
+            return .audio
+        }
+        if ["md", "markdown", "mdown"].contains(ext) {
+            return .markdown
+        }
+        if ext == "json" {
+            return .json
+        }
+        if ["txt", "csv", "tsv", "rtf", "log"].contains(ext) {
+            return .text
+        }
+        if ["pdf", "doc", "docx", "pages", "xls", "xlsx", "numbers", "ppt", "pptx", "key"].contains(ext) {
+            return .document
+        }
+        if ["xml", "plist", "yaml", "yml", "toml"].contains(ext) {
+            return .data
+        }
+        if ext.isEmpty, let fallbackType {
+            return fallbackType == .video ? .video : fallbackType == .image ? .image : .text
+        }
+        return .unknown
+    }
+}
+
 public enum PromptType: String, Codable, CaseIterable, Identifiable, Sendable {
     case image
     case video
@@ -65,6 +149,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
     public var type: PromptType
+    public var assetKind: AssetKind
     public var modelId: String
     public var modelName: String
     public var folderId: String
@@ -92,6 +177,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         id: String = UUID().uuidString,
         title: String,
         type: PromptType,
+        assetKind: AssetKind? = nil,
         modelId: String,
         modelName: String,
         folderId: String = "",
@@ -118,6 +204,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.id = id
         self.title = title
         self.type = type
+        self.assetKind = assetKind ?? (type == .video ? .video : .image)
         self.modelId = modelId
         self.modelName = modelName
         self.folderId = folderId

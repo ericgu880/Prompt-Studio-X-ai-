@@ -135,11 +135,7 @@ final class AppState: ObservableObject {
         selectedID.flatMap { itemsByID[$0] }
     }
 
-    var masonryLayoutItems: [PromptItem] {
-        var layoutFilter = filter
-        layoutFilter.modelId = nil
-        return PromptFiltering.apply(items, filter: layoutFilter)
-    }
+    var masonryLayoutItems: [PromptItem] { filteredItems }
 
     var trashCount: Int {
         items.filter(\.isDeleted).count
@@ -352,13 +348,15 @@ final class AppState: ObservableObject {
                 )
             }
             let previewPath = selectedItem?.assetPath ?? copiedReferences.first?.copied.path ?? ""
+            let assetKind: AssetKind = previewPath.isEmpty ? .text : .image
             let previewInfo = previewPath.isEmpty
-                ? (width: 1920, height: 1080, fileSize: Int64(0), format: "PNG")
-                : AppKitBridge.imageInfo(for: URL(fileURLWithPath: previewPath))
+                ? (width: 0, height: 0, fileSize: Int64(0), format: "PROMPT")
+                : AppKitBridge.fileInfo(for: URL(fileURLWithPath: previewPath), assetKind: assetKind)
             let item = PromptItem(
                 id: id,
                 title: title,
                 type: type,
+                assetKind: assetKind,
                 modelId: model.id,
                 modelName: model.name,
                 folderId: defaultFolder().id,
@@ -390,29 +388,33 @@ final class AppState: ObservableObject {
         isImporting = true
         defer { isImporting = false }
         do {
+            let sourceFiles = expandedImportURLs(urls)
             var importedIDs: [String] = []
             var skippedCount = 0
-            var nextSortOrder = nextSortOrderForNewItem() - max(0, urls.count - 1)
+            var nextSortOrder = nextSortOrderForNewItem() - max(0, sourceFiles.count - 1)
             let targetFolder = targetFolderID.flatMap(folder(withID:)) ?? currentImportFolder()
-            for url in urls {
-                let isVideo = ["mp4", "mov", "webm"].contains(url.pathExtension.lowercased())
-                let type: PromptType = isVideo ? .video : .image
-                if let acceptedType, type != acceptedType {
+            for url in sourceFiles {
+                let assetKind = AppKitBridge.assetKind(for: url)
+                let type = assetKind.promptType
+                if let acceptedType, !Self.assetKind(assetKind, matches: acceptedType) {
                     skippedCount += 1
                     continue
                 }
-                let copied = try repository.copyAssetIntoLibrary(from: url, type: type)
-                let info = AppKitBridge.imageInfo(for: copied)
+                let copied = try repository.copyAssetIntoLibrary(from: url, assetKind: assetKind)
+                let info = AppKitBridge.fileInfo(for: copied, assetKind: assetKind)
+                let parsed = parsedPromptMetadata(for: copied, assetKind: assetKind)
+                let model = defaultModel(for: assetKind)
                 let id = UUID().uuidString
                 let item = PromptItem(
                     id: id,
                     title: url.deletingPathExtension().lastPathComponent,
                     type: type,
-                    modelId: type == .video ? "seedance_2" : "nano_banana_2",
-                    modelName: type == .video ? "Seedance 2.0" : "Nano Banana 2",
+                    assetKind: assetKind,
+                    modelId: model.id,
+                    modelName: model.name,
                     folderId: targetFolder.id,
                     folderName: targetFolder.name,
-                    category: type.displayName,
+                    category: assetKind.displayName,
                     assetPath: copied.path,
                     aspectRatio: Self.normalizedAspectRatio(width: info.width, height: info.height),
                     width: info.width,
@@ -420,23 +422,29 @@ final class AppState: ObservableObject {
                     format: info.format,
                     fileSize: info.fileSize,
                     sortOrder: nextSortOrder,
-                    tags: ["待整理"],
+                    tags: parsed.tags,
                     versions: [
-                        PromptVersion(promptItemId: id, version: "V1.0", prompt: "", note: "导入后待完善")
+                        PromptVersion(
+                            promptItemId: id,
+                            version: "V1.0",
+                            prompt: parsed.prompt,
+                            negativePrompt: parsed.negativePrompt,
+                            parameters: parsed.parameters,
+                            note: parsed.prompt.isEmpty ? "导入后待完善" : "导入时自动识别"
+                        )
                     ],
-                    description: "从 Finder 导入"
+                    description: "从 Finder 导入 · \(assetKind.displayName)"
                 )
                 nextSortOrder += 1
                 try repository.saveItem(item)
                 importedIDs.append(id)
-                selectedID = id
             }
             guard !importedIDs.isEmpty else {
                 showToast(skippedCount > 0 ? "没有符合当前文件夹类型的素材" : "未导入素材")
                 return
             }
-            reload(selecting: selectedID)
             if let firstImportedID = importedIDs.first {
+                reload(selecting: firstImportedID)
                 ensureImportedItemVisible(firstImportedID)
             }
             prepareMissingThumbnails()
@@ -458,25 +466,31 @@ final class AppState: ObservableObject {
             var exportedCount = 0
 
             if options.promptMarkdown {
-                let promptTarget = directory.appendingPathComponent("\(baseName)-提示词.md")
+                let promptTarget = uniqueExportURL(in: directory, baseName: "\(baseName)-提示词", extension: "md")
                 try overwriteText(markdownPrompt(for: item), to: promptTarget)
                 exportedCount += 1
             }
 
             if options.pngImage {
+                guard item.assetKind == .image else {
+                    throw CocoaError(.fileReadUnsupportedScheme)
+                }
                 guard FileManager.default.fileExists(atPath: source.path) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
-                let target = directory.appendingPathComponent("\(baseName).png")
+                let target = uniqueExportURL(in: directory, baseName: baseName, extension: "png")
                 try overwriteImage(from: source, to: target, format: .png)
                 exportedCount += 1
             }
 
             if options.jpegImage {
+                guard item.assetKind == .image else {
+                    throw CocoaError(.fileReadUnsupportedScheme)
+                }
                 guard FileManager.default.fileExists(atPath: source.path) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
-                let target = directory.appendingPathComponent("\(baseName).jpg")
+                let target = uniqueExportURL(in: directory, baseName: baseName, extension: "jpg")
                 try overwriteImage(from: source, to: target, format: .jpeg)
                 exportedCount += 1
             }
@@ -513,18 +527,27 @@ final class AppState: ObservableObject {
 
     func moveFilteredItem(draggedID: String, before targetID: String) {
         guard draggedID != targetID else { return }
-        guard let fromIndex = filteredItems.firstIndex(where: { $0.id == draggedID }),
-              let toIndex = filteredItems.firstIndex(where: { $0.id == targetID }) else {
+        guard filteredItems.contains(where: { $0.id == draggedID }),
+              filteredItems.contains(where: { $0.id == targetID }) else {
             return
         }
 
-        var reorderedFiltered = filteredItems
-        let moved = reorderedFiltered.remove(at: fromIndex)
-        let adjustedTargetIndex = fromIndex < toIndex ? max(0, toIndex - 1) : toIndex
-        reorderedFiltered.insert(moved, at: adjustedTargetIndex)
+        var reorderedAll = items.sorted {
+            if $0.sortOrder == $1.sortOrder {
+                return $0.createdAt > $1.createdAt
+            }
+            return $0.sortOrder < $1.sortOrder
+        }
+        guard let fromIndex = reorderedAll.firstIndex(where: { $0.id == draggedID }),
+              let targetIndex = reorderedAll.firstIndex(where: { $0.id == targetID }) else {
+            return
+        }
+        let moved = reorderedAll.remove(at: fromIndex)
+        let adjustedTargetIndex = fromIndex < targetIndex ? max(0, targetIndex - 1) : targetIndex
+        reorderedAll.insert(moved, at: adjustedTargetIndex)
 
         do {
-            let orders = reorderedFiltered.enumerated().map { index, item in
+            let orders = reorderedAll.enumerated().map { index, item in
                 (id: item.id, sortOrder: index)
             }
             try repository?.updateSortOrders(orders)
@@ -554,7 +577,7 @@ final class AppState: ObservableObject {
 
         item.folderId = folder.id
         item.folderName = folder.name
-        item.category = item.type.displayName
+        item.category = item.assetKind.displayName
         item.updatedAt = Date()
         save(item, toast: "已移动到 \(folder.name)")
     }
@@ -1037,6 +1060,75 @@ final class AppState: ObservableObject {
         return ids
     }
 
+    private static func assetKind(_ assetKind: AssetKind, matches promptType: PromptType) -> Bool {
+        switch promptType {
+        case .image:
+            assetKind == .image
+        case .video:
+            assetKind == .video
+        case .text:
+            assetKind != .image && assetKind != .video
+        }
+    }
+
+    private func defaultModel(for assetKind: AssetKind) -> (id: String, name: String) {
+        switch assetKind {
+        case .video:
+            ("seedance_2", "Seedance 2.0")
+        case .image:
+            ("nano_banana_2", "Nano Banana 2")
+        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+            ("local_asset", "Local Asset")
+        }
+    }
+
+    private func parsedPromptMetadata(for fileURL: URL, assetKind: AssetKind) -> ParsedPromptMetadata {
+        guard [.markdown, .json, .text, .data].contains(assetKind),
+              let text = readTextFile(fileURL) else {
+            return ParsedPromptMetadata()
+        }
+        return PromptImportParser.parse(text: text, assetKind: assetKind)
+    }
+
+    private func readTextFile(_ url: URL) -> String? {
+        let maxBytes = 2 * 1024 * 1024
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count <= maxBytes else {
+            return nil
+        }
+        if let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        if let text = String(data: data, encoding: .utf16) {
+            return text
+        }
+        return String(data: data, encoding: .isoLatin1)
+    }
+
+    private func expandedImportURLs(_ urls: [URL]) -> [URL] {
+        var files: [URL] = []
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                if let enumerator = FileManager.default.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: [.isRegularFileKey, .isHiddenKey],
+                    options: [.skipsHiddenFiles]
+                ) {
+                    for case let fileURL as URL in enumerator {
+                        let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .isHiddenKey])
+                        if values?.isRegularFile == true, values?.isHidden != true {
+                            files.append(fileURL)
+                        }
+                    }
+                }
+            } else {
+                files.append(url)
+            }
+        }
+        return files
+    }
+
     private func reload(selecting id: String? = nil) {
         do {
             folders = try repository?.loadFolders() ?? []
@@ -1046,6 +1138,19 @@ final class AppState: ObservableObject {
         } catch {
             modal = .error(error.localizedDescription)
         }
+    }
+
+    private func filteredItems(for filter: PromptFilter) -> [PromptItem] {
+        guard case .folder(let folderID) = filter.collection else {
+            return PromptFiltering.apply(items, filter: filter)
+        }
+        let folderIDs = descendantFolderIDs(of: folderID, includingSelf: true)
+        var adjustedFilter = filter
+        adjustedFilter.collection = .all
+        return PromptFiltering.apply(
+            items.filter { folderIDs.contains($0.folderId) },
+            filter: adjustedFilter
+        )
     }
 
     private func rebuildItemLookup() {
@@ -1060,7 +1165,7 @@ final class AppState: ObservableObject {
     }
 
     private func refreshFilteredItems(selecting requestedID: String? = nil, preserveExistingSelection: Bool = true) {
-        let nextFilteredItems = PromptFiltering.apply(items, filter: filter)
+        let nextFilteredItems = filteredItems(for: filter)
         filteredItems = nextFilteredItems
 
         if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
@@ -1094,6 +1199,7 @@ final class AppState: ObservableObject {
         let libraryURL = libraryURL
         var candidates: [PromptItem] = []
         for item in items {
+            guard item.assetKind.supportsGeneratedThumbnail else { continue }
             if ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) != nil {
                 continue
             }

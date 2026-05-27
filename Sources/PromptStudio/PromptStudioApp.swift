@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -29,13 +30,21 @@ struct PromptStudioApp: App {
             }
 
             CommandGroup(after: .pasteboard) {
-                Button("复制提示词") { appState.copySelectedPrompt() }
+                Button("复制提示词") {
+                    if AppKitBridge.isTextInputActive() {
+                        NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+                    } else {
+                        appState.copySelectedPrompt()
+                    }
+                }
                     .keyboardShortcut("c", modifiers: .command)
                 Button("编辑 Prompt") { appState.modal = .editPrompt }
                     .keyboardShortcut("e", modifiers: .command)
             }
 
             CommandGroup(after: .sidebar) {
+                Button("高级筛选") { appState.modal = .filters }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
                 Button("网格视图") { appState.isListView = false }
                     .keyboardShortcut("1", modifiers: .command)
                 Button("列表视图") { appState.isListView = true }

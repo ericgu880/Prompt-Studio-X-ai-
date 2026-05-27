@@ -22,6 +22,7 @@ enum SmokeTestError: Error, LocalizedError {
 func sampleItem(
     title: String,
     modelId: String = "nano_banana_2",
+    assetKind: AssetKind = .image,
     tags: [String] = ["风景"],
     prompt: String,
     aspectRatio: String = "16:9",
@@ -33,12 +34,13 @@ func sampleItem(
     return PromptItem(
         id: id,
         title: title,
-        type: .image,
+        type: assetKind.promptType,
+        assetKind: assetKind,
         modelId: modelId,
         modelName: modelId,
         folderId: "folder-promptstudio",
         folderName: "PromptStudio",
-        category: "图片 Prompt",
+        category: assetKind.displayName,
         assetPath: assetPath,
         aspectRatio: aspectRatio,
         width: width,
@@ -83,12 +85,13 @@ func testFolderFilteringUsesStableFolderID() throws {
 
 func testSQLiteRoundTrip() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
-    let item = sampleItem(title: "版本测试", prompt: "initial prompt")
+    let item = sampleItem(title: "版本测试", assetKind: .markdown, prompt: "initial prompt", width: 0, height: 0, assetPath: "/tmp/mock.md")
 
     try repository.saveItem(item)
     var loaded = try repository.loadItems()
     try expect(loaded.count == 1, "repository should load one saved item")
     try expect(loaded[0].versions.first?.prompt == "initial prompt", "initial version should persist")
+    try expect(loaded[0].assetKind == .markdown, "assetKind should persist")
     try expect(loaded[0].folderId == "folder-promptstudio", "folderId should persist")
 
     loaded[0].versions.append(
@@ -99,6 +102,29 @@ func testSQLiteRoundTrip() throws {
     let reloaded = try repository.loadItems()
     try expect(reloaded[0].versions.count == 2, "new version should persist")
     try expect(reloaded[0].currentVersion?.prompt == "updated prompt", "current version should be latest")
+}
+
+func testAssetKindInferenceAndPromptParsing() throws {
+    try expect(AssetKind.infer(fileExtension: "mp3") == .audio, "mp3 should import as audio")
+    try expect(AssetKind.infer(fileExtension: "pdf") == .document, "pdf should import as document")
+    let parsed = PromptImportParser.parse(
+        text: "Prompt: forest portrait --no watermark --ar 3:4\nTags: 风景, 人物\n#写实",
+        assetKind: .text
+    )
+    try expect(parsed.prompt == "forest portrait", "parser should remove Midjourney parameters from prompt")
+    try expect(parsed.negativePrompt == "watermark", "parser should read --no as negative prompt")
+    try expect(parsed.parameters["ar"] == "3:4", "parser should extract ar parameter")
+    try expect(parsed.tags.contains("风景") && parsed.tags.contains("人物") && parsed.tags.contains("写实"), "parser should extract tags")
+}
+
+func testTagRefreshDeletesUnusedTags() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    var item = sampleItem(title: "标签同步", tags: ["旧标签"], prompt: "tag")
+    try repository.saveItem(item)
+    try expect(try repository.loadTags().map(\.name) == ["旧标签"], "initial tag should persist")
+    item.tags = ["新标签"]
+    try repository.saveItem(item)
+    try expect(try repository.loadTags().map(\.name) == ["新标签"], "unused tag should be removed")
 }
 
 func testTrashAndRestore() throws {
@@ -204,6 +230,8 @@ do {
     try testSearchFiltering()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
+    try testAssetKindInferenceAndPromptParsing()
+    try testTagRefreshDeletesUnusedTags()
     try testTrashAndRestore()
     try testAspectRatioDisplayNormalizesImportedSizes()
     try testSeedAssetRepairKeepsExistingUserData()

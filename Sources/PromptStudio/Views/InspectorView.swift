@@ -68,7 +68,7 @@ struct InspectorView: View {
 
     private func header(_ item: PromptItem) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            ThumbnailImage(path: item.thumbnailPath)
+            AssetMediaView(item: item)
                 .frame(width: 112, height: 112)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(thumbnailHovered ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline, lineWidth: 1))
@@ -84,8 +84,13 @@ struct InspectorView: View {
                         .lineLimit(2)
                     Spacer()
                 }
+                infoLine("素材", item.assetKind.displayName)
                 infoLine("模型", item.modelName)
-                infoLine("尺寸", "\(item.displayAspectRatio) (\(item.width) x \(item.height))")
+                if item.width > 0, item.height > 0 {
+                    infoLine("尺寸", "\(item.displayAspectRatio) (\(item.width) x \(item.height))")
+                } else {
+                    infoLine("格式", item.format.isEmpty ? item.assetKind.displayName : item.format)
+                }
                 infoLine("创建时间", item.createdAt.formatted(date: .numeric, time: .shortened))
             }
         }
@@ -220,10 +225,14 @@ struct InspectorView: View {
 
     private func fileInfoSection(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("图片信息")
+            sectionTitle("文件信息")
             VStack(spacing: 10) {
-                infoGrid("文件尺寸", fileSizeText(item.fileSize), "分辨率", item.displaySize)
-                infoGrid("格式", item.format, "颜色空间", "sRGB")
+                infoGrid("文件尺寸", fileSizeText(item.fileSize), "素材类型", item.assetKind.displayName)
+                if item.width > 0, item.height > 0 {
+                    infoGrid("格式", item.format, "分辨率", item.displaySize)
+                } else {
+                    infoGrid("格式", item.format.isEmpty ? "FILE" : item.format, "路径", URL(fileURLWithPath: item.assetPath).lastPathComponent)
+                }
             }
             Button {
                 state.modal = .export

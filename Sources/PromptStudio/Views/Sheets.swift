@@ -798,22 +798,22 @@ struct ExportSheet: View {
                         )
                         ExportOptionRow(
                             title: "图片.png",
-                            subtitle: item.type == .image ? "将当前图片导出为 PNG" : "当前素材不是图片，暂不支持 PNG 导出",
+                            subtitle: item.assetKind == .image ? "将当前图片导出为 PNG" : "当前素材不是图片，暂不支持 PNG 导出",
                             isOn: $exportPNG
                         )
-                        .disabled(item.type != .image)
-                        .opacity(item.type == .image ? 1 : 0.5)
+                        .disabled(item.assetKind != .image)
+                        .opacity(item.assetKind == .image ? 1 : 0.5)
                         ExportOptionRow(
                             title: "图片.jpg",
-                            subtitle: item.type == .image ? "将当前图片导出为 JPG" : "当前素材不是图片，暂不支持 JPG 导出",
+                            subtitle: item.assetKind == .image ? "将当前图片导出为 JPG" : "当前素材不是图片，暂不支持 JPG 导出",
                             isOn: $exportJPEG
                         )
-                        .disabled(item.type != .image)
-                        .opacity(item.type == .image ? 1 : 0.5)
+                        .disabled(item.assetKind != .image)
+                        .opacity(item.assetKind == .image ? 1 : 0.5)
                     }
                     .padding(.top, 6)
                     .onAppear {
-                        if item.type != .image {
+                        if item.assetKind != .image {
                             exportPNG = false
                             exportJPEG = false
                         }
@@ -1151,10 +1151,12 @@ struct PreviewSheet: View {
 
     @ViewBuilder
     private func mediaPreview(_ item: PromptItem) -> some View {
-        if item.type == .video {
+        if item.assetKind == .video {
             VideoPreviewPlayer(path: item.assetPath)
-        } else {
+        } else if item.assetKind == .image {
             ImagePreview(path: item.assetPath)
+        } else {
+            FilePreview(item: item)
         }
     }
 
@@ -1170,8 +1172,16 @@ struct PreviewSheet: View {
                         .foregroundStyle(StudioColor.secondaryText)
                 }
 
-                previewSection("提示词 (Prompt)", item.currentVersion?.prompt ?? "未填写 Prompt", minHeight: 140)
-                previewSection("负面提示词", item.currentVersion?.negativePrompt ?? "", minHeight: 84)
+                if item.assetKind != .image && item.assetKind != .video {
+                    previewSection("文件摘要", textSummary(for: item), minHeight: 140)
+                }
+
+                if item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    previewSection("提示词 (Prompt)", item.currentVersion?.prompt ?? "", minHeight: 140)
+                }
+                if item.currentVersion?.negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    previewSection("负面提示词", item.currentVersion?.negativePrompt ?? "", minHeight: 84)
+                }
 
                 if let parameters = item.currentVersion?.parameters, !parameters.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1220,6 +1230,86 @@ struct PreviewSheet: View {
             .font(StudioFont.caption(12))
             .tracking(1.2)
             .foregroundStyle(StudioColor.secondaryText)
+    }
+
+    private func textSummary(for item: PromptItem) -> String {
+        guard [.markdown, .json, .text, .data].contains(item.assetKind),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: item.assetPath), options: [.mappedIfSafe]) else {
+            return "\(item.assetKind.displayName) 文件，可通过右键菜单用默认应用打开。"
+        }
+        let previewData = Data(data.prefix(6000))
+        let text = String(data: previewData, encoding: .utf8)
+            ?? String(data: previewData, encoding: .utf16)
+            ?? String(data: previewData, encoding: .isoLatin1)
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !trimmed.isEmpty
+            ? trimmed
+            : "\(item.assetKind.displayName) 文件无可读取文本摘要。"
+    }
+}
+
+private struct FilePreview: View {
+    let item: PromptItem
+
+    var body: some View {
+        VStack(spacing: 18) {
+            FileKindPlaceholderForPreview(assetKind: item.assetKind, format: item.format)
+                .frame(width: 180, height: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+            VStack(spacing: 6) {
+                Text(item.title)
+                    .font(StudioFont.font(18))
+                    .lineLimit(2)
+                Text("\(item.assetKind.displayName) · \(item.format.isEmpty ? "FILE" : item.format)")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+}
+
+private struct FileKindPlaceholderForPreview: View {
+    let assetKind: AssetKind
+    let format: String
+
+    var body: some View {
+        ZStack {
+            StudioColor.panelRaised
+            VStack(spacing: 10) {
+                Image(systemName: symbolName)
+                    .font(StudioFont.symbol(42))
+                Text(format.isEmpty ? assetKind.displayName.uppercased() : format.uppercased())
+                    .font(StudioFont.caption(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+        }
+        .foregroundStyle(StudioColor.text)
+    }
+
+    private var symbolName: String {
+        switch assetKind {
+        case .audio:
+            "waveform"
+        case .markdown:
+            "text.alignleft"
+        case .json, .data:
+            "curlybraces"
+        case .document:
+            "doc.richtext"
+        case .text:
+            "doc.text"
+        case .unknown:
+            "doc"
+        case .image:
+            "photo"
+        case .video:
+            "film"
+        }
     }
 }
 
