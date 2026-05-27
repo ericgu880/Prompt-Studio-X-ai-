@@ -58,6 +58,11 @@ final class AppState: ObservableObject {
         let itemCount: Int
     }
 
+    private struct NavigationSnapshot: Equatable {
+        let filter: PromptFilter
+        let selectedID: String?
+    }
+
     enum Modal: Identifiable, Equatable {
         case newPrompt
         case editPrompt
@@ -118,14 +123,19 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     @Published var isListView = false
     @Published var isImporting = false
+    @Published var inlineRenamingFolderID: String?
     @Published var inspectorEditRequest: InspectorEditRequest?
     @Published var expandedFolderIDs: Set<String> = []
+    @Published private(set) var canNavigateBack = false
+    @Published private(set) var canNavigateForward = false
 
     private var repository: PromptRepository?
     private var itemsByID: [String: PromptItem] = [:]
     private var pendingLastUsedTask: Task<Void, Never>?
     private var thumbnailGenerationID = UUID()
     private var isBatchingFilterUpdate = false
+    private var navigationBackStack: [NavigationSnapshot] = []
+    private var navigationForwardStack: [NavigationSnapshot] = []
 
     var libraryURL: URL {
         repository?.libraryURL ?? PromptRepository.defaultLibraryURL()
@@ -172,20 +182,44 @@ final class AppState: ObservableObject {
     }
 
     func select(_ item: PromptItem) {
+        guard selectedID != item.id else {
+            scheduleLastUsedUpdate(itemID: item.id)
+            return
+        }
+        pushCurrentNavigationSnapshot()
         selectedID = item.id
         scheduleLastUsedUpdate(itemID: item.id)
     }
 
     func setCollection(_ collection: LibraryCollection) {
+        guard filter.collection != collection else { return }
+        pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.collection = collection
         }
     }
 
     func setModel(_ modelId: String?) {
+        let normalizedModelID = modelId == "all" ? nil : modelId
+        guard filter.modelId != normalizedModelID else { return }
+        pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
-            filter.modelId = modelId == "all" ? nil : modelId
+            filter.modelId = normalizedModelID
         }
+    }
+
+    func navigateBack() {
+        guard let snapshot = navigationBackStack.popLast() else { return }
+        navigationForwardStack.append(currentNavigationSnapshot())
+        restoreNavigationSnapshot(snapshot)
+        updateNavigationAvailability()
+    }
+
+    func navigateForward() {
+        guard let snapshot = navigationForwardStack.popLast() else { return }
+        navigationBackStack.append(currentNavigationSnapshot())
+        restoreNavigationSnapshot(snapshot)
+        updateNavigationAvailability()
     }
 
     func copySelectedPrompt() {
@@ -674,12 +708,12 @@ final class AppState: ObservableObject {
     }
 
     func beginCreateSiblingFolder(_ folder: LibraryFolder) {
-        beginCreateFolder(parentId: folder.parentId)
+        createInlineEditableFolder(parentId: folder.parentId)
     }
 
     func beginCreateChildFolder(_ folder: LibraryFolder) {
         expandedFolderIDs.insert(folder.id)
-        beginCreateFolder(parentId: folder.id)
+        createInlineEditableFolder(parentId: folder.id)
     }
 
     func beginRenameFolder(_ folder: LibraryFolder) {
@@ -746,6 +780,48 @@ final class AppState: ObservableObject {
         } catch {
             modal = .error(error.localizedDescription)
             return false
+        }
+    }
+
+    @discardableResult
+    func createInlineEditableFolder(parentId: String?) -> Bool {
+        let name = nextDefaultFolderName(parentId: parentId)
+        let sortOrder = (folders.filter { $0.parentId == parentId }.map(\.sortOrder).max() ?? -1) + 1
+        let folder = LibraryFolder(
+            id: uniqueFolderID(name: name),
+            name: name,
+            parentId: parentId,
+            sortOrder: sortOrder
+        )
+
+        do {
+            try repository?.saveFolder(folder)
+            if let parentId {
+                expandedFolderIDs.insert(parentId)
+            }
+            reload(selecting: selectedID)
+            selectFolder(folder)
+            inlineRenamingFolderID = folder.id
+            return true
+        } catch {
+            modal = .error(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func nextDefaultFolderName(parentId: String?) -> String {
+        let existingNames = Set(
+            folders
+                .filter { $0.parentId == parentId }
+                .map { $0.name.lowercased() }
+        )
+        var index = 1
+        while true {
+            let name = "新建文件夹\(index)"
+            if !existingNames.contains(name.lowercased()) {
+                return name
+            }
+            index += 1
         }
     }
 
@@ -1162,6 +1238,33 @@ final class AppState: ObservableObject {
         updates()
         isBatchingFilterUpdate = false
         refreshFilteredItems(preserveExistingSelection: false)
+    }
+
+    private func currentNavigationSnapshot() -> NavigationSnapshot {
+        NavigationSnapshot(filter: filter, selectedID: selectedID)
+    }
+
+    private func pushCurrentNavigationSnapshot() {
+        let snapshot = currentNavigationSnapshot()
+        guard navigationBackStack.last != snapshot else { return }
+        navigationBackStack.append(snapshot)
+        if navigationBackStack.count > 100 {
+            navigationBackStack.removeFirst(navigationBackStack.count - 100)
+        }
+        navigationForwardStack.removeAll()
+        updateNavigationAvailability()
+    }
+
+    private func restoreNavigationSnapshot(_ snapshot: NavigationSnapshot) {
+        isBatchingFilterUpdate = true
+        filter = snapshot.filter
+        isBatchingFilterUpdate = false
+        refreshFilteredItems(selecting: snapshot.selectedID, preserveExistingSelection: false)
+    }
+
+    private func updateNavigationAvailability() {
+        canNavigateBack = !navigationBackStack.isEmpty
+        canNavigateForward = !navigationForwardStack.isEmpty
     }
 
     private func refreshFilteredItems(selecting requestedID: String? = nil, preserveExistingSelection: Bool = true) {

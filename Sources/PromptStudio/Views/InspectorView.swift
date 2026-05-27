@@ -21,8 +21,9 @@ struct InspectorView: View {
                         .foregroundStyle(StudioColor.secondaryText)
                     Spacer()
                 }
-                .padding(22)
-                .padding(.top, 2)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 22)
+                .padding(.top, 16)
                 .foregroundStyle(StudioColor.text)
             }
         }
@@ -61,8 +62,9 @@ struct InspectorView: View {
                     fileInfoSection(item)
                 }
             }
-            .padding(20)
-            .padding(.top, 4)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
+            .padding(.top, 16)
         }
     }
 

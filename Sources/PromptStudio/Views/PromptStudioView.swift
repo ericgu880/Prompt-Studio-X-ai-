@@ -8,9 +8,13 @@ struct PromptStudioView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("promptStudio.sidebarWidth") private var sidebarWidth = 220.0
     @AppStorage("promptStudio.inspectorWidth") private var inspectorWidth = 330.0
+    @AppStorage("promptStudio.sidebarVisible") private var isSidebarVisible = true
     @State private var isFileDropTargeted = false
     @State private var sidebarDragStartWidth: Double?
     @State private var inspectorDragStartWidth: Double?
+    @State private var liveSidebarWidth: Double?
+    @State private var liveInspectorWidth: Double?
+    @State private var isSplitResizing = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -19,45 +23,77 @@ struct PromptStudioView: View {
 
                 ZStack(alignment: .topLeading) {
                     HStack(spacing: 0) {
-                        SidebarView()
-                            .frame(width: layout.sidebar)
+                        if isSidebarVisible {
+                            SidebarView()
+                                .frame(width: layout.sidebar)
+                        }
 
-                        MainContentView()
+                        MainContentView(isSplitResizing: isSplitResizing)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         InspectorView()
                             .frame(width: layout.inspector)
                     }
 
-                    SplitResizeHotZone {
-                        sidebarDragStartWidth = nil
-                    } onDragChanged: { translation in
-                        if sidebarDragStartWidth == nil {
-                            sidebarDragStartWidth = Double(layout.sidebar)
+                    if isSidebarVisible {
+                        SplitResizeHotZone {
+                            if let liveSidebarWidth {
+                                sidebarWidth = liveSidebarWidth
+                            }
+                            liveSidebarWidth = nil
+                            sidebarDragStartWidth = nil
+                            isSplitResizing = false
+                        } onDragChanged: { translation in
+                            isSplitResizing = true
+                            if sidebarDragStartWidth == nil {
+                                sidebarDragStartWidth = Double(layout.sidebar)
+                            }
+                            let nextWidth = clampedSidebarWidth(
+                                CGFloat(sidebarDragStartWidth ?? sidebarWidth) + translation,
+                                totalWidth: proxy.size.width
+                            )
+                            if liveSidebarWidth != nextWidth {
+                                liveSidebarWidth = nextWidth
+                            }
                         }
-                        sidebarWidth = clampedSidebarWidth(
-                            CGFloat(sidebarDragStartWidth ?? sidebarWidth) + translation,
-                            totalWidth: proxy.size.width
-                        )
+                        .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
+                        .position(x: layout.sidebar, y: proxy.size.height / 2)
+                        .ignoresSafeArea(.container, edges: .vertical)
                     }
-                    .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
-                    .position(x: layout.sidebar, y: proxy.size.height / 2)
-                    .ignoresSafeArea(.container, edges: .vertical)
 
                     SplitResizeHotZone {
+                        if let liveInspectorWidth {
+                            inspectorWidth = liveInspectorWidth
+                        }
+                        liveInspectorWidth = nil
                         inspectorDragStartWidth = nil
+                        isSplitResizing = false
                     } onDragChanged: { translation in
+                        isSplitResizing = true
                         if inspectorDragStartWidth == nil {
                             inspectorDragStartWidth = Double(layout.inspector)
                         }
-                        inspectorWidth = clampedInspectorWidth(
+                        let nextWidth = clampedInspectorWidth(
                             CGFloat(inspectorDragStartWidth ?? inspectorWidth) - translation,
                             totalWidth: proxy.size.width
                         )
+                        if liveInspectorWidth != nextWidth {
+                            liveInspectorWidth = nextWidth
+                        }
                     }
                     .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
                     .position(x: proxy.size.width - layout.inspector, y: proxy.size.height / 2)
                     .ignoresSafeArea(.container, edges: .vertical)
+
+                    TitlebarNavigationControls(isSidebarVisible: $isSidebarVisible)
+                        .padding(.leading, 104)
+                        .padding(.top, 8)
+                        .ignoresSafeArea(.container, edges: .top)
+                        .zIndex(20)
+                }
+                .transaction { transaction in
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
                 }
             }
             .background(StudioColor.appBackground)
@@ -101,16 +137,19 @@ struct PromptStudioView: View {
     }
 
     private func constrainedLayout(totalWidth: CGFloat) -> (sidebar: CGFloat, inspector: CGFloat) {
-        var sidebar = min(max(CGFloat(sidebarWidth), Self.sidebarMinWidth), Self.sidebarMaxWidth)
-        var inspector = min(max(CGFloat(inspectorWidth), Self.inspectorMinWidth), Self.inspectorMaxWidth)
-        let availableForSidePanels = max(Self.sidebarMinWidth + Self.inspectorMinWidth, totalWidth - Self.mainMinWidth)
+        let minimumSidebarWidth = isSidebarVisible ? Self.sidebarMinWidth : 0
+        var sidebar = isSidebarVisible
+            ? min(max(CGFloat(liveSidebarWidth ?? sidebarWidth), Self.sidebarMinWidth), Self.sidebarMaxWidth)
+            : 0
+        var inspector = min(max(CGFloat(liveInspectorWidth ?? inspectorWidth), Self.inspectorMinWidth), Self.inspectorMaxWidth)
+        let availableForSidePanels = max(minimumSidebarWidth + Self.inspectorMinWidth, totalWidth - Self.mainMinWidth)
 
         if sidebar + inspector > availableForSidePanels {
             let overflow = sidebar + inspector - availableForSidePanels
             let inspectorReduction = min(overflow, inspector - Self.inspectorMinWidth)
             inspector -= inspectorReduction
             let remaining = overflow - inspectorReduction
-            sidebar -= min(remaining, sidebar - Self.sidebarMinWidth)
+            sidebar -= min(remaining, max(0, sidebar - minimumSidebarWidth))
         }
 
         return (sidebar, inspector)
@@ -120,14 +159,14 @@ struct PromptStudioView: View {
         let currentInspector = constrainedLayout(totalWidth: totalWidth).inspector
         let maxByWindow = max(Self.sidebarMinWidth, totalWidth - Self.mainMinWidth - currentInspector)
         let width = min(max(proposed, Self.sidebarMinWidth), min(Self.sidebarMaxWidth, maxByWindow))
-        return Double(width)
+        return Double(width.rounded(.toNearestOrAwayFromZero))
     }
 
     private func clampedInspectorWidth(_ proposed: CGFloat, totalWidth: CGFloat) -> Double {
         let currentSidebar = constrainedLayout(totalWidth: totalWidth).sidebar
         let maxByWindow = max(Self.inspectorMinWidth, totalWidth - Self.mainMinWidth - currentSidebar)
         let width = min(max(proposed, Self.inspectorMinWidth), min(Self.inspectorMaxWidth, maxByWindow))
-        return Double(width)
+        return Double(width.rounded(.toNearestOrAwayFromZero))
     }
 
     private static let sidebarMinWidth: CGFloat = 176
@@ -212,7 +251,7 @@ private struct SplitResizeHotZone: View {
                 isHovered = hovering
                 if hovering {
                     pushResizeCursorIfNeeded()
-                } else {
+                } else if !isDragging {
                     popResizeCursorIfNeeded()
                 }
             }
@@ -311,6 +350,89 @@ private func clearTextFocus() {
     NSApp.keyWindow?.makeFirstResponder(nil)
 }
 
+private struct TitlebarNavigationControls: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var isSidebarVisible: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            TitlebarControlButton(
+                systemImage: "sidebar.left",
+                isActive: isSidebarVisible,
+                accessibilityLabel: isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
+            ) {
+                withAnimation(StudioMotion.standard(reduceMotion: reduceMotion)) {
+                    isSidebarVisible.toggle()
+                }
+            }
+
+            TitlebarControlButton(
+                systemImage: "arrow.left",
+                isEnabled: state.canNavigateBack,
+                accessibilityLabel: "后退"
+            ) {
+                state.navigateBack()
+            }
+
+            TitlebarControlButton(
+                systemImage: "arrow.right",
+                isEnabled: state.canNavigateForward,
+                accessibilityLabel: "前进"
+            ) {
+                state.navigateForward()
+            }
+        }
+    }
+}
+
+private struct TitlebarControlButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let systemImage: String
+    var isEnabled = true
+    var isActive = false
+    let accessibilityLabel: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(StudioFont.symbol(12))
+                .frame(width: 26, height: 26)
+                .foregroundStyle(foregroundColor)
+                .background(backgroundShape)
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(accessibilityLabel)
+        .onHover { hovering in
+            guard isEnabled else { return }
+            isHovered = hovering
+        }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isActive)
+    }
+
+    private var foregroundColor: Color {
+        if !isEnabled {
+            return StudioColor.tertiaryText.opacity(0.42)
+        }
+        return isActive || isHovered ? StudioColor.text : StudioColor.secondaryText
+    }
+
+    private var backgroundShape: some View {
+        Circle()
+            .fill(isActive || isHovered ? StudioColor.selection.opacity(0.92) : Color.clear)
+            .overlay(
+                Circle()
+                    .stroke(isHovered ? StudioColor.hairline : Color.clear, lineWidth: 1)
+            )
+    }
+}
+
 private func loadDroppedFileURLs(from providers: [NSItemProvider]) async -> [URL] {
     var urls: [URL] = []
     for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -403,9 +525,11 @@ private struct SidebarView: View {
             Text("PromptStudio")
                 .font(StudioFont.font(15))
                 .foregroundStyle(StudioColor.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
             Spacer()
         }
-        .padding(.top, 24)
+        .padding(.top, 16)
         .padding(.horizontal, 18)
     }
 
@@ -445,43 +569,66 @@ private struct FolderTreeRowView: View {
     let row: AppState.FolderTreeRow
     @State private var isHovered = false
     @State private var isDropTargeted = false
+    @State private var isEditingName = false
+    @State private var draftName = ""
+    @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
         let active = state.filter.collection == row.collection
         HStack(spacing: 0) {
             treeIndent
 
-            Button {
-                state.selectFolder(row.folder)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "folder")
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .foregroundStyle(StudioColor.text)
+                    .frame(width: 17)
+
+                if isEditingName {
+                    TextField("", text: $draftName)
+                        .textFieldStyle(.plain)
+                        .focused($nameFieldFocused)
+                        .font(StudioFont.font(13))
                         .foregroundStyle(StudioColor.text)
-                        .frame(width: 17)
+                        .submitLabel(.done)
+                        .onSubmit(commitInlineRename)
+                        .onExitCommand(perform: cancelInlineRename)
+                        .onChange(of: nameFieldFocused) { _, focused in
+                            if !focused {
+                                commitInlineRename()
+                            }
+                        }
+                } else {
                     Text(row.folder.name)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    Spacer(minLength: 8)
+                }
+
+                Spacer(minLength: 8)
+
+                if !isEditingName {
                     Text("\(row.count)")
                         .foregroundStyle(StudioColor.secondaryText)
                 }
-                .font(StudioFont.font(13))
-                .foregroundStyle(StudioColor.text)
-                .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                .background(rowBackground(active: active))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(alignment: .leading) {
-                    disclosureButton
-                        .offset(x: -10)
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(isDropTargeted ? StudioColor.primaryAction.opacity(0.76) : Color.clear, lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
+            .font(StudioFont.font(13))
+            .foregroundStyle(StudioColor.text)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background(rowBackground(active: active))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(alignment: .leading) {
+                disclosureButton
+                    .offset(x: -10)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isDropTargeted ? StudioColor.primaryAction.opacity(0.76) : Color.clear, lineWidth: 1)
+            )
+            .onTapGesture {
+                guard !isEditingName else { return }
+                state.selectFolder(row.folder)
+            }
         }
         .onHover { isHovered = $0 }
         .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
@@ -496,6 +643,10 @@ private struct FolderTreeRowView: View {
         }
         .contextMenu {
             folderContextMenu(row.folder)
+        }
+        .onAppear(perform: startInlineRenameIfRequested)
+        .onChange(of: state.inlineRenamingFolderID) { _, _ in
+            startInlineRenameIfRequested()
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
@@ -534,6 +685,37 @@ private struct FolderTreeRowView: View {
         }
     }
 
+    private func startInlineRename() {
+        state.selectFolder(row.folder)
+        draftName = row.folder.name
+        isEditingName = true
+        DispatchQueue.main.async {
+            nameFieldFocused = true
+        }
+    }
+
+    private func startInlineRenameIfRequested() {
+        guard state.inlineRenamingFolderID == row.folder.id else { return }
+        startInlineRename()
+        state.inlineRenamingFolderID = nil
+    }
+
+    private func commitInlineRename() {
+        guard isEditingName else { return }
+        let trimmedName = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        isEditingName = false
+        nameFieldFocused = false
+        guard !trimmedName.isEmpty, trimmedName != row.folder.name else { return }
+        state.renameFolder(id: row.folder.id, name: trimmedName)
+    }
+
+    private func cancelInlineRename() {
+        guard isEditingName else { return }
+        isEditingName = false
+        nameFieldFocused = false
+        draftName = row.folder.name
+    }
+
     @ViewBuilder
     private func folderContextMenu(_ folder: LibraryFolder) -> some View {
         Button {
@@ -555,7 +737,7 @@ private struct FolderTreeRowView: View {
         }
 
         Button {
-            state.beginRenameFolder(folder)
+            startInlineRename()
         } label: {
             Label("重命名", systemImage: "pencil")
         }
@@ -829,12 +1011,13 @@ private struct RecentRow: View {
 private struct MainContentView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let isSplitResizing: Bool
 
     var body: some View {
         VStack(spacing: 0) {
                 TopToolbarView()
                     .padding(.horizontal, 24)
-                    .padding(.top, 24)
+                    .padding(.top, 16)
                     .padding(.bottom, 10)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
@@ -851,7 +1034,7 @@ private struct MainContentView: View {
                 } else if state.isListView {
                     PromptListView(items: state.filteredItems)
                 } else {
-                    MasonryGridView(items: state.filteredItems)
+                    MasonryGridView(items: state.filteredItems, isSplitResizing: isSplitResizing)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1010,11 +1193,14 @@ private struct CompactModelChip: View {
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
     let items: [PromptItem]
+    let isSplitResizing: Bool
     @State private var draggedItemID: String?
+    @State private var lockedColumnCount: Int?
 
     var body: some View {
         GeometryReader { proxy in
-            let columnCount = max(2, min(4, Int(proxy.size.width / 250)))
+            let computedColumnCount = max(2, min(4, Int(proxy.size.width / 250)))
+            let columnCount = lockedColumnCount ?? computedColumnCount
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
             let layout = makeMasonryLayout(items, columnCount: columnCount, width: width)
             ScrollViewReader { scrollProxy in
@@ -1046,6 +1232,13 @@ private struct MasonryGridView: View {
                     withTransaction(transaction) {
                         scrollProxy.scrollTo(Self.topAnchorID, anchor: .top)
                     }
+                }
+            }
+            .onChange(of: isSplitResizing) { _, resizing in
+                if resizing {
+                    lockedColumnCount = lockedColumnCount ?? computedColumnCount
+                } else {
+                    lockedColumnCount = nil
                 }
             }
         }
