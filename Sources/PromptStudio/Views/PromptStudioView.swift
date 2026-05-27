@@ -309,14 +309,18 @@ private struct SidebarView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
-                    sidebarSection("资源库") {
-                        SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                        FolderTreeView()
-                    }
-
                     sidebarSection(nil) {
+                        SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
                         SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
                         SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
+                        Text("文件夹")
+                            .font(StudioFont.caption(11))
+                            .tracking(1.2)
+                            .foregroundStyle(StudioColor.tertiaryText)
+                            .padding(.leading, 10)
+                            .padding(.top, 8)
+                            .padding(.bottom, -4)
+                        FolderTreeView()
                     }
                 }
                 .padding(.horizontal, 14)
