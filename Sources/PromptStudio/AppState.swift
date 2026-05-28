@@ -713,7 +713,7 @@ final class AppState: ObservableObject {
 
     func beginCreateChildFolder(_ folder: LibraryFolder) {
         expandedFolderIDs.insert(folder.id)
-        createInlineEditableFolder(parentId: folder.id)
+        createInlineEditableFolder(parentId: folder.id, insertAtTop: true)
     }
 
     func beginRenameFolder(_ folder: LibraryFolder) {
@@ -784,9 +784,12 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func createInlineEditableFolder(parentId: String?) -> Bool {
+    func createInlineEditableFolder(parentId: String?, insertAtTop: Bool = false) -> Bool {
         let name = nextDefaultFolderName(parentId: parentId)
-        let sortOrder = (folders.filter { $0.parentId == parentId }.map(\.sortOrder).max() ?? -1) + 1
+        let siblingOrders = folders.filter { $0.parentId == parentId }.map(\.sortOrder)
+        let sortOrder = insertAtTop
+            ? (siblingOrders.min() ?? 0) - 1
+            : (siblingOrders.max() ?? -1) + 1
         let folder = LibraryFolder(
             id: uniqueFolderID(name: name),
             name: name,

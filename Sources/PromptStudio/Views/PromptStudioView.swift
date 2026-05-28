@@ -26,6 +26,7 @@ struct PromptStudioView: View {
                         if isSidebarVisible {
                             SidebarView()
                                 .frame(width: layout.sidebar)
+                                .transition(sidebarTransition)
                         }
 
                         MainContentView(isSplitResizing: isSplitResizing)
@@ -34,6 +35,7 @@ struct PromptStudioView: View {
                         InspectorView()
                             .frame(width: layout.inspector)
                     }
+                    .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSidebarVisible)
 
                     if isSidebarVisible {
                         SplitResizeHotZone {
@@ -87,13 +89,9 @@ struct PromptStudioView: View {
 
                     TitlebarNavigationControls(isSidebarVisible: $isSidebarVisible)
                         .padding(.leading, 104)
-                        .padding(.top, 8)
+                        .padding(.top, 4)
                         .ignoresSafeArea(.container, edges: .top)
                         .zIndex(20)
-                }
-                .transaction { transaction in
-                    transaction.animation = nil
-                    transaction.disablesAnimations = true
                 }
             }
             .background(StudioColor.appBackground)
@@ -176,6 +174,10 @@ struct PromptStudioView: View {
     private static let mainMinWidth: CGFloat = 560
     private static let resizeHotZoneWidth: CGFloat = 16
     private static let resizeHotZoneVerticalBleed: CGFloat = 80
+
+    private var sidebarTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity)
+    }
 
     @ViewBuilder
     private func sheet(for modal: AppState.Modal) -> some View {
@@ -360,6 +362,7 @@ private struct TitlebarNavigationControls: View {
             TitlebarControlButton(
                 systemImage: "sidebar.left",
                 isActive: isSidebarVisible,
+                showsBackground: false,
                 accessibilityLabel: isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
             ) {
                 withAnimation(StudioMotion.standard(reduceMotion: reduceMotion)) {
@@ -391,6 +394,7 @@ private struct TitlebarControlButton: View {
     let systemImage: String
     var isEnabled = true
     var isActive = false
+    var showsBackground = true
     let accessibilityLabel: String
     let action: () -> Void
     @State private var isHovered = false
@@ -425,10 +429,10 @@ private struct TitlebarControlButton: View {
 
     private var backgroundShape: some View {
         Circle()
-            .fill(isActive || isHovered ? StudioColor.selection.opacity(0.92) : Color.clear)
+            .fill(showsBackground && (isActive || isHovered) ? StudioColor.selection.opacity(0.92) : Color.clear)
             .overlay(
                 Circle()
-                    .stroke(isHovered ? StudioColor.hairline : Color.clear, lineWidth: 1)
+                    .stroke(showsBackground && isHovered ? StudioColor.hairline : Color.clear, lineWidth: 1)
             )
     }
 }
@@ -461,18 +465,20 @@ private struct SidebarView: View {
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))
             .padding(.horizontal, 14)
-            .padding(.top, 16)
+            .padding(.top, 12)
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
                     sidebarSection(nil) {
-                        SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                        SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
-                        SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
+                        VStack(alignment: .leading, spacing: 4) {
+                            SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
+                            SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
+                            SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
+                        }
                         Text("文件夹")
                             .font(StudioFont.caption(11))
                             .tracking(1.2)
-                            .foregroundStyle(StudioColor.tertiaryText)
+                            .foregroundStyle(StudioColor.sectionTitleText)
                             .padding(.leading, 10)
                             .padding(.top, 8)
                             .padding(.bottom, -4)
@@ -480,7 +486,7 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 14)
+                .padding(.top, 10)
                 .padding(.bottom, 28)
             }
 
@@ -529,7 +535,7 @@ private struct SidebarView: View {
                 .minimumScaleFactor(0.82)
             Spacer()
         }
-        .padding(.top, 16)
+        .padding(.top, 12)
         .padding(.horizontal, 18)
     }
 
@@ -544,7 +550,7 @@ private struct SidebarView: View {
                 Text(title)
                     .font(StudioFont.caption(11))
                     .tracking(1.2)
-                    .foregroundStyle(StudioColor.tertiaryText)
+                    .foregroundStyle(StudioColor.sectionTitleText)
             }
             content()
         }
@@ -568,6 +574,7 @@ private struct FolderTreeRowView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let row: AppState.FolderTreeRow
     @State private var isHovered = false
+    @State private var isDisclosureHovered = false
     @State private var isDropTargeted = false
     @State private var isEditingName = false
     @State private var draftName = ""
@@ -619,7 +626,7 @@ private struct FolderTreeRowView: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .leading) {
                 disclosureButton
-                    .offset(x: -11)
+                    .offset(x: -14)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -629,6 +636,13 @@ private struct FolderTreeRowView: View {
                 guard !isEditingName else { return }
                 state.selectFolder(row.folder)
             }
+            .simultaneousGesture(
+                TapGesture(count: 2)
+                    .onEnded {
+                        guard row.hasChildren, !isEditingName else { return }
+                        state.toggleFolderExpansion(row.folder.id)
+                    }
+            )
         }
         .onHover { isHovered = $0 }
         .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
@@ -649,6 +663,7 @@ private struct FolderTreeRowView: View {
             startInlineRenameIfRequested()
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDisclosureHovered)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
         .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
     }
@@ -672,12 +687,15 @@ private struct FolderTreeRowView: View {
                 Image(systemName: "play.fill")
                     .font(StudioFont.symbol(7, weight: .semibold))
                     .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
-                    .frame(width: 9)
+                    .frame(width: 18, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(StudioColor.secondaryText)
+            .foregroundStyle(isDisclosureHovered ? StudioColor.text.opacity(0.86) : StudioColor.sectionTitleText)
+            .onHover { isDisclosureHovered = $0 }
+            .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: row.isExpanded)
         } else {
-            Color.clear.frame(width: 9, height: 10)
+            Color.clear.frame(width: 18, height: 24)
         }
     }
 
@@ -888,8 +906,8 @@ private struct SidebarRow: View {
             }
             .font(StudioFont.font(13))
             .foregroundStyle(StudioColor.text)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .background(rowBackground(active: active))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1013,7 +1031,7 @@ private struct MainContentView: View {
         VStack(spacing: 0) {
                 TopToolbarView()
                     .padding(.horizontal, 24)
-                    .padding(.top, 16)
+                    .padding(.top, 12)
                     .padding(.bottom, 10)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
@@ -1349,22 +1367,9 @@ private struct AssetCardView: View {
                     Text(item.title)
                         .font(StudioFont.font(14))
                         .lineLimit(1)
-                    Text("\(item.modelName) · \(item.displayAspectRatio)")
+                    Text("\(item.modelName) · \(item.displaySize)")
                         .font(StudioFont.font(12))
                         .foregroundStyle(StudioColor.secondaryText)
-
-                    if isSelected {
-                        HStack(spacing: 8) {
-                            ForEach(item.tags.prefix(3), id: \.self) { tag in
-                                Text(tag)
-                                    .font(StudioFont.font(11))
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 24)
-                                    .background(Capsule().fill(StudioColor.selection))
-                                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
-                            }
-                        }
-                    }
 
                     if isSelected {
                         HStack(spacing: 14) {
@@ -1373,7 +1378,6 @@ private struct AssetCardView: View {
                             cardAction(item.favorite ? "star.fill" : "star") { state.toggleFavorite(item) }
                             cardAction("clock") { state.modal = .versionHistory }
                             Spacer()
-                            cardAction("ellipsis") { state.modal = .export }
                         }
                         .padding(.top, 2)
                     }

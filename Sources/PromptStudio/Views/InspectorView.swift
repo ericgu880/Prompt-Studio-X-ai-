@@ -25,7 +25,7 @@ struct InspectorView: View {
                 }
                 .padding(.horizontal, 22)
                 .padding(.bottom, 22)
-                .padding(.top, 16)
+                .padding(.top, 12)
                 .foregroundStyle(StudioColor.text)
             }
         }
@@ -46,29 +46,52 @@ struct InspectorView: View {
     private func inspector(for item: PromptItem) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                header(item)
-                Divider().overlay(StudioColor.hairline)
-                if !item.referenceAssets.isEmpty {
-                    referenceSection(item)
-                }
-                if isEditing || hasPrompt(item) {
-                    promptSection(item)
-                }
-                if isEditing || hasNegativePrompt(item) {
-                    negativeSection(item)
-                }
-                if isEditing || !item.tags.isEmpty {
-                    tagSection(item)
-                }
-                actionSection(item)
-                if !isEditing {
-                    versionSection(item)
-                    fileInfoSection(item)
+                if item.assetKind == .markdown {
+                    documentInfoSection(item)
+                    actionSection(item)
+                } else {
+                    header(item)
+                    Divider().overlay(StudioColor.hairline)
+                    if !item.referenceAssets.isEmpty {
+                        referenceSection(item)
+                    }
+                    if isEditing || hasPrompt(item) {
+                        promptSection(item)
+                    }
+                    if isEditing || hasNegativePrompt(item) {
+                        negativeSection(item)
+                    }
+                    if isEditing || !item.tags.isEmpty {
+                        tagSection(item)
+                    }
+                    actionSection(item)
+                    if !isEditing {
+                        versionSection(item)
+                        fileInfoSection(item)
+                    }
                 }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
-            .padding(.top, 16)
+            .padding(.top, 12)
+        }
+    }
+
+    private func documentInfoSection(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("文档信息")
+            if isEditing {
+                InlinePromptEditor(text: $draftPrompt, minHeight: 220, maxHeight: 420, placeholder: "输入文档信息")
+            } else {
+                CollapsiblePromptPanel(
+                    text: item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? item.currentVersion?.prompt ?? "" : "暂无文档信息",
+                    collapsedLineLimit: 12,
+                    expandedMaxHeight: 520,
+                    minHeight: 220,
+                    textColor: StudioColor.text,
+                    isExpanded: $isPromptExpanded
+                )
+            }
         }
     }
 
@@ -201,7 +224,7 @@ struct InspectorView: View {
                 Button {
                     state.copySelectedPrompt()
                 } label: {
-                    Text("复制提示词").frame(maxWidth: .infinity)
+                    Text(item.assetKind == .markdown ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
                 }
                     .buttonStyle(CapsuleButtonStyle())
             }
