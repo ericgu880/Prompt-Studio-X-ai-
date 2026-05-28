@@ -8,6 +8,8 @@ struct InspectorView: View {
     @State private var isEditing = false
     @State private var draftPrompt = ""
     @State private var draftNegativePrompt = ""
+    @State private var isPromptExpanded = false
+    @State private var isNegativePromptExpanded = false
 
     var body: some View {
         Group {
@@ -30,6 +32,8 @@ struct InspectorView: View {
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, _ in
             stopEditing()
+            isPromptExpanded = false
+            isNegativePromptExpanded = false
         }
         .onChange(of: state.inspectorEditRequest) { _, request in
             guard let request,
@@ -126,16 +130,16 @@ struct InspectorView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("提示词 (Prompt)")
             if isEditing {
-                InlinePromptEditor(text: $draftPrompt, minHeight: 150, placeholder: "输入 Prompt")
+                InlinePromptEditor(text: $draftPrompt, minHeight: 150, maxHeight: 320, placeholder: "输入 Prompt")
             } else {
-                Text(item.currentVersion?.prompt ?? "")
-                    .font(StudioFont.font(12.5))
-                    .lineSpacing(3)
-                    .foregroundStyle(StudioColor.text)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 96)
-                    .studioPanel(radius: 8)
+                CollapsiblePromptPanel(
+                    text: item.currentVersion?.prompt ?? "",
+                    collapsedLineLimit: 7,
+                    expandedMaxHeight: 320,
+                    minHeight: 96,
+                    textColor: StudioColor.text,
+                    isExpanded: $isPromptExpanded
+                )
             }
         }
     }
@@ -144,16 +148,16 @@ struct InspectorView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("负面提示词（可选）")
             if isEditing {
-                InlinePromptEditor(text: $draftNegativePrompt, minHeight: 96, placeholder: "输入负面提示词")
+                InlinePromptEditor(text: $draftNegativePrompt, minHeight: 96, maxHeight: 220, placeholder: "输入负面提示词")
             } else {
-                Text(item.currentVersion?.negativePrompt ?? "")
-                    .font(StudioFont.font(12.5))
-                    .lineSpacing(3)
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 62)
-                    .studioPanel(radius: 8)
+                CollapsiblePromptPanel(
+                    text: item.currentVersion?.negativePrompt ?? "",
+                    collapsedLineLimit: 5,
+                    expandedMaxHeight: 220,
+                    minHeight: 62,
+                    textColor: StudioColor.secondaryText,
+                    isExpanded: $isNegativePromptExpanded
+                )
             }
         }
     }
@@ -331,9 +335,167 @@ struct InspectorView: View {
     }
 }
 
+private struct CollapsiblePromptPanel: View {
+    let text: String
+    let collapsedLineLimit: Int
+    let expandedMaxHeight: CGFloat
+    let minHeight: CGFloat
+    let textColor: Color
+    @Binding var isExpanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var panelWidth: CGFloat = 0
+    @State private var fullTextHeight: CGFloat = 0
+    @State private var collapsedTextHeight: CGFloat = 0
+    @State private var isHovered = false
+
+    private let horizontalPadding: CGFloat = 12
+    private let verticalPadding: CGFloat = 12
+    private let lineSpacing: CGFloat = 3
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isExpanded && isOverflowing {
+                ScrollView {
+                    promptText(lineLimit: nil)
+                        .padding(.horizontal, horizontalPadding)
+                        .padding(.vertical, verticalPadding)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: expandedTextHeight)
+            } else {
+                promptText(lineLimit: collapsedLineLimit)
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.vertical, verticalPadding)
+                    .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+            }
+
+            if isOverflowing {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(StudioMotion.fast(reduceMotion: reduceMotion)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(isExpanded ? "收起" : "展开")
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(StudioFont.symbol(9, weight: .medium))
+                        }
+                        .font(StudioFont.font(11))
+                        .foregroundStyle(StudioColor.secondaryText)
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(Capsule().fill(StudioColor.control))
+                        .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isHovered ? StudioColor.panelRaised : StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isHovered ? StudioColor.primaryAction.opacity(0.18) : StudioColor.hairline, lineWidth: 1)
+        )
+        .background(widthReader)
+        .overlay(alignment: .topLeading) {
+            measurementViews
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { isHovered = $0 }
+        .onChange(of: text) { _, _ in
+            isExpanded = false
+        }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+    }
+
+    private var isOverflowing: Bool {
+        fullTextHeight > collapsedTextHeight + 1
+    }
+
+    private var textWidth: CGFloat {
+        max(0, panelWidth - horizontalPadding * 2)
+    }
+
+    private var expandedTextHeight: CGFloat {
+        max(minHeight, expandedMaxHeight - 42)
+    }
+
+    private var widthReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(key: PromptPanelWidthPreferenceKey.self, value: proxy.size.width)
+        }
+        .onPreferenceChange(PromptPanelWidthPreferenceKey.self) { width in
+            panelWidth = width
+        }
+    }
+
+    @ViewBuilder
+    private var measurementViews: some View {
+        if textWidth > 0 {
+            ZStack(alignment: .topLeading) {
+                measuredPromptText(lineLimit: nil, key: "full")
+                measuredPromptText(lineLimit: collapsedLineLimit, key: "collapsed")
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onPreferenceChange(PromptTextHeightPreferenceKey.self) { heights in
+                fullTextHeight = heights["full"] ?? fullTextHeight
+                collapsedTextHeight = heights["collapsed"] ?? collapsedTextHeight
+            }
+        }
+    }
+
+    private func promptText(lineLimit: Int?) -> some View {
+        Text(text)
+            .font(StudioFont.font(12.5))
+            .lineSpacing(lineSpacing)
+            .foregroundStyle(textColor)
+            .lineLimit(lineLimit)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func measuredPromptText(lineLimit: Int?, key: String) -> some View {
+        promptText(lineLimit: lineLimit)
+            .frame(width: textWidth, alignment: .leading)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: PromptTextHeightPreferenceKey.self,
+                        value: [key: proxy.size.height]
+                    )
+                }
+            )
+    }
+}
+
+private struct PromptPanelWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct PromptTextHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 private struct InlinePromptEditor: View {
     @Binding var text: String
     let minHeight: CGFloat
+    let maxHeight: CGFloat
     let placeholder: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -354,7 +516,7 @@ private struct InlinePromptEditor: View {
                 .foregroundStyle(StudioColor.text)
                 .scrollContentBackground(.hidden)
                 .padding(8)
-                .frame(minHeight: minHeight)
+                .frame(minHeight: minHeight, maxHeight: maxHeight)
                 .background(Color.clear)
         }
         .background(isHovered ? StudioColor.panelRaised : StudioColor.panel)

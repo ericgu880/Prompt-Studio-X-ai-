@@ -578,7 +578,7 @@ private struct FolderTreeRowView: View {
         HStack(spacing: 0) {
             treeIndent
 
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: "folder")
                     .foregroundStyle(StudioColor.text)
                     .frame(width: 17)
@@ -612,14 +612,14 @@ private struct FolderTreeRowView: View {
             }
             .font(StudioFont.font(13))
             .foregroundStyle(StudioColor.text)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .background(rowBackground(active: active))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .leading) {
                 disclosureButton
-                    .offset(x: -10)
+                    .offset(x: -11)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -656,15 +656,11 @@ private struct FolderTreeRowView: View {
     private var treeIndent: some View {
         HStack(spacing: 0) {
             ForEach(0..<row.level, id: \.self) { _ in
-                Rectangle()
-                    .fill(StudioColor.text.opacity(0.22))
-                    .frame(width: 1)
-                    .frame(maxHeight: .infinity)
-                    .padding(.leading, 9)
-                    .padding(.trailing, 10)
+                Color.clear
+                    .frame(width: 18)
             }
         }
-        .frame(height: 34)
+        .frame(height: 32)
     }
 
     @ViewBuilder
@@ -673,15 +669,15 @@ private struct FolderTreeRowView: View {
             Button {
                 state.toggleFolderExpansion(row.folder.id)
             } label: {
-                Image(systemName: "chevron.right")
-                    .font(StudioFont.symbol(9, weight: .semibold))
+                Image(systemName: "play.fill")
+                    .font(StudioFont.symbol(7, weight: .semibold))
                     .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
-                    .frame(width: 10)
+                    .frame(width: 9)
             }
             .buttonStyle(.plain)
             .foregroundStyle(StudioColor.secondaryText)
         } else {
-            Color.clear.frame(width: 10, height: 10)
+            Color.clear.frame(width: 9, height: 10)
         }
     }
 
