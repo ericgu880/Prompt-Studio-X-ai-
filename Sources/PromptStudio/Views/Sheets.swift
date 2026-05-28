@@ -19,7 +19,6 @@ struct NewPromptSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(StudioColor.hairline)
 
             ScrollView {
                 form
@@ -27,7 +26,6 @@ struct NewPromptSheet: View {
                     .padding(.vertical, 22)
             }
 
-            Divider().overlay(StudioColor.hairline)
             footer
         }
         .foregroundStyle(StudioColor.text)
@@ -496,25 +494,17 @@ struct ImportSheet: View {
 
     var body: some View {
         PromptFormShell(title: "导入素材") {
-            VStack(spacing: 18) {
-                VStack(spacing: 12) {
-                    Image(systemName: "tray.and.arrow.down")
-                        .font(StudioFont.symbol(42))
-                    Text("拖拽图片、视频、文本到主窗口，或点击下方选择文件")
-                        .font(StudioFont.font(15))
-                    Text("导入后会复制到本地资料库，并进入待完善信息状态。")
-                        .foregroundStyle(StudioColor.secondaryText)
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 220)
-                .studioPanel(radius: 8)
-
-                HStack(spacing: 12) {
-                    ImportStep(title: "1", text: "复制到资料库")
-                    ImportStep(title: "2", text: "生成缩略图")
-                    ImportStep(title: "3", text: "补充 Prompt")
-                }
+            VStack(spacing: 12) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(StudioFont.symbol(42))
+                Text("拖拽图片、视频、文本到主窗口，或点击下方选择文件")
+                    .font(StudioFont.font(15))
+                Text("导入后会复制到本地资料库，并进入待完善信息状态。")
+                    .foregroundStyle(StudioColor.secondaryText)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 240)
+            .studioPanel(radius: 8)
         } footer: {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
@@ -1468,14 +1458,10 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
             }
             .padding(22)
 
-            Divider().overlay(StudioColor.hairline)
-
             ScrollView {
                 content
                     .padding(22)
             }
-
-            Divider().overlay(StudioColor.hairline)
 
             HStack {
                 Spacer()
@@ -1544,25 +1530,6 @@ private struct LabeledEditor: View {
                 .frame(minHeight: minHeight)
                 .studioPanel(radius: 8)
         }
-    }
-}
-
-private struct ImportStep: View {
-    let title: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(StudioFont.font(14))
-                .frame(width: 28, height: 28)
-                .foregroundStyle(StudioColor.primaryActionText)
-                .background(Circle().fill(StudioColor.primaryAction))
-            Text(text)
-                .font(StudioFont.font(13))
-        }
-        .padding(12)
-        .studioPanel(radius: 8)
     }
 }
 

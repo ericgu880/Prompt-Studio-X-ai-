@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PromptStudio 设置中心 UI 原型</title>
+  <style>
+    :root{
+      --bg:#0b0b0c;
+      --panel:#141416;
+      --panel-2:#1a1a1d;
+      --panel-3:#202024;
+      --line:#2c2c31;
+      --line-soft:#232328;
+      --text:#f4f4f5;
+      --muted:#a7a7ad;
+      --subtle:#74747c;
+      --accent:#ffffff;
+      --accent-text:#0d0d0f;
+      --good:#9ce6b5;
+      --warn:#ffd48a;
+      --danger:#ff8b8b;
+      --info:#b8d9ff;
+      --shadow: 0 20px 80px rgba(0,0,0,.35);
+      --radius:18px;
+      --radius-sm:12px;
+      --sidebar:286px;
+      --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;}
+    body{overflow:hidden;}
+    .app{height:100%;display:grid;grid-template-columns:var(--sidebar) 1fr;background:linear-gradient(130deg,#09090a 0%,#101012 45%,#0a0a0b 100%);}
+    .sidebar{height:100%;background:rgba(29,29,31,.92);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;}
+    .window-dots{display:flex;gap:8px;padding:18px 18px 0;}
+    .dot{width:12px;height:12px;border-radius:50%;background:#5c5c61}.dot:nth-child(1){background:#56565b}.dot:nth-child(2){background:#4d4d52}.dot:nth-child(3){background:#414146}
+    .brand{display:flex;align-items:center;gap:12px;padding:20px 18px 14px;}
+    .brand-mark{width:42px;height:42px;border-radius:14px;background:#f7f7f8;color:#111;display:grid;place-items:center;font-weight:900;box-shadow:0 10px 30px rgba(255,255,255,.05)}
+    .brand h1{font-size:18px;margin:0;line-height:1.1}.brand p{margin:4px 0 0;color:var(--muted);font-size:12px}
+    .side-search{padding:0 14px 14px;position:relative;}
+    .side-search input{width:100%;height:38px;border-radius:12px;border:1px solid var(--line);background:#101012;color:var(--text);padding:0 12px 0 34px;outline:none;}
+    .side-search:before{content:"⌕";position:absolute;left:26px;top:9px;color:var(--muted);font-size:16px;}
+    .nav{overflow:auto;padding:0 12px 18px;}
+    .nav-group{margin:10px 0 16px;}
+    .nav-group-title{font-size:12px;color:#85858c;letter-spacing:.06em;margin:8px 8px 8px;text-transform:uppercase;}
+    .nav-item{height:40px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:12px;color:#d6d6da;text-decoration:none;margin:3px 0;border:1px solid transparent;position:relative;}
+    .nav-item:hover{background:#242428}.nav-item.active{background:#f4f4f5;color:#111;border-color:#fff;font-weight:700;}
+    .nav-icon{width:22px;text-align:center;font-size:15px}.nav-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nav-badge{margin-left:auto;color:#8e8e95;font-size:11px}.nav-item.active .nav-badge{color:#555}
+    .sidebar-footer{margin-top:auto;border-top:1px solid var(--line);padding:12px 14px 14px;}
+    .library-pill{display:flex;align-items:center;gap:10px;background:#111113;border:1px solid var(--line);border-radius:14px;padding:10px 12px;}
+    .library-pill strong{display:block;font-size:13px}.library-pill span{display:block;color:var(--muted);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}.pulse{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 0 4px rgba(156,230,181,.12)}
+    .main{height:100%;display:flex;flex-direction:column;min-width:0;}
+    .topbar{height:76px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--line-soft);padding:0 28px;background:rgba(10,10,11,.58);backdrop-filter:blur(16px);}
+    .crumb{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;white-space:nowrap}.crumb strong{color:var(--text);font-size:16px}.divider{width:1px;height:22px;background:var(--line);margin:0 2px}
+    .global-search{flex:1;max-width:620px;position:relative;}.global-search input{width:100%;height:42px;border-radius:14px;border:1px solid var(--line);background:#131316;color:var(--text);padding:0 14px 0 40px;outline:none;}.global-search:before{content:"⌘K";position:absolute;right:12px;top:10px;color:#777;font-size:12px;border:1px solid #34343a;border-radius:7px;padding:2px 6px;background:#0e0e10}.global-search:after{content:"⌕";position:absolute;left:15px;top:9px;color:var(--muted);font-size:17px;}
+    .top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}.btn{height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:#1d1d21;color:#f2f2f3;font-weight:650;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;text-decoration:none;white-space:nowrap}.btn:hover{background:#28282d}.btn.primary{background:#f6f6f6;color:#0e0e10;border-color:#fff}.btn.ghost{background:#141416}.btn.danger{background:rgba(255,139,139,.1);color:#ffb2b2;border-color:rgba(255,139,139,.24)}.btn.small{height:30px;padding:0 11px;font-size:12px}.btn.square{width:36px;padding:0}
+    .content{overflow:auto;padding:28px;}
+    .page{max-width:1160px;margin:0 auto 60px;}
+    .hero{background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.022));border:1px solid var(--line);border-radius:24px;padding:26px 28px;margin-bottom:18px;box-shadow:var(--shadow);position:relative;overflow:hidden;}
+    .hero:after{content:"";position:absolute;right:-120px;top:-160px;width:420px;height:420px;background:radial-gradient(circle,rgba(255,255,255,.12),transparent 60%);pointer-events:none}.hero h2{font-size:30px;margin:0 0 8px;letter-spacing:-.02em}.hero p{margin:0;color:#c4c4c8;line-height:1.65;max-width:780px}.hero-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.chip{display:inline-flex;align-items:center;gap:6px;min-height:26px;padding:4px 10px;border-radius:999px;background:#232328;border:1px solid #33343a;color:#dadade;font-size:12px}.chip.good{color:#b9f3ca;background:rgba(156,230,181,.08);border-color:rgba(156,230,181,.22)}.chip.warn{color:#ffe1a8;background:rgba(255,212,138,.08);border-color:rgba(255,212,138,.24)}.chip.info{color:#cbe4ff;background:rgba(184,217,255,.08);border-color:rgba(184,217,255,.24)}.chip.danger{color:#ffb2b2;background:rgba(255,139,139,.08);border-color:rgba(255,139,139,.24)}
+    .grid{display:grid;gap:14px}.grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}.grid.auto{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+    .card{background:rgba(25,25,28,.86);border:1px solid var(--line);border-radius:20px;padding:18px;box-shadow:0 10px 38px rgba(0,0,0,.16);}.card h3{margin:0 0 8px;font-size:16px}.card p{margin:0;color:var(--muted);line-height:1.55}.stat-value{font-size:26px;font-weight:800;letter-spacing:-.03em;margin:8px 0 4px}.stat-caption{font-size:12px;color:var(--subtle)}
+    .section{background:rgba(20,20,22,.78);border:1px solid var(--line);border-radius:22px;margin:16px 0;overflow:hidden;}.section-head{padding:18px 20px;border-bottom:1px solid var(--line-soft);display:flex;align-items:flex-start;gap:12px}.section-title{min-width:0}.section-title h3{font-size:17px;margin:0 0 5px}.section-title p{margin:0;color:var(--muted);line-height:1.55}.section-action{margin-left:auto;display:flex;gap:8px;align-items:center}.rows{padding:2px 0}.row{display:grid;grid-template-columns:1fr minmax(220px,340px);gap:18px;align-items:center;padding:15px 20px;border-top:1px solid var(--line-soft);min-height:64px}.rows .row:first-child{border-top:0}.row-title{font-weight:700;margin-bottom:4px}.row-desc{color:var(--muted);line-height:1.45;font-size:13px}.control{display:flex;align-items:center;justify-content:flex-end;gap:9px;min-width:0}.input,.select,select{height:36px;border-radius:12px;border:1px solid #34343a;background:#101012;color:#f3f3f4;padding:0 12px;outline:none;min-width:150px}.input{width:100%}.control .input.small-input{width:104px;min-width:104px;text-align:center}.switch{position:relative;display:inline-block;width:46px;height:26px;flex:0 0 auto}.switch input{opacity:0;width:0;height:0}.switch span{position:absolute;cursor:pointer;inset:0;background:#34343a;border-radius:999px;transition:.18s;border:1px solid #45454c}.switch span:before{content:"";position:absolute;width:20px;height:20px;left:2px;top:2px;background:#d9d9dc;border-radius:50%;transition:.18s;box-shadow:0 2px 8px rgba(0,0,0,.32)}.switch input:checked + span{background:#f1f1f2;border-color:#fff}.switch input:checked + span:before{transform:translateX(20px);background:#111}
+    .seg{display:inline-flex;background:#101012;border:1px solid var(--line);border-radius:13px;padding:3px}.seg button{border:0;background:transparent;color:var(--muted);height:30px;padding:0 11px;border-radius:10px;font-weight:650}.seg button.active{background:#f4f4f5;color:#111}
+    .table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:16px;border:1px solid var(--line);}.table th,.table td{text-align:left;border-bottom:1px solid var(--line-soft);padding:12px 14px;color:#d8d8dc}.table th{font-size:12px;color:#9c9ca3;background:#18181b;font-weight:700}.table tr:last-child td{border-bottom:0}.kbd{display:inline-flex;align-items:center;gap:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid #3a3a40;background:#111113;color:#eee;border-radius:8px;padding:4px 7px;font-size:12px}.kbd.empty{color:#777}.mini-list{display:flex;flex-direction:column;gap:10px}.mini-item{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--line-soft);background:#151518;border-radius:16px}.mini-icon{width:38px;height:38px;border-radius:12px;background:#24242a;display:grid;place-items:center;font-size:18px;flex:0 0 auto}.mini-main{min-width:0}.mini-main strong{display:block}.mini-main span{display:block;color:var(--muted);font-size:12px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mini-right{margin-left:auto;display:flex;align-items:center;gap:8px}.meter{height:8px;background:#2a2a30;border-radius:999px;overflow:hidden}.meter i{display:block;height:100%;border-radius:999px;background:#eaeaec;width:var(--w,50%)}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.7;background:#0f0f11;border:1px solid var(--line);border-radius:16px;padding:14px;color:#dcdce0;white-space:pre-wrap;overflow:auto}.preview-card{height:180px;border-radius:18px;background:linear-gradient(135deg,#333840,#15161a 55%,#0f1012);border:1px solid #3a3d43;position:relative;overflow:hidden}.preview-card:before{content:"PNG";position:absolute;top:12px;left:12px;background:#16171a;color:#fff;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800}.preview-card:after{content:"公爵 · image 2 · 2752×1536";position:absolute;left:14px;bottom:14px;color:#fff;text-shadow:0 1px 12px rgba(0,0,0,.9);font-weight:700}.field-stack{display:flex;flex-wrap:wrap;gap:8px}.danger-zone{border-color:rgba(255,139,139,.28);background:rgba(255,139,139,.04)}.danger-zone .section-head{border-bottom-color:rgba(255,139,139,.18)}.danger-zone h3{color:#ffb2b2}.subgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.hint{font-size:12px;color:var(--subtle);margin-top:8px}.placeholder{border:1px dashed #3a3a40;border-radius:18px;padding:18px;color:#a7a7ad;background:#111113}.provider{display:grid;grid-template-columns:42px 1fr auto;align-items:center;gap:12px}.provider .mini-icon{width:42px;height:42px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.badge-dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:#8b8b93}.badge-dot.good{background:var(--good)}.badge-dot.warn{background:var(--warn)}.badge-dot.danger{background:var(--danger)}
+    @media(max-width:1100px){:root{--sidebar:252px}.grid.cols-4{grid-template-columns:repeat(2,1fr)}.grid.cols-3{grid-template-columns:repeat(2,1fr)}.row{grid-template-columns:1fr}.control{justify-content:flex-start}.top-actions{display:none}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="window-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="brand">
+        <div class="brand-mark">PS</div>
+        <div><h1>PromptStudio</h1><p>设置中心 · 本地优先</p></div>
+      </div>
+      <div class="side-search"><input id="navSearch" placeholder="搜索设置页面…" /></div>
+      <nav id="nav" class="nav"></nav>
+      <div class="sidebar-footer">
+        <div class="library-pill">
+          <span class="pulse"></span>
+          <div><strong>PromptStudio Library</strong><span>/Users/you/PromptStudio.library</span></div>
+        </div>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="crumb"><span>设置</span><span>›</span><strong id="crumbTitle">设置首页</strong></div>
+        <div class="divider"></div>
+        <div class="global-search"><input placeholder="全局搜索：模型、标签、备份、快捷键…" /></div>
+        <div class="top-actions">
+          <button class="btn ghost">恢复默认</button>
+          <button class="btn primary">保存设置</button>
+        </div>
+      </header>
+      <div class="content"><div id="page" class="page"></div></div>
+    </main>
+  </div>
+
+<script>
+const navGroups = [
+  {title:'概览', items:[['home','⌂','设置首页','状态']]},
+  {title:'基础', items:[['general','⚙','通用','应用'],['library','▣','素材库与存储','库级'],['import','⤓','导入与采集','工作流'],['taxonomy','☷','分类与标签','库级']]},
+  {title:'Prompt 工作流', items:[['editor','✎','Prompt 编辑器','核心'],['models','◆','模型与 API','核心'],['run','▶','生成与运行','核心'],['search','⌕','搜索与索引','核心'],['preview','◫','卡片与预览','界面']]},
+  {title:'系统', items:[['shortcuts','⌨','快捷键','效率'],['backup','⇪','导出、备份与同步','安全'],['privacy','◉','隐私与安全','安全'],['plugins','⌬','插件与自动化','高级'],['advanced','⚒','高级与诊断','维护']]}
+];
+const meta = Object.fromEntries(navGroups.flatMap(g=>g.items.map(i=>[i[0],{icon:i[1],label:i[2],badge:i[3],group:g.title}])));
+
+function chip(text, cls=''){ return `<span class="chip ${cls}">${text}</span>`; }
+function btn(text, cls='ghost'){ return `<button class="btn ${cls}">${text}</button>`; }
+function smallBtn(text, cls='ghost'){ return `<button class="btn small ${cls}">${text}</button>`; }
+function toggle(on=true){ return `<label class="switch"><input type="checkbox" ${on?'checked':''}><span></span></label>`; }
+function select(opts){ return `<select>${opts.map((o,i)=>`<option ${i===0?'selected':''}>${o}</option>`).join('')}</select>`; }
+function input(value='', cls=''){ return `<input class="input ${cls}" value="${value}" />`; }
+function row(title, desc, control){ return `<div class="row"><div><div class="row-title">${title}</div><div class="row-desc">${desc}</div></div><div class="control">${control}</div></div>`; }
+function section(title, desc, rows, action=''){ return `<section class="section"><div class="section-head"><div class="section-title"><h3>${title}</h3><p>${desc}</p></div><div class="section-action">${action}</div></div><div class="rows">${rows}</div></section>`; }
+function danger(title, desc, rows){ return `<section class="section danger-zone"><div class="section-head"><div class="section-title"><h3>${title}</h3><p>${desc}</p></div></div><div class="rows">${rows}</div></section>`; }
+function hero(title, desc, chips=''){ return `<div class="hero"><h2>${title}</h2><p>${desc}</p><div class="hero-meta">${chips}</div></div>`; }
+function stat(title,value,desc,cls=''){ return `<div class="card"><h3>${title}</h3><div class="stat-value">${value}</div><div class="stat-caption">${desc}</div>${cls?`<div class="hint">${cls}</div>`:''}</div>`; }
+function mini(icon,title,desc,right=''){ return `<div class="mini-item"><div class="mini-icon">${icon}</div><div class="mini-main"><strong>${title}</strong><span>${desc}</span></div><div class="mini-right">${right}</div></div>`; }
+function seg(items,active=0){ return `<div class="seg">${items.map((x,i)=>`<button class="${i===active?'active':''}">${x}</button>`).join('')}</div>`; }
+function code(t){ return `<pre class="code">${t}</pre>`; }
+
+const pages = {
+  home(){ return hero('设置首页','把设置中心设计成 Prompt 工作流中控台：先让用户确认库是否安全、索引是否健康、模型是否可用，然后再进入具体配置。', chip('本地优先','good')+chip('当前库级设置')+chip('15 个设置页面','info')) + `
+    <div class="grid cols-4">
+      ${stat('Prompt 数量','3,214','当前库内已整理 Prompt')}
+      ${stat('附件素材','8,920','图片、参考板、工作流文件')}
+      ${stat('库大小','2.4 GB','数据库 128 MB，附件 2.1 GB')}
+      ${stat('上次备份','今天 14:06','自动备份状态正常','下一次：今晚 22:00')}
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><h3>库健康状态</h3><div class="mini-list">
+        ${mini('✓','全文索引正常','3,214 条 Prompt 已索引',chip('正常','good'))}
+        ${mini('↻','语义索引待更新','有 42 条新 Prompt 未加入向量索引',smallBtn('立即更新'))}
+        ${mini('⚠','疑似重复项','发现 18 组高度相似 Prompt',smallBtn('查看'))}
+        ${mini('◌','缓存占用','缩略图 420 MB，临时文件 36 MB',smallBtn('清理'))}
+      </div></div>
+      <div class="card"><h3>模型与隐私状态</h3><div class="mini-list">
+        ${mini('◆','默认图像模型','image 2 · 16:9 · 高质量模式',chip('可用','good'))}
+        ${mini('●','本地模型','Ollama 已连接，ComfyUI 未启动',chip('部分可用','warn'))}
+        ${mini('◉','本地优先模式','云端语义搜索和遥测已关闭',chip('已开启','good'))}
+        ${mini('🔑','API Key 存储','已使用系统钥匙串保存密钥',chip('安全','good'))}
+      </div></div>
+    </div>
+    ${section('快捷操作','把维护动作放在首页，让用户不必进入深层设置。',
+      row('立即备份当前库','生成一个包含数据库、附件、缩略图索引的完整备份包。',btn('立即备份','primary')+btn('打开备份目录'))+
+      row('重建索引','当搜索结果不准、导入大量文件或标签规则变更后使用。',btn('重建全文索引')+btn('重建语义索引'))+
+      row('清理缓存','清理缩略图、临时生成结果和过期运行日志，不影响原始 Prompt。',btn('清理缓存'))+
+      row('打开库文件夹','在系统文件管理器中打开当前 PromptStudio Library。',btn('打开文件夹'))
+    )}
+    ${section('推荐待办','根据库状态给出下一步建议。',
+      row('为 42 条新 Prompt 生成语义索引','启用后可以使用“找相似 Prompt”和自然语言搜索。',smallBtn('处理','primary'))+
+      row('为 18 组疑似重复 Prompt 做合并','重复判断基于归一化文本和语义相似度。',smallBtn('查看重复项'))+
+      row('设置自动备份保留策略','当前保留最近 10 份，建议同时保留最近 30 天。',smallBtn('前往设置'))
+    )}`; },
+
+  general(){ return hero('通用','设置启动、语言、默认动作、删除行为和更新策略。通用设置属于应用级，不随库切换变化。', chip('应用级')+chip('P0','good')) +
+    section('基础偏好','让用户控制应用启动和常用行为。',
+      row('启动时打开','决定启动 PromptStudio 后默认进入哪个视图。',select(['上次使用的库','指定库','空白首页']))+
+      row('默认新建位置','新建 Prompt 时默认保存到哪里。',select(['当前选中文件夹','待整理','指定文件夹…']))+
+      row('界面语言','当前原型以简体中文为主，后续可扩展英文。',select(['简体中文','English']))+
+      row('主题外观','参考当前截图，建议第一版先做深色主题。',seg(['跟随系统','深色','浅色'],1))
+    )+
+    section('操作行为','把高频动作变成可配置规则。',
+      row('双击卡片时','卡片双击是素材管理工具的核心效率入口。',select(['打开详情面板','进入编辑模式','复制 Prompt','运行测试']))+
+      row('复制 Prompt 后显示提示','复制成功后在右上角出现轻提示。',toggle(true))+
+      row('删除前二次确认','删除 Prompt、文件夹或版本前弹出确认。',toggle(true))+
+      row('回收站保留时间','超过时间后自动清理，也可手动清空。',select(['30 天','7 天','永久保留直到手动清理']))
+    )+
+    section('更新','控制应用更新节奏。',
+      row('自动检查更新','启动后静默检查新版本，不自动安装。',toggle(true))+
+      row('更新通道','稳定版适合正式项目，测试版适合尝鲜。',select(['稳定版','测试版','开发版']))+
+      row('更新日志','查看最近版本变化、修复和实验功能。',btn('查看更新日志'))
+    ); },
+
+  library(){ return hero('素材库与存储','本地 Prompt 工具最重要的是让用户知道数据在哪里、是否安全、能否迁移和恢复。', chip('库级设置')+chip('P0','good')+chip('本地资产')) +
+    `<div class="grid cols-3">
+      ${stat('当前库','PromptStudio Library','/Users/you/PromptStudio.library')}
+      ${stat('数据库','128 MB','3,214 条 Prompt，22,406 个版本')}
+      ${stat('附件','2.1 GB','图片、参考板、JSON 工作流')}
+    </div>`+
+    section('当前库','当前库是 PromptStudio 的核心资产，所有库级设置都绑定到这里。',
+      row('库名称','显示在侧边栏底部、备份包和窗口标题中。',input('PromptStudio Library'))+
+      row('库路径','可复制路径或在系统文件管理器中打开。',btn('打开文件夹')+btn('复制路径'))+
+      row('存储模式','复制入库更安全；引用外部文件更节省空间。',seg(['复制附件入库','引用外部文件'],0))+
+      row('附件目录结构','决定库内部文件组织方式，迁移时保持稳定。',select(['按 Prompt ID','按日期','按文件夹层级']))
+    )+
+    section('库操作','支持多库、迁移和合并。',
+      row('新建库','为不同项目、团队或客户创建独立 Prompt 库。',btn('新建库','primary'))+
+      row('打开已有库','打开本机、外置硬盘、NAS 或云盘目录中的库。',btn('打开已有库'))+
+      row('合并库','把另一个 PromptStudio 库合并到当前库，保留版本与附件。',btn('合并库'))+
+      row('迁移库','将库完整移动到新的目录，并修复内部引用。',btn('迁移库'))
+    )+
+    section('缓存与维护','维护搜索速度、预览速度和数据库健康。',
+      row('缩略图缓存','当前占用 420 MB。清理后会在浏览时重新生成。',btn('清理缩略图缓存'))+
+      row('临时文件','API 调用临时结果、导入过程缓存、失败任务残留。',btn('清理临时文件'))+
+      row('数据库压缩','清理删除记录和历史碎片，减少库体积。',btn('压缩数据库'))+
+      row('缺失附件检查','查找引用存在但文件缺失的附件。',btn('开始检查'))
+    )+
+    danger('危险操作','这些操作会改变库结构，建议操作前先备份。',
+      row('修复当前库','扫描并修复损坏记录、无效版本关系和孤立标签。',btn('修复库','danger'))+
+      row('重置当前库设置','不会删除 Prompt，但会清空库级偏好和自动规则。',btn('重置库设置','danger'))
+    ); },
+
+  import(){ return hero('导入与采集','把外部 Prompt、图片元数据、网页内容和本地工作流快速收入库，并自动命名、打标签、去重。', chip('工作流入口')+chip('P1','warn')) +
+    section('导入来源','覆盖从文件、剪贴板、网页和图片元数据保存 Prompt 的常见场景。',
+      row('拖拽导入文件','支持 Markdown、TXT、JSON、CSV、PNG/JPG、ComfyUI 工作流。',toggle(true))+
+      row('剪贴板监听','检测到复制大段 Prompt 时弹出“保存到 PromptStudio”。',toggle(true))+
+      row('全局采集快捷键','在任意应用中保存选中文本或当前剪贴板内容。',`<span class="kbd">⌥ Space</span>${btn('修改')}`)+
+      row('浏览器插件','保存网页中的 Prompt、图片、来源链接和页面标题。',btn('安装插件'))+
+      row('图片元数据解析','从 Stable Diffusion、ComfyUI、Midjourney 图片中读取 Prompt 和参数。',toggle(true))
+    )+
+    section('导入规则','导入后自动命名、分类、打标签和去重。',
+      row('默认导入位置','建议使用“待整理”，避免导入内容污染正式分类。',select(['待整理','当前文件夹','指定文件夹…']))+
+      row('自动命名规则','首行标题最稳定；AI 自动标题适合批量导入。',select(['使用首行作为标题','模型名 + 日期','AI 自动生成标题','文件名']))+
+      row('自动打标签','根据关键词、模型名、尺寸、来源 URL 识别标签。',toggle(true))+
+      row('重复处理','发现重复 Prompt 时可以合并为新版本。',select(['提醒我选择','跳过重复项','创建副本','合并为新版本']))+
+      row('导入完成后','选择导入后是否进入编辑或保持后台。',select(['显示导入结果','打开详情面板','进入编辑模式','保持后台']))
+    )+
+    section('图片元数据字段映射','把不同工具的参数映射到 PromptStudio 标准字段。',
+      `<div class="row"><div><div class="row-title">字段映射预览</div><div class="row-desc">将外部参数统一为 Prompt、Negative Prompt、Model、Size、Seed、Steps、CFG。</div></div><div class="control">${btn('编辑映射')}</div></div>
+       <div style="padding:0 20px 20px">${code('Prompt: {{parameters.prompt}}\nNegative: {{parameters.negative_prompt}}\nModel: {{parameters.model}}\nSize: {{width}} × {{height}}\nSeed: {{seed}}')}</div>`
+    ); },
+
+  taxonomy(){ return hero('分类与标签','把 Eagle 的文件夹、标签、智能文件夹能力转换为 Prompt 管理规则。重点是降低整理成本。', chip('库级')+chip('自动整理')+chip('P0','good')) +
+    section('标签管理','集中管理标签、颜色、别名和合并。',
+      row('标签颜色','角色、场景、风格、模型、状态可使用不同颜色区分。',toggle(true))+
+      row('标签别名','把 realistic / 写实 / real photo 归并为同义词。',btn('管理别名'))+
+      row('标签合并','把重复或相近标签合并，自动更新关联 Prompt。',btn('合并标签'))+
+      row('常用标签快捷入口','在右侧详情和编辑器中优先显示常用标签。',toggle(true))
+    )+
+    section('自动标签规则','根据 Prompt 内容、模型、参数、来源自动加标签。',
+      `<div style="padding:0 20px 20px"><table class="table"><thead><tr><th>规则</th><th>条件</th><th>动作</th><th>状态</th></tr></thead><tbody>
+        <tr><td>角色设定</td><td>包含 character / portrait / 角色</td><td>加标签：角色</td><td>${chip('启用','good')}</td></tr>
+        <tr><td>哥特场景</td><td>包含 gothic / cathedral / castle</td><td>加标签：哥特</td><td>${chip('启用','good')}</td></tr>
+        <tr><td>待补模型</td><td>模型字段为空</td><td>加入智能文件夹：缺少模型</td><td>${chip('启用','good')}</td></tr>
+      </tbody></table><div class="hint">规则顺序可拖拽，冲突时以靠前规则优先。</div></div>`+
+      row('新增自动标签规则','通过关键词、正则、字段条件或语义条件创建规则。',btn('新建规则','primary'))
+    )+
+    section('智能文件夹','根据条件动态聚合，不移动原始 Prompt。',
+      row('内置智能文件夹','待整理、最近修改、高价值 Prompt、多版本 Prompt、缺少模型、疑似重复。',btn('管理智能文件夹'))+
+      row('待整理规则','无标签、无分类、缺标题、缺模型的 Prompt 自动进入待整理。',toggle(true))+
+      row('重复检测阈值','基于归一化文本和语义相似度。',`<input class="input small-input" value="92%" />`+
+        btn('开始扫描'))+
+      row('文件夹密码','为敏感文件夹启用密码或系统生物认证。',toggle(false))
+    ); },
+
+  editor(){ return hero('Prompt 编辑器','PromptStudio 的核心差异点。这里配置字段结构、变量语法、版本策略、自动保存和片段库。', chip('核心')+chip('P0','good')+chip('版本化')) +
+    section('编辑模式','支持普通文本和结构化 Prompt 两种写法。',
+      row('默认 Prompt 类型','决定新建 Prompt 时的字段模板和参数面板。',select(['文生图','图生图','LLM 对话','角色设定','工作流']))+
+      row('默认编辑模式','普通模式适合快速记录，结构化模式适合专业复用。',seg(['普通模式','结构化模式'],1))+
+      row('默认字段','新建时自动显示这些字段，可在单个 Prompt 内隐藏。',btn('配置字段'))+
+      row('Markdown 渲染','支持标题、引用、代码块、表格和任务列表。',toggle(true))+
+      row('Token 统计','显示字符数、词数和估算 token 数。',toggle(true))
+    )+
+    section('变量模板','让 Prompt 可以复用和批量生成。',
+      row('变量语法','建议使用双大括号，清晰且易于检索。',seg(['{{变量}}','${变量}','<变量>'],0))+
+      row('复制前填写变量','复制或运行含变量 Prompt 时弹出变量表单。',toggle(true))+
+      row('变量默认值','支持在变量中设置默认值，例如 {{风格=写实}}。',toggle(true))+
+      row('变量面板位置','编辑器右侧、运行前弹窗或底部抽屉。',select(['运行前弹窗','编辑器右侧','底部抽屉']))+
+      `<div style="padding:0 20px 20px">${code('生成一张 {{比例=16:9}} 的 {{角色}} 角色造型参考板，风格为 {{风格=写实电影感}}，背景为 {{场景}}。')}</div>`
+    )+
+    section('自动保存与版本','Prompt 迭代很频繁，版本策略必须可控。',
+      row('自动保存','编辑内容后自动保存，降低误关窗口风险。',toggle(true))+
+      row('自动保存间隔','编辑时每隔固定时间保存草稿。',select(['3 秒','5 秒','10 秒','仅失焦时保存']))+
+      row('版本生成规则','推荐“手动保存大版本 + 自动保存小版本”。',select(['手动保存版本','每次编辑生成版本','重大修改才保存','手动大版本 + 自动小版本']))+
+      row('版本命名规则','用于右侧详情中的 V1.0、V1.1、V2.0。',select(['语义版本号','日期时间','自定义名称']))+
+      row('版本差异对比','两个版本之间显示新增、删除和修改片段。',toggle(true))
+    )+
+    section('Prompt 片段库','把高频短语、镜头、风格和负面词变成可插入片段。',
+      row('片段分类','角色、镜头、光线、构图、风格、负面词、参数。',btn('管理片段'))+
+      row('输入时自动补全','输入 `/` 或 `#` 弹出片段和标签建议。',toggle(true))+
+      row('敏感信息提醒','检测 API Key、邮箱、手机号、客户名等敏感片段。',toggle(true))
+    ); },
+
+  models(){ return hero('模型与 API','集中管理云端模型、本地模型、API Key、Base URL、代理和默认参数。密钥应存入系统钥匙串。', chip('核心')+chip('P0','good')+chip('密钥安全','info')) +
+    `<div class="grid cols-3">
+      <div class="card provider"><div class="mini-icon">◆</div><div><h3>image 2</h3><p>默认图像模型 · 已连接</p></div>${chip('可用','good')}</div>
+      <div class="card provider"><div class="mini-icon">●</div><div><h3>Ollama</h3><p>本地模型 · 127.0.0.1:11434</p></div>${chip('可用','good')}</div>
+      <div class="card provider"><div class="mini-icon">▢</div><div><h3>ComfyUI</h3><p>本地工作流 · 未启动</p></div>${chip('离线','warn')}</div>
+    </div>`+
+    section('模型供应商','添加云端或本地模型供应商，并测试连接。',
+      row('启用供应商','按需启用 OpenAI、Anthropic、Google、Ollama、LM Studio、ComfyUI 等。',btn('管理供应商','primary'))+
+      row('API Key 存储','密钥写入系统钥匙串，配置文件只保存引用 ID。',chip('系统钥匙串','good')+btn('管理密钥'))+
+      row('Base URL','支持兼容 OpenAI 格式的自定义接口地址。',input('https://api.example.com/v1'))+
+      row('代理设置','可使用系统代理，也可单独设置 HTTP / SOCKS。',select(['使用系统代理','不使用代理','自定义 HTTP 代理','自定义 SOCKS 代理']))+
+      row('连接测试','测试所有启用模型的认证、延迟和可用性。',btn('测试全部连接'))
+    )+
+    section('默认模型与参数','按 Prompt 类型设置默认模型和参数预设。',
+      row('文生图默认模型','用于新建图像 Prompt 和复制完整参数。',select(['image 2','Nano Banana','Seedance 2.0','ComfyUI Workflow']))+
+      row('LLM 默认模型','用于文本 Prompt 测试、自动命名、自动打标签。',select(['GPT-5.5 Pro','本地 Qwen','Claude','Gemini']))+
+      row('默认尺寸','新建文生图 Prompt 的默认画幅。',seg(['1:1','4:3','16:9','9:16'],2))+
+      row('默认质量','影响参数预设和生成费用估算。',seg(['快速','标准','高质量'],1))+
+      row('文件夹默认模型','不同项目文件夹可以绑定不同模型和参数。',btn('配置规则'))
+    )+
+    section('费用与限流','控制调用成本和失败重试。',
+      row('费用估算','运行前估算当前模型和参数的成本。',toggle(true))+
+      row('请求失败自动重试','网络错误或限流时自动重试。',toggle(true))+
+      row('最大并发请求','批量运行时限制并发数，避免触发限流。',select(['1','2','4','8']))+
+      row('调用云端模型前确认','对敏感库建议开启。',toggle(false))
+    ); },
+
+  run(){ return hero('生成与运行','Prompt 不只是收藏，还要被复制、变量填充、发送到 API、本地模型或工作流，并把结果回存。', chip('核心')+chip('P0','good')+chip('闭环')) +
+    section('默认运行方式','定义点击“运行”或快捷键时发生什么。',
+      row('运行按钮默认动作','适合第一版的默认值是复制到剪贴板，风险最低。',select(['复制到剪贴板','调用默认模型 API','发送到 ComfyUI','发送到 SD WebUI']))+
+      row('复制前变量填写','Prompt 包含变量时先弹窗填写变量。',toggle(true))+
+      row('运行前显示参数确认','运行云端或高费用模型前显示确认面板。',toggle(true))+
+      row('运行失败处理','失败后保留输入、错误信息和重试入口。',select(['保留失败记录并提醒','静默失败','自动重试直到成功']))
+    )+
+    section('复制格式','PromptStudio 的核心复用动作。用户可以为不同工具配置输出模板。',
+      row('默认复制格式','适合日常复制到其他生成工具。',select(['纯 Prompt','Markdown 卡片','JSON','OpenAI Messages','Midjourney 命令','Stable Diffusion 参数','ComfyUI 参数']))+
+      row('复制时包含字段','决定是否包含标题、标签、Negative、模型和参数。',btn('配置字段'))+
+      row('复制后动作','复制后是否标记使用次数、更新时间或加入历史。',toggle(true))+
+      `<div style="padding:0 20px 20px">${code('# {{title}}\n\n## Prompt\n{{prompt}}\n\n## Negative Prompt\n{{negativePrompt}}\n\nModel: {{model}} · Size: {{size}} · Seed: {{seed}}')}</div>`
+    )+
+    section('运行历史与结果回存','形成 Prompt → 运行 → 结果 → 版本的闭环。',
+      row('保存运行历史','记录输入、输出、模型、参数、耗时和费用估算。',toggle(true))+
+      row('历史保留时间','过期历史可清理，不影响 Prompt 本体。',select(['永久保留','90 天','30 天','7 天']))+
+      row('生成结果自动回存','API 返回的图片或文本自动保存为附件。',toggle(true))+
+      row('结果保存方式','保存为附件、保存为新版本或保存到运行历史。',select(['附件 + 运行历史','仅运行历史','保存为新版本']))+
+      row('输出命名规则','按标题、日期、模型和版本组合命名。',input('{{title}}_{{model}}_{{date}}'))
+    )+
+    section('批量运行','适合批量测试变量模板或多模型对比。',
+      row('最大并发数','避免触发 API 限流或本地显存压力。',select(['1','2','4','8']))+
+      row('每次请求间隔','用于控制请求节奏。',select(['无间隔','1 秒','3 秒','5 秒']))+
+      row('Seed 策略','图像生成时控制随机性。',select(['每次随机','固定当前 Seed','从 Prompt 字段读取']))
+    ); },
+
+  search(){ return hero('搜索与索引','搜索要覆盖关键词、标签、模型、Prompt 类型、参数、版本、收藏状态和语义相似度。', chip('核心')+chip('P0','good')+chip('全文 + 语义')) +
+    section('全文搜索','控制哪些字段进入索引，以及中文搜索体验。',
+      row('索引范围','标题、Prompt、Negative、描述、备注、标签、来源 URL。',btn('选择字段'))+
+      row('中文搜索增强','支持拼音、简繁转换和模糊匹配。',toggle(true))+
+      row('搜索回收站','默认不搜索回收站，避免结果污染。',toggle(false))+
+      row('索引状态','全文索引 3,214 条，最后更新 14:18。',chip('正常','good')+btn('重建索引'))
+    )+
+    section('高级搜索语法','给高级用户提供类似代码搜索的精确能力。',
+      row('启用高级语法','支持 AND、OR、括号、排除词和字段搜索。',toggle(true))+
+      row('搜索语法帮助','在搜索框输入 `?` 或点击按钮查看语法。',btn('查看语法'))+
+      `<div style="padding:0 20px 20px">${code('tag:角色 model:"image 2" -废弃\n(type:文生图 OR type:图生图) size:16:9 favorite:true\nprompt:"哥特" AND negative:"模糊"')}</div>`
+    )+
+    section('语义搜索','通过 Embedding 找到表达不同但含义相近的 Prompt。',
+      row('启用语义搜索','适合大库、相似 Prompt、灵感召回。',toggle(false))+
+      row('Embedding 模型','本地模型更隐私，云端模型效果可能更好。',select(['本地 embedding 模型','云端 embedding 模型']))+
+      row('新内容自动索引','导入或编辑后自动加入语义索引。',toggle(true))+
+      row('相似度阈值','影响“相似 Prompt”和重复检测灵敏度。',`<input class="input small-input" value="0.82" />`)
+    )+
+    section('排除规则','不希望进入索引的内容可以在这里排除。',
+      row('排除敏感文件夹','带锁文件夹不进入语义索引。',toggle(true))+
+      row('排除附件 OCR 内容','第一版建议关闭 OCR 索引，降低成本和误差。',toggle(true))+
+      row('排除运行历史','搜索结果只展示资产，不展示临时运行记录。',toggle(false))
+    ); },
+
+  preview(){ return hero('卡片与预览','中间瀑布流和右侧详情面板决定浏览效率。用户应该可以控制卡片密度、显示字段和敏感内容遮挡。', chip('界面')+chip('P1','warn')) +
+    `<div class="grid cols-3">
+      <div class="preview-card"></div>
+      <div class="card"><h3>卡片密度</h3><p>中尺寸 · 显示模型、尺寸、版本和 Hover 操作。</p><div class="hero-meta">${chip('标题')} ${chip('模型')} ${chip('尺寸')} ${chip('版本')}</div></div>
+      <div class="card"><h3>详情面板</h3><p>右侧显示 Prompt、参数、标签、历史版本、文件信息。</p><div class="meter" style="margin-top:16px"><i style="--w:68%"></i></div><div class="hint">字段显示 68%</div></div>
+    </div>`+
+    section('卡片显示','控制瀑布流卡片的尺寸、比例和字段。',
+      row('卡片尺寸','小尺寸适合快速浏览，大尺寸适合图片参考板。',seg(['小','中','大','自适应'],1))+
+      row('卡片比例','固定比例更整齐，跟随素材比例更接近 Eagle 浏览体验。',seg(['固定比例','跟随素材比例'],1))+
+      row('显示字段','标题、模型、尺寸、标签、收藏、版本、创建时间。',btn('配置字段'))+
+      row('显示 Prompt 摘要','在卡片底部显示 Prompt 前两行。',toggle(false))+
+      row('Hover 快捷操作','编辑、复制、收藏、版本历史、更多。',toggle(true))
+    )+
+    section('右侧详情面板','让用户决定详情面板中字段的出现顺序。',
+      row('默认状态','打开详情、收起详情，或记住上次状态。',select(['记住上次状态','默认展开','默认收起']))+
+      row('字段顺序','封面、标题、Prompt、模型、参数、标签、版本、来源、文件信息。',btn('拖拽排序'))+
+      row('长 Prompt 显示','折叠长内容，点击展开全文。',toggle(true))+
+      row('历史版本显示','在详情面板中显示 V1.0、V1.1、V2.0 快捷切换。',toggle(true))
+    )+
+    section('预览与缩略图','控制图片参考板、透明图和敏感内容预览。',
+      row('缩略图生成','优先使用首张附件，也可设置自定义封面。',select(['首张附件','自动生成封面','自定义封面']))+
+      row('透明背景显示','透明 PNG 使用棋盘格或深色背景。',select(['深色背景','透明棋盘格','浅色背景']))+
+      row('敏感内容遮挡','带有指定标签的卡片默认模糊显示。',toggle(true))+
+      row('需要遮挡的标签','例如：客户项目、未发布、敏感、私密。',input('客户项目, 未发布, 私密'))
+    ); },
+
+  shortcuts(){ return hero('快捷键','效率工具必须允许用户自定义快捷键、检测冲突，并支持全局采集和快速复制。', chip('应用级')+chip('P0','good')+chip('效率')) +
+    section('快捷键设置','搜索、录入、冲突检测和恢复默认。',
+      row('快捷键搜索','按动作名称、页面、功能关键词搜索。',input('搜索动作，例如：复制 Prompt'))+
+      row('冲突检测','录入快捷键时自动提示冲突动作。',toggle(true))+
+      row('导入导出配置','适合在多台设备之间同步键位习惯。',btn('导出')+btn('导入'))+
+      row('恢复默认快捷键','只恢复快捷键，不影响其他设置。',btn('恢复默认'))
+    )+
+    `<section class="section"><div class="section-head"><div class="section-title"><h3>内置快捷键表</h3><p>第一版建议提供这些默认快捷键，并允许逐项修改。</p></div></div><div style="padding:0 20px 20px"><table class="table"><thead><tr><th>动作</th><th>快捷键</th><th>作用域</th><th>操作</th></tr></thead><tbody>
+      <tr><td>新建 Prompt</td><td><span class="kbd">⌘ N</span></td><td>应用内</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>全局搜索</td><td><span class="kbd">⌘ K</span></td><td>应用内</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>快速采集</td><td><span class="kbd">⌥ Space</span></td><td>全局</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>复制 Prompt</td><td><span class="kbd">⌘ C</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>复制完整参数</td><td><span class="kbd">⇧ ⌘ C</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>收藏</td><td><span class="kbd">F</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>添加标签</td><td><span class="kbd">T</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>移动到文件夹</td><td><span class="kbd">M</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+      <tr><td>版本历史</td><td><span class="kbd">V</span></td><td>选中卡片</td><td>${smallBtn('修改')}</td></tr>
+    </tbody></table></div></section>`+
+    section('标签与文件夹快捷键','让常用整理动作一键完成。',
+      row('常用标签快捷键','例如 F1=角色，F2=场景，F3=待整理。',btn('配置标签快捷键'))+
+      row('快速移动文件夹','给常用文件夹绑定快捷键，移动选中 Prompt。',btn('配置文件夹快捷键'))+
+      row('数字键评分','允许 1-5 快速设置 Prompt 评分。',toggle(true))
+    ); },
+
+  backup(){ return hero('导出、备份与同步','本地工具必须让用户随时能备份、恢复、迁移和导出。导出模板要适配 Markdown、JSON 和其他生成工具。', chip('安全')+chip('P0','good')+chip('迁移')) +
+    section('自动备份','保护数据库、附件、版本和索引。',
+      row('启用自动备份','建议默认开启，备份到用户指定目录。',toggle(true))+
+      row('备份频率','每天、每周或退出应用时备份。',select(['每天 22:00','每周日 22:00','退出应用时','手动备份']))+
+      row('备份位置','可选择本地、外置硬盘、NAS 或云盘同步目录。',btn('选择目录')+btn('打开目录'))+
+      row('保留策略','限制备份数量和时间，避免无限占用空间。',select(['保留最近 10 份','保留最近 30 天','保留最近 10 份 + 30 天']))+
+      row('立即备份','生成完整备份包，可用于恢复和迁移。',btn('立即备份','primary'))
+    )+
+    section('恢复与同步','恢复前建议自动生成当前库快照。',
+      row('从备份恢复','选择备份包并恢复为新库或覆盖当前库。',btn('选择备份包'))+
+      row('云盘同步提示','把库放入 iCloud、Dropbox、OneDrive 等同步目录时进行冲突检测。',toggle(true))+
+      row('Git 备份','高级用户可将 Prompt 以 Markdown 方式同步到 Git。',toggle(false))+
+      row('同步冲突处理','多个设备修改同一 Prompt 时如何合并。',select(['提醒我选择','保留两个版本','以后修改为准']))
+    )+
+    section('导出','支持单项、文件夹或整库导出。',
+      row('默认导出格式','Markdown 适合阅读，JSON 适合迁移，CSV 适合表格整理。',select(['Markdown','JSON','CSV','TXT','ZIP 完整包']))+
+      row('导出范围','当前选中、当前文件夹、搜索结果或整个库。',select(['当前选中','当前文件夹','搜索结果','整个库']))+
+      row('包含附件','可选择只导出 Prompt，或包含图片、参考素材、工作流文件。',toggle(true))+
+      row('包含版本历史','导出全部版本，或只导出最新版。',seg(['最新版','全部版本'],0))+
+      row('脱敏导出','移除 API Key、个人备注、来源 URL 和敏感标签。',toggle(true))
+    )+
+    section('导出模板','用户可以自定义 Markdown / JSON 输出结构。',
+      `<div style="padding:0 20px 20px">${code('# {{title}}\n\n## Prompt\n{{prompt}}\n\n## Parameters\n- Model: {{model}}\n- Size: {{size}}\n- Seed: {{seed}}\n\n## Tags\n{{tags}}')}</div>`+
+      row('编辑导出模板','不同格式可以保存多个模板。',btn('编辑模板'))
+    ); },
+
+  privacy(){ return hero('隐私与安全','Prompt 可能包含商业创意、客户信息、私有角色设定和密钥。隐私设置必须明确、独立、默认保守。', chip('安全')+chip('本地优先','good')+chip('P0','good')) +
+    section('本地优先与联网控制','让用户清楚哪些功能会把内容发送到外部服务。',
+      row('本地优先模式','开启后禁止云端 AI 分析、云端语义搜索和遥测。',toggle(true))+
+      row('云端模型调用前确认','每次把 Prompt 发送到云端模型前弹窗确认。',toggle(true))+
+      row('云端 Embedding','会把 Prompt 发送给第三方服务生成向量，默认关闭。',toggle(false))+
+      row('匿名遥测','默认关闭，只收集崩溃和性能摘要，不包含 Prompt。',toggle(false))+
+      row('网络权限清单','查看所有可能联网的功能、供应商和请求目的。',btn('查看清单'))
+    )+
+    section('密钥与锁定','保护 API Key 和敏感文件夹。',
+      row('API Key 存储方式','密钥保存到系统钥匙串，不明文写入配置文件。',chip('系统钥匙串','good')+btn('管理密钥'))+
+      row('应用启动锁定','打开 PromptStudio 时需要密码或系统认证。',toggle(false))+
+      row('闲置自动锁定','离开电脑后自动锁定应用。',select(['15 分钟','30 分钟','1 小时','关闭']))+
+      row('文件夹密码','带锁文件夹需要单独认证才可查看。',toggle(true))+
+      row('敏感卡片遮挡','带敏感标签的卡片和详情默认模糊。',toggle(true))
+    )+
+    section('敏感内容检测与日志','减少密钥、客户信息和个人隐私泄露风险。',
+      row('敏感词检测','检测 API Key、邮箱、手机号、客户名、内部项目名。',toggle(true))+
+      row('日志脱敏','日志中不记录完整 Prompt、API Key 和文件路径。',toggle(true))+
+      row('运行历史脱敏','导出或共享运行历史时移除敏感字段。',toggle(true))+
+      row('清除使用痕迹','清空搜索历史、运行历史、最近打开、剪贴板缓存。',btn('清除痕迹'))
+    )+
+    danger('高风险操作','执行前请确认已经备份。',
+      row('删除所有运行历史','只删除运行记录，不删除 Prompt 本体和附件。',btn('删除历史','danger'))+
+      row('清除所有密钥引用','从本机移除 PromptStudio 保存的 API Key 引用。',btn('清除密钥','danger'))
+    ); },
+
+  plugins(){ return hero('插件与自动化','为浏览器采集、本地 API、MCP、脚本动作和外部编辑器预留扩展能力。第一版可先做入口，后续逐步开放。', chip('高级')+chip('P2','warn')+chip('生态')) +
+    section('浏览器插件','从网页保存 Prompt、图片、来源 URL 和页面标题。',
+      row('Chrome / Edge 插件','右键保存选中文本、图片和网页信息。',btn('安装 Chrome 插件'))+
+      row('Safari 扩展','适合 macOS 用户的系统级网页采集入口。',btn('安装 Safari 扩展'))+
+      row('保存网页截图','采集时同时保存页面截图作为参考素材。',toggle(false))+
+      row('自动读取来源 URL','将网页标题、URL、发布时间写入来源字段。',toggle(true))
+    )+
+    section('本地 API 与 MCP','让其他工具或 AI 助手访问本地 Prompt 库。',
+      row('启用本地 API','只监听 127.0.0.1，默认需要 Token。',toggle(false))+
+      row('API 端口','本地服务端口。',input('17321','small-input'))+
+      row('API 权限','读取、写入、运行、导出分权限授权。',btn('配置权限'))+
+      row('启用 MCP 服务','让支持 MCP 的 AI 助手查询、检索和调用 Prompt。',toggle(false))+
+      row('MCP 权限范围','建议默认只读，写入需单独授权。',seg(['只读','读写','运行'],0))
+    )+
+    section('自动化动作','对选中 Prompt 执行脚本或外部工具。',
+      row('自定义动作','例如：翻译 Prompt、生成标题、发送到 ComfyUI、导出 Markdown。',btn('新建动作','primary'))+
+      row('Webhook','新建、修改、导出或运行后触发 Webhook。',toggle(false))+
+      row('外部编辑器','用 VS Code、Typora 或系统默认编辑器打开 Markdown。',select(['VS Code','Typora','系统默认编辑器']))+
+      row('macOS Shortcuts / Windows 脚本','通过系统自动化执行批处理。',btn('配置脚本'))
+    )+
+    section('生成工具集成','把 Prompt 直接发送到常见本地生成工具。',
+      row('ComfyUI','配置服务地址、默认 workflow 和参数映射。',btn('配置 ComfyUI'))+
+      row('Stable Diffusion WebUI','配置地址、模型、Sampler、Steps 和 CFG 映射。',btn('配置 SD WebUI'))+
+      row('LM Studio / Ollama','用于本地文本模型测试和自动整理。',btn('配置本地 LLM'))
+    ); },
+
+  advanced(){ return hero('高级与诊断','用于排查性能、修复库、导出诊断包、清理孤立数据和管理实验功能。默认折叠在最后，避免干扰普通用户。', chip('维护')+chip('高级')) +
+    section('日志与诊断','帮助开发者排查问题，同时避免泄露用户 Prompt。',
+      row('日志级别','调试级别会记录更多信息，建议仅在排查问题时开启。',select(['错误','警告','信息','调试']))+
+      row('日志脱敏','导出诊断包前移除 API Key、完整 Prompt 和敏感路径。',toggle(true))+
+      row('导出诊断包','包含系统信息、版本、日志摘要、库结构，不包含密钥。',btn('导出诊断包'))+
+      row('打开日志目录','在系统文件管理器中打开日志文件夹。',btn('打开目录'))
+    )+
+    section('数据库维护','解决异常退出、磁盘同步冲突或升级后的结构问题。',
+      row('检查数据库完整性','扫描损坏记录、重复 ID、无效版本关系。',btn('开始检查'))+
+      row('修复索引关系','修复 Prompt、附件、版本、标签之间的关联。',btn('修复关系'))+
+      row('清理孤立附件','删除没有任何 Prompt 引用的附件文件。',btn('扫描孤立附件'))+
+      row('重建所有缓存','重建缩略图、全文索引和语义索引。',btn('重建缓存'))
+    )+
+    section('实验功能','新能力默认关闭，适合高级用户试用。',
+      row('AI 自动命名','导入后用本地或云端模型生成标题。',toggle(false))+
+      row('AI 自动打标签','根据 Prompt 内容建议标签。',toggle(false))+
+      row('本地语义搜索','使用本地 Embedding 模型生成向量索引。',toggle(false))+
+      row('MCP 服务','让 AI 助手通过受控权限访问 Prompt 库。',toggle(false))+
+      row('多库聚合搜索','跨多个 PromptStudio Library 搜索。',toggle(false))
+    )+
+    danger('重置与清除','危险操作集中放在最后，并在执行前强制二次确认。',
+      row('重置应用设置','重置主题、快捷键、通用偏好，不删除任何库。',btn('重置应用设置','danger'))+
+      row('重置当前库设置','清空当前库的标签规则、导入规则和索引设置。',btn('重置库设置','danger'))+
+      row('清除全部缓存','删除缩略图、临时文件、搜索索引，可重新生成。',btn('清除缓存','danger'))
+    ); }
+};
+
+function renderNav(filter=''){
+  const q = filter.trim().toLowerCase();
+  document.getElementById('nav').innerHTML = navGroups.map(group => {
+    const items = group.items.filter(i => !q || `${i[2]} ${i[3]} ${group.title}`.toLowerCase().includes(q));
+    if(!items.length) return '';
+    return `<div class="nav-group"><div class="nav-group-title">${group.title}</div>` + items.map(i =>
+      `<a class="nav-item" data-key="${i[0]}" href="#${i[0]}"><span class="nav-icon">${i[1]}</span><span class="nav-label">${i[2]}</span><span class="nav-badge">${i[3]}</span></a>`
+    ).join('') + `</div>`;
+  }).join('');
+  markActive();
+}
+function currentKey(){ return location.hash.replace('#','') || 'home'; }
+function markActive(){ const key=currentKey(); document.querySelectorAll('.nav-item').forEach(a=>a.classList.toggle('active',a.dataset.key===key)); }
+function render(){
+  let key = currentKey(); if(!pages[key]) key='home';
+  document.getElementById('crumbTitle').textContent = meta[key].label;
+  document.getElementById('page').innerHTML = pages[key]();
+  markActive();
+  document.title = `PromptStudio 设置 - ${meta[key].label}`;
+}
+window.addEventListener('hashchange', render);
+document.getElementById('navSearch').addEventListener('input', e => renderNav(e.target.value));
+renderNav(); render();
+</script>
+</body>
+</html>

@@ -29,7 +29,7 @@ struct PromptStudioView: View {
                                 .transition(sidebarTransition)
                         }
 
-                        MainContentView(isSplitResizing: isSplitResizing)
+                        MainContentView(isSidebarVisible: $isSidebarVisible, isSplitResizing: isSplitResizing)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         InspectorView()
@@ -87,11 +87,6 @@ struct PromptStudioView: View {
                     .position(x: proxy.size.width - layout.inspector, y: proxy.size.height / 2)
                     .ignoresSafeArea(.container, edges: .vertical)
 
-                    TitlebarNavigationControls(isSidebarVisible: $isSidebarVisible)
-                        .padding(.leading, 104)
-                        .padding(.top, 4)
-                        .ignoresSafeArea(.container, edges: .top)
-                        .zIndex(20)
                 }
             }
             .background(StudioColor.appBackground)
@@ -929,7 +924,21 @@ private struct SidebarRow: View {
             return true
         }
         .contextMenu {
-            if let folder {
+            if collection == .trash {
+                Button {
+                    state.restoreAllTrashItems()
+                } label: {
+                    Label("还原全部项目", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(state.trashCount == 0)
+
+                Button(role: .destructive) {
+                    state.emptyTrash()
+                } label: {
+                    Label("清空回收站", systemImage: "trash")
+                }
+                .disabled(state.trashCount == 0)
+            } else if let folder {
                 folderContextMenu(folder)
             }
         }
@@ -1025,11 +1034,12 @@ private struct RecentRow: View {
 private struct MainContentView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-                TopToolbarView()
+                TopToolbarView(isSidebarVisible: $isSidebarVisible)
                     .padding(.horizontal, 24)
                     .padding(.top, 12)
                     .padding(.bottom, 10)
@@ -1072,10 +1082,13 @@ private struct MainContentView: View {
 private struct TopToolbarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var isSidebarVisible: Bool
     @State private var searchHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            TitlebarNavigationControls(isSidebarVisible: $isSidebarVisible)
+
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(StudioColor.secondaryText)
@@ -1100,7 +1113,40 @@ private struct TopToolbarView: View {
             .onHover { searchHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
 
+            ThumbnailScaleControl()
         }
+    }
+}
+
+private struct ThumbnailScaleControl: View {
+    @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "minus")
+                .font(StudioFont.symbol(10, weight: .medium))
+                .foregroundStyle(StudioColor.secondaryText)
+            Slider(value: $thumbnailScale, in: 0.72...1.36)
+                .frame(width: 128)
+                .controlSize(.small)
+            Image(systemName: "plus")
+                .font(StudioFont.symbol(10, weight: .medium))
+                .foregroundStyle(StudioColor.secondaryText)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(isHovered ? StudioColor.panelRaised : StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isHovered ? StudioColor.primaryAction.opacity(0.32) : StudioColor.hairline, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .help("调整缩略图大小")
+        .onHover { isHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
     }
 }
 
@@ -1206,6 +1252,7 @@ private struct CompactModelChip: View {
 
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
+    @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
     let items: [PromptItem]
     let isSplitResizing: Bool
     @State private var draggedItemID: String?
@@ -1213,7 +1260,7 @@ private struct MasonryGridView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let computedColumnCount = max(2, min(4, Int(proxy.size.width / 250)))
+            let computedColumnCount = computedColumnCount(for: proxy.size.width)
             let columnCount = lockedColumnCount ?? computedColumnCount
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
             let layout = makeMasonryLayout(items, columnCount: columnCount, width: width)
@@ -1260,6 +1307,13 @@ private struct MasonryGridView: View {
             transaction.animation = nil
             transaction.disablesAnimations = true
         }
+    }
+
+    private func computedColumnCount(for availableWidth: CGFloat) -> Int {
+        let contentWidth = max(0, availableWidth - 48)
+        let targetWidth = 250 * CGFloat(thumbnailScale)
+        let proposed = Int((contentWidth + 12) / (targetWidth + 12))
+        return max(2, min(6, proposed))
     }
 
     private func makeMasonryLayout(_ items: [PromptItem], columnCount: Int, width: CGFloat) -> MasonryLayoutResult {
@@ -1698,20 +1752,67 @@ private struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(StudioFont.symbol(44))
-                .foregroundStyle(StudioColor.secondaryText)
-            Text("没有找到素材")
+            if isTrash {
+                LucideTrash2Icon()
+                    .frame(width: 58, height: 58)
+                    .foregroundStyle(StudioColor.secondaryText)
+                Text("回收站为空")
+                    .font(StudioFont.font(24))
+                Text("移入回收站的素材会显示在这里。")
+                    .foregroundStyle(StudioColor.secondaryText)
+            } else {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(StudioFont.symbol(44))
+                    .foregroundStyle(StudioColor.secondaryText)
+                Text("没有找到素材")
                 .font(StudioFont.font(24))
-            Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
-                .foregroundStyle(StudioColor.secondaryText)
-            Button("导入素材") {
-                state.modal = .importAssets
+                Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
+                    .foregroundStyle(StudioColor.secondaryText)
+                Button("导入素材") {
+                    state.modal = .importAssets
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
             }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(StudioColor.text)
+    }
+
+    private var isTrash: Bool {
+        state.filter.collection == .trash
+    }
+}
+
+private struct LucideTrash2Icon: View {
+    var body: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: 20, y: 18))
+                path.addLine(to: CGPoint(x: 38, y: 18))
+                path.move(to: CGPoint(x: 25, y: 18))
+                path.addLine(to: CGPoint(x: 26.8, y: 13))
+                path.addLine(to: CGPoint(x: 31.2, y: 13))
+                path.addLine(to: CGPoint(x: 33, y: 18))
+                path.move(to: CGPoint(x: 14, y: 23))
+                path.addLine(to: CGPoint(x: 44, y: 23))
+            }
+            .stroke(style: StrokeStyle(lineWidth: 3.2, lineCap: .round, lineJoin: .round))
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(lineWidth: 3.2)
+                .frame(width: 26, height: 30)
+                .offset(y: 7)
+
+            Path { path in
+                path.move(to: CGPoint(x: 25, y: 30))
+                path.addLine(to: CGPoint(x: 25, y: 44))
+                path.move(to: CGPoint(x: 33, y: 30))
+                path.addLine(to: CGPoint(x: 33, y: 44))
+            }
+            .stroke(style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+        }
+        .frame(width: 58, height: 58)
+        .accessibilityLabel("空回收站")
     }
 }
 

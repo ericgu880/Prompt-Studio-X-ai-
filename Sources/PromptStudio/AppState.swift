@@ -296,9 +296,31 @@ final class AppState: ObservableObject {
         }
     }
 
-    func emptyTrash() {
+    func restoreAllTrashItems() {
+        let deletedItems = items.filter(\.isDeleted)
+        guard !deletedItems.isEmpty else {
+            showToast("回收站为空")
+            return
+        }
         do {
-            for item in items where item.isDeleted {
+            for item in deletedItems {
+                try repository?.markDeleted(itemID: item.id, deletedAt: nil)
+            }
+            reload(selecting: deletedItems.first?.id)
+            showToast("已还原全部项目")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    func emptyTrash() {
+        let deletedItems = items.filter(\.isDeleted)
+        guard !deletedItems.isEmpty else {
+            showToast("回收站为空")
+            return
+        }
+        do {
+            for item in deletedItems {
                 try repository?.permanentlyDelete(itemID: item.id)
             }
             reload()
