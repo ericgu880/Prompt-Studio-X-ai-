@@ -226,6 +226,47 @@ func testFolderCRUDRoundTrip() throws {
     try expect(try repository.loadFolders().contains(where: { $0.id == folder.id }) == false, "deleted folder should be removed")
 }
 
+func testAutomationServiceCreatesAndUpdatesPrompts() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let folder = try service.createFolder(name: "Agent Folder")
+    let created = try service.createPrompt(
+        AutomationCreatePromptInput(
+            title: "Agent Prompt",
+            prompt: "cinematic product photo",
+            negativePrompt: "watermark",
+            tags: ["产品", "写实"],
+            model: "Image 2",
+            folderID: folder.id
+        )
+    )
+
+    try expect(created.folderId == folder.id, "agent-created prompt should attach to folder")
+    try expect(created.currentVersion?.prompt == "cinematic product photo", "agent-created prompt should persist prompt")
+
+    let updated = try service.updatePrompt(
+        id: created.id,
+        input: AutomationUpdatePromptInput(prompt: "updated prompt", tags: ["更新"])
+    )
+    try expect(updated.versions.count == 2, "agent prompt update should append a version")
+    try expect(updated.currentVersion?.prompt == "updated prompt", "agent prompt update should become current version")
+    try expect(updated.tags == ["更新"], "agent prompt update should replace tags")
+}
+
+func testAutomationServiceImportsTextMetadata() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".md")
+    try "Prompt: forest fashion portrait --no logo\nTags: 风景, 人物".write(to: file, atomically: true, encoding: .utf8)
+
+    let imported = try service.importFiles(paths: [file.path])
+    try expect(imported.count == 1, "agent import should create one item")
+    try expect(imported[0].assetKind == .markdown, "markdown import should keep asset kind")
+    try expect(imported[0].currentVersion?.prompt == "forest fashion portrait", "markdown import should parse prompt")
+    try expect(imported[0].currentVersion?.negativePrompt == "logo", "markdown import should parse negative prompt")
+    try expect(imported[0].tags.contains("风景") && imported[0].tags.contains("人物"), "markdown import should parse tags")
+}
+
 do {
     try testSearchFiltering()
     try testFolderFilteringUsesStableFolderID()
@@ -239,6 +280,8 @@ do {
     try testLastUsedUpdatePersistsForRecentSorting()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
+    try testAutomationServiceCreatesAndUpdatesPrompts()
+    try testAutomationServiceImportsTextMetadata()
     print("PromptStudioSmokeTests passed")
 } catch {
     fputs("PromptStudioSmokeTests failed: \(error.localizedDescription)\n", stderr)

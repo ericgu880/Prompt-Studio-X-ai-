@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "PromptStudio", targets: ["PromptStudio"]),
+        .executable(name: "promptstudioctl", targets: ["PromptStudioCLI"]),
         .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"])
     ],
     targets: [
@@ -24,6 +25,10 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
+        ),
+        .executableTarget(
+            name: "PromptStudioCLI",
+            dependencies: ["PromptStudioCore"]
         ),
         .executableTarget(
             name: "PromptStudioSmokeTests",

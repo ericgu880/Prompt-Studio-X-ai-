@@ -173,7 +173,7 @@ public enum PromptImportParser {
     }
 
     private static func extractNoFlag(from text: String, into negativePrompt: inout String) {
-        let pattern = #"--no\s+(.+?)(?=\s--[a-zA-Z]+|$)"#
+        let pattern = #"--no\s+(.+?)(?=\s--[a-zA-Z]+|\n|$)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
@@ -200,7 +200,7 @@ public enum PromptImportParser {
     }
 
     private static func cleanPrompt(_ text: String) -> String {
-        let withoutNo = text.replacingOccurrences(of: #"--no\s+(.+?)(?=\s--[a-zA-Z]+|$)"#, with: "", options: [.regularExpression])
+        let withoutNo = text.replacingOccurrences(of: #"--no\s+(.+?)(?=\s--[a-zA-Z]+|\n|$)"#, with: "", options: [.regularExpression])
         let withoutParameters = withoutNo.replacingOccurrences(of: #"--[a-zA-Z][a-zA-Z0-9_-]*\s+[^-\n]+"#, with: "", options: [.regularExpression])
         return withoutParameters.trimmingCharacters(in: .whitespacesAndNewlines)
     }
