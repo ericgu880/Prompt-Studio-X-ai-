@@ -2,7 +2,7 @@ import SwiftUI
 
 enum StudioColor {
     static let appBackground = Color(hex: 0x0A0A0A)
-    static let previewBackground = Color(hex: 0x0A0A0A)
+    static let previewBackground = Color(hex: 0x181818)
     static let sidebar = Color(hex: 0x333333)
     static let panel = Color(hex: 0x141414)
     static let panelRaised = Color(hex: 0x1E1E1E)
@@ -24,6 +24,10 @@ enum StudioColor {
     static let twilight = Color(hex: 0xC4B5FD)
 }
 
+enum StudioLayout {
+    static let contentTopPadding: CGFloat = 40
+}
+
 enum StudioFont {
     static let family = "PingFang SC"
 
@@ -31,7 +35,7 @@ enum StudioFont {
         .custom(family, size: size).weight(weight)
     }
 
-    static func title(_ size: CGFloat = 18) -> Font {
+    static func title(_ size: CGFloat = 14) -> Font {
         font(size, weight: .semibold)
     }
 
@@ -39,7 +43,7 @@ enum StudioFont {
         font(size, weight: weight)
     }
 
-    static func button(_ size: CGFloat = 14) -> Font {
+    static func button(_ size: CGFloat = 12) -> Font {
         font(size, weight: .medium)
     }
 
@@ -177,7 +181,7 @@ private struct CapsuleButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(StudioFont.button(13))
+            .font(StudioFont.button())
             .foregroundStyle(filled ? StudioColor.primaryActionText : StudioColor.text)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
@@ -230,7 +234,7 @@ private struct IconCircleButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(StudioFont.body(13))
+            .font(StudioFont.body(14))
             .foregroundStyle(StudioColor.text)
             .frame(width: 28, height: 28)
             .background(Circle().fill(isHovered || configuration.isPressed ? StudioColor.selection : StudioColor.control))

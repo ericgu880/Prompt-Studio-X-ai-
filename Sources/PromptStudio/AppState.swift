@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import PromptStudioCore
+import UniformTypeIdentifiers
 
 struct ExportOptions {
     var promptMarkdown: Bool
@@ -9,6 +10,57 @@ struct ExportOptions {
 
     var hasSelection: Bool {
         promptMarkdown || pngImage || jpegImage
+    }
+}
+
+enum PromptStudioExportFormat: String, CaseIterable, Identifiable {
+    case imagePNG
+    case imageJPEG
+    case imagePDF
+    case promptText
+    case promptMarkdown
+    case promptWord
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .imagePNG: ".png"
+        case .imageJPEG: ".jpg"
+        case .imagePDF: ".pdf"
+        case .promptText: ".txt"
+        case .promptMarkdown: ".md"
+        case .promptWord: ".docx"
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .imagePNG: "png"
+        case .imageJPEG: "jpg"
+        case .imagePDF: "pdf"
+        case .promptText: "txt"
+        case .promptMarkdown: "md"
+        case .promptWord: "docx"
+        }
+    }
+
+    var requiresImage: Bool {
+        switch self {
+        case .imagePNG, .imageJPEG, .imagePDF: true
+        case .promptText, .promptMarkdown, .promptWord: false
+        }
+    }
+
+    var contentType: UTType {
+        switch self {
+        case .imagePNG: .png
+        case .imageJPEG: .jpeg
+        case .imagePDF: .pdf
+        case .promptText: .plainText
+        case .promptMarkdown: UTType(filenameExtension: "md") ?? .plainText
+        case .promptWord: UTType(filenameExtension: "docx") ?? .data
+        }
     }
 }
 
@@ -155,6 +207,10 @@ final class AppState: ObservableObject {
         items.filter { $0.favorite && !$0.isDeleted }.count
     }
 
+    var recentCount: Int {
+        items.filter { !$0.isDeleted && $0.lastUsedAt.timeIntervalSince1970 > 0 }.count
+    }
+
     func load() {
         do {
             let repository = try PromptRepository(libraryURL: PromptRepository.defaultLibraryURL())
@@ -186,7 +242,6 @@ final class AppState: ObservableObject {
             scheduleLastUsedUpdate(itemID: item.id)
             return
         }
-        pushCurrentNavigationSnapshot()
         selectedID = item.id
         scheduleLastUsedUpdate(itemID: item.id)
     }
@@ -231,6 +286,39 @@ final class AppState: ObservableObject {
         showToast("已复制提示词")
         if let id = selectedID {
             scheduleLastUsedUpdate(itemID: id)
+        }
+    }
+
+    func markdownDocumentText(for item: PromptItem) -> String {
+        guard item.assetKind == .markdown else { return item.currentVersion?.prompt ?? "" }
+        if !item.assetPath.isEmpty,
+           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
+            return text
+        }
+        return item.currentVersion?.prompt ?? ""
+    }
+
+    func copyMarkdownDocumentText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            showToast("当前文档没有内容")
+            return
+        }
+        AppKitBridge.copyToPasteboard(text)
+        showToast("已复制文档信息")
+        if let id = selectedID {
+            scheduleLastUsedUpdate(itemID: id)
+        }
+    }
+
+    func copyItemContent(_ item: PromptItem) {
+        if item.assetKind == .markdown {
+            copyMarkdownDocumentText(markdownDocumentText(for: item))
+        } else {
+            if selectedID != item.id {
+                select(item)
+            }
+            copySelectedPrompt()
         }
     }
 
@@ -369,6 +457,34 @@ final class AppState: ObservableObject {
         }
 
         save(item, toast: "已保存 Prompt")
+    }
+
+    func saveMarkdownDocument(_ text: String, for item: PromptItem) {
+        guard var current = selectedItem, current.id == item.id else { return }
+        do {
+            if !current.assetPath.isEmpty {
+                let url = URL(fileURLWithPath: current.assetPath)
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                if let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber {
+                    current.fileSize = size.int64Value
+                }
+            }
+            current.updatedAt = Date()
+            current.lastUsedAt = Date()
+            current.versions.append(
+                PromptVersion(
+                    promptItemId: current.id,
+                    version: nextVersion(after: current.versions.last?.version),
+                    prompt: text,
+                    negativePrompt: "",
+                    parameters: current.currentVersion?.parameters ?? [:],
+                    note: "右侧栏文档编辑"
+                )
+            )
+            save(current, toast: "已保存文档信息")
+        } catch {
+            modal = .error("保存文档失败：\(error.localizedDescription)")
+        }
     }
 
     func createPrompt(
@@ -552,6 +668,42 @@ final class AppState: ObservableObject {
             }
 
             showToast(exportedCount > 1 ? "已导出 \(exportedCount) 个文件" : "导出完成")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    func exportSelected(format: PromptStudioExportFormat) {
+        guard let item = selectedItem else { return }
+        guard !format.requiresImage || item.assetKind == .image else {
+            showToast("当前素材不是图片")
+            return
+        }
+
+        let defaultName = defaultExportName(for: item, format: format)
+        guard let requestedURL = AppKitBridge.chooseExportURL(defaultName: defaultName, allowedContentType: format.contentType) else { return }
+        let target = uniqueExportURL(for: requestedURL)
+
+        do {
+            let source = URL(fileURLWithPath: item.assetPath)
+            switch format {
+            case .imagePNG:
+                guard FileManager.default.fileExists(atPath: source.path) else { throw CocoaError(.fileNoSuchFile) }
+                try overwriteImage(from: source, to: target, format: .png)
+            case .imageJPEG:
+                guard FileManager.default.fileExists(atPath: source.path) else { throw CocoaError(.fileNoSuchFile) }
+                try overwriteImage(from: source, to: target, format: .jpeg)
+            case .imagePDF:
+                guard FileManager.default.fileExists(atPath: source.path) else { throw CocoaError(.fileNoSuchFile) }
+                try AppKitBridge.writeImagePDF(from: source, to: target)
+            case .promptText:
+                try overwriteText(plainPrompt(for: item), to: target)
+            case .promptMarkdown:
+                try overwriteText(exportMarkdownText(for: item), to: target)
+            case .promptWord:
+                try AppKitBridge.writeDocx(text: exportMarkdownText(for: item), to: target)
+            }
+            showToast("导出完成")
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -1315,7 +1467,6 @@ final class AppState: ObservableObject {
                 try repository?.updateLastUsed(itemID: itemID, at: date)
                 if filter.collection == .recent, let index = items.firstIndex(where: { $0.id == itemID }) {
                     items[index].lastUsedAt = date
-                    refreshFilteredItems(selecting: itemID)
                 }
             } catch {
                 showToast("最近使用更新失败")
@@ -1394,6 +1545,28 @@ final class AppState: ObservableObject {
         """
     }
 
+    private func plainPrompt(for item: PromptItem) -> String {
+        if item.assetKind == .markdown {
+            return markdownDocumentText(for: item)
+        }
+        return """
+        \(item.title)
+
+        Model: \(item.modelName)
+        Size: \(item.displaySize)
+
+        Prompt:
+        \(item.currentVersion?.prompt ?? "")
+
+        Negative Prompt:
+        \(item.currentVersion?.negativePrompt ?? "")
+        """
+    }
+
+    private func exportMarkdownText(for item: PromptItem) -> String {
+        item.assetKind == .markdown ? markdownDocumentText(for: item) : markdownPrompt(for: item)
+    }
+
     private func overwriteText(_ text: String, to url: URL) throws {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
@@ -1417,6 +1590,19 @@ final class AppState: ObservableObject {
             index += 1
         }
         return candidate
+    }
+
+    private func uniqueExportURL(for requestedURL: URL) -> URL {
+        let directory = requestedURL.deletingLastPathComponent()
+        let fileExtension = requestedURL.pathExtension
+        let baseName = requestedURL.deletingPathExtension().lastPathComponent
+        return uniqueExportURL(in: directory, baseName: baseName, extension: fileExtension)
+    }
+
+    private func defaultExportName(for item: PromptItem, format: PromptStudioExportFormat) -> String {
+        let baseName = safeExportFileName(item.title)
+        let name = format.requiresImage ? baseName : "\(baseName)-提示词"
+        return "\(name).\(format.fileExtension)"
     }
 
     private func safeExportFileName(_ name: String) -> String {

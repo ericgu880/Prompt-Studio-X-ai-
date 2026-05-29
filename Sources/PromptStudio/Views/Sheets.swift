@@ -58,7 +58,7 @@ struct NewPromptSheet: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("新建 Prompt")
-                    .font(StudioFont.font(28, weight: .semibold))
+                    .font(StudioFont.font(14, weight: .semibold))
                 Text("创建一条新的图片或视频 Prompt，并保存到资源库")
                     .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.tertiaryText)
@@ -156,7 +156,7 @@ struct NewPromptSheet: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .font(StudioFont.font(13))
+                .font(StudioFont.font(12))
                 .foregroundStyle(StudioColor.text)
                 .padding(.horizontal, 11)
                 .frame(height: 30)
@@ -166,7 +166,7 @@ struct NewPromptSheet: View {
 
             TextField("输入后回车创建标签", text: $tagDraft)
                 .textFieldStyle(.plain)
-                .font(StudioFont.font(13))
+                .font(StudioFont.font(12))
                 .onSubmit(addTagFromDraft)
         }
         .padding(10)
@@ -196,7 +196,7 @@ struct NewPromptSheet: View {
                     Text(referenceURLs.isEmpty ? "将图片拖拽到此处，或点击上传" : "已选择 \(referenceURLs.count) 张参考图")
                         .font(StudioFont.font(14, weight: .medium))
                     Text(referenceURLs.isEmpty ? "支持 JPG、PNG、WEBP，单张不超过 20MB" : referenceURLs.map(\.lastPathComponent).joined(separator: "、"))
-                        .font(StudioFont.font(12))
+                        .font(StudioFont.font(14))
                         .foregroundStyle(StudioColor.tertiaryText)
                         .lineLimit(2)
                 }
@@ -278,12 +278,12 @@ private struct NewPromptField<Content: View>: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(StudioFont.font(15, weight: .semibold))
+                    .font(StudioFont.font(14, weight: .semibold))
                 Image(systemName: "info.circle")
                     .font(StudioFont.symbol(12))
                     .foregroundStyle(StudioColor.tertiaryText)
                 Text(help)
-                    .font(StudioFont.font(12.5))
+                    .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.tertiaryText)
             }
             content
@@ -375,7 +375,7 @@ private struct NewPromptEditor: View {
 private struct NewPromptPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(StudioFont.font(14, weight: .semibold))
+            .font(StudioFont.button(12))
             .foregroundStyle(Color.white)
             .padding(.horizontal, 28)
             .frame(height: 38)
@@ -387,7 +387,7 @@ private struct NewPromptPrimaryButtonStyle: ButtonStyle {
 private struct NewPromptSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(StudioFont.font(14, weight: .medium))
+            .font(StudioFont.button(12))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 26)
             .frame(height: 38)
@@ -498,7 +498,7 @@ struct ImportSheet: View {
                 Image(systemName: "tray.and.arrow.down")
                     .font(StudioFont.symbol(42))
                 Text("拖拽图片、视频、文本到主窗口，或点击下方选择文件")
-                    .font(StudioFont.font(15))
+                    .font(StudioFont.font(14))
                 Text("导入后会复制到本地资料库，并进入待完善信息状态。")
                     .foregroundStyle(StudioColor.secondaryText)
             }
@@ -524,7 +524,6 @@ struct ImportSheet: View {
 struct FilterSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
-    @State private var favoriteOnly = false
     @State private var hasPromptOnly = false
     @State private var hasReferenceOnly = false
     @State private var type: PromptType?
@@ -536,7 +535,6 @@ struct FilterSheet: View {
                     FilterToggle(title: "图片 Prompt", active: type == .image) { type = type == .image ? nil : .image }
                     FilterToggle(title: "视频 Prompt", active: type == .video) { type = type == .video ? nil : .video }
                 }
-                Toggle("仅收藏", isOn: $favoriteOnly)
                 Toggle("仅有 Prompt", isOn: $hasPromptOnly)
                 Toggle("仅有参考图", isOn: $hasReferenceOnly)
                 Text("模型、标签和文件夹筛选可通过顶部 Tab 与左侧导航组合使用。")
@@ -550,7 +548,7 @@ struct FilterSheet: View {
             .buttonStyle(TextHoverButtonStyle())
             Button("应用") {
                 state.filter.type = type
-                state.filter.favoriteOnly = favoriteOnly
+                state.filter.favoriteOnly = false
                 state.filter.hasPromptOnly = hasPromptOnly
                 state.filter.hasReferenceOnly = hasReferenceOnly
                 dismiss()
@@ -581,7 +579,7 @@ struct TagManagerSheet: View {
                     Divider().overlay(StudioColor.hairline)
                 }
                 Text("MVP 支持标签查看和筛选；重命名、合并和颜色将在下一步接入。")
-                    .font(StudioFont.font(12))
+                    .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.secondaryText)
             }
         } footer: {
@@ -604,10 +602,10 @@ struct VersionHistorySheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
                                     Text(version.version)
-                                        .font(StudioFont.font(16))
+                                        .font(StudioFont.font(14))
                                     Spacer()
                                     Text(version.createdAt.formatted(date: .numeric, time: .shortened))
-                                        .font(StudioFont.font(12))
+                                        .font(StudioFont.font(14))
                                         .foregroundStyle(StudioColor.secondaryText)
                                 }
                                 Text(version.prompt)
@@ -699,7 +697,7 @@ private struct ReferenceAssetCard: View {
                     .frame(minHeight: 36, alignment: .topLeading)
 
                 Text(reference.type.isEmpty ? "参考图" : reference.type)
-                    .font(StudioFont.font(12))
+                    .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.secondaryText)
                     .lineLimit(1)
             }
@@ -768,90 +766,70 @@ struct VariantSheet: View {
 struct ExportSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
-    @State private var exportPromptMarkdown = true
-    @State private var exportPNG = true
-    @State private var exportJPEG = false
 
     var body: some View {
         PromptFormShell(title: "导出") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("选择需要导出的文件。Prompt 本地保存不限制长度，导出的 Markdown 会保留完整文本。")
+            VStack(alignment: .leading, spacing: 16) {
+                Text("选择导出格式。图片格式只适用于图片素材；Prompt 导出会保留完整内容。")
                     .foregroundStyle(StudioColor.secondaryText)
                 if let item = state.selectedItem {
                     Text(item.title)
-                        .font(StudioFont.font(18))
-                    VStack(spacing: 10) {
-                        ExportOptionRow(
-                            title: "提示词.md",
-                            subtitle: "导出当前 Prompt、负面 Prompt、模型和尺寸信息",
-                            isOn: $exportPromptMarkdown
+                        .font(StudioFont.font(14))
+                    HStack(alignment: .top, spacing: 14) {
+                        exportColumn(
+                            title: "图片",
+                            formats: [.imagePNG, .imageJPEG, .imagePDF],
+                            item: item
                         )
-                        ExportOptionRow(
-                            title: "图片.png",
-                            subtitle: item.assetKind == .image ? "将当前图片导出为 PNG" : "当前素材不是图片，暂不支持 PNG 导出",
-                            isOn: $exportPNG
+                        exportColumn(
+                            title: "Prompt",
+                            formats: [.promptText, .promptMarkdown, .promptWord],
+                            item: item
                         )
-                        .disabled(item.assetKind != .image)
-                        .opacity(item.assetKind == .image ? 1 : 0.5)
-                        ExportOptionRow(
-                            title: "图片.jpg",
-                            subtitle: item.assetKind == .image ? "将当前图片导出为 JPG" : "当前素材不是图片，暂不支持 JPG 导出",
-                            isOn: $exportJPEG
-                        )
-                        .disabled(item.assetKind != .image)
-                        .opacity(item.assetKind == .image ? 1 : 0.5)
                     }
                     .padding(.top, 6)
-                    .onAppear {
-                        if item.assetKind != .image {
-                            exportPNG = false
-                            exportJPEG = false
-                        }
-                    }
                 }
             }
         } footer: {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
-            Button("导出") {
-                state.exportSelected(
-                    options: ExportOptions(
-                        promptMarkdown: exportPromptMarkdown,
-                        pngImage: exportPNG,
-                        jpegImage: exportJPEG
-                    )
-                )
-                dismiss()
-            }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
         }
-        .frame(width: 520, height: 430)
+        .frame(width: 560, height: 390)
     }
-}
 
-private struct ExportOptionRow: View {
-    let title: String
-    let subtitle: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(StudioFont.font(14))
-                    .foregroundStyle(StudioColor.text)
-                Text(subtitle)
-                    .font(StudioFont.font(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+    private func exportColumn(title: String, formats: [PromptStudioExportFormat], item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(StudioFont.font(14, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+            ForEach(formats) { format in
+                let enabled = !format.requiresImage || item.assetKind == .image
+                Button {
+                    dismiss()
+                    DispatchQueue.main.async {
+                        state.exportSelected(format: format)
+                    }
+                } label: {
+                    HStack {
+                        Text(format.title)
+                        Spacer()
+                        Image(systemName: "square.and.arrow.up")
+                            .font(StudioFont.symbol(12, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CapsuleButtonStyle())
+                .disabled(!enabled)
+                .opacity(enabled ? 1 : 0.45)
+                .help(enabled ? "导出 \(format.title)" : "当前素材不是图片")
             }
         }
-        .toggleStyle(.checkbox)
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .studioPanel(radius: 8)
     }
 }
+
 
 struct SettingsSheet: View {
     @EnvironmentObject private var state: AppState
@@ -1013,7 +991,7 @@ struct FolderDeleteConfirmationSheet: View {
         PromptFormShell(title: "删除文件夹") {
             VStack(alignment: .leading, spacing: 14) {
                 Text("确定删除「\(request.folderName)」？")
-                    .font(StudioFont.font(16, weight: .semibold))
+                    .font(StudioFont.font(14, weight: .semibold))
                 Text("文件夹及其子文件夹内 \(request.itemCount) 个素材将移入回收站，可从回收站恢复。文件夹树会从侧栏中移除。")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
@@ -1093,7 +1071,7 @@ private struct PromptTypeSegment: View {
             type = value
         } label: {
             Text(title)
-                .font(StudioFont.font(12))
+                .font(StudioFont.font(14))
                 .foregroundStyle(type == value ? StudioColor.primaryActionText : StudioColor.text)
                 .frame(width: 44, height: 28)
                 .background(Capsule().fill(type == value ? StudioColor.primaryAction : Color.clear))
@@ -1109,7 +1087,7 @@ struct PreviewSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text(state.selectedItem?.title ?? "预览")
-                    .font(StudioFont.font(16))
+                    .font(StudioFont.font(14))
                 Spacer()
                 Button("关闭") { state.modal = nil }
                     .buttonStyle(TextHoverButtonStyle())
@@ -1155,10 +1133,10 @@ struct PreviewSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.title)
-                        .font(StudioFont.font(18))
+                        .font(StudioFont.font(14))
                         .lineLimit(3)
                     Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.format)")
-                        .font(StudioFont.font(12))
+                        .font(StudioFont.font(14))
                         .foregroundStyle(StudioColor.secondaryText)
                 }
 
@@ -1206,7 +1184,7 @@ struct PreviewSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             previewTitle(title)
             Text(text.isEmpty ? "未填写" : text)
-                .font(StudioFont.font(12.5))
+                .font(StudioFont.font(14))
                 .lineSpacing(3)
                 .foregroundStyle(text.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
                 .padding(12)
@@ -1249,10 +1227,10 @@ private struct FilePreview: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
             VStack(spacing: 6) {
                 Text(item.title)
-                    .font(StudioFont.font(18))
+                    .font(StudioFont.font(14))
                     .lineLimit(2)
                 Text("\(item.assetKind.displayName) · \(item.format.isEmpty ? "FILE" : item.format)")
-                    .font(StudioFont.font(12))
+                    .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.secondaryText)
             }
         }
@@ -1319,7 +1297,7 @@ private struct ImagePreview: View {
                     Image(systemName: "photo")
                         .font(StudioFont.symbol(34))
                     Text("图片无法预览")
-                        .font(StudioFont.font(16))
+                        .font(StudioFont.font(14))
                 }
                 .foregroundStyle(StudioColor.secondaryText)
             }
@@ -1357,7 +1335,7 @@ private struct VideoPreviewPlayer: View {
                     Image(systemName: "video.slash")
                         .font(StudioFont.symbol(34))
                     Text("视频文件不存在")
-                        .font(StudioFont.font(16))
+                        .font(StudioFont.font(14))
                 }
                 .foregroundStyle(StudioColor.secondaryText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1427,7 +1405,7 @@ struct ErrorSheet: View {
                 .font(StudioFont.symbol(34))
                 .foregroundStyle(StudioColor.orange)
             Text("操作失败")
-                .font(StudioFont.font(20))
+                .font(StudioFont.font(14))
             Text(message)
                 .foregroundStyle(StudioColor.secondaryText)
                 .multilineTextAlignment(.center)
@@ -1453,7 +1431,7 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             HStack {
                 Text(title)
-                    .font(StudioFont.font(22))
+                    .font(StudioFont.font(14))
                 Spacer()
             }
             .padding(22)

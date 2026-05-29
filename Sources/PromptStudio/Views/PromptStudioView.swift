@@ -35,7 +35,18 @@ struct PromptStudioView: View {
                         InspectorView()
                             .frame(width: layout.inspector)
                     }
+                    .ignoresSafeArea(.container, edges: .top)
                     .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSidebarVisible)
+
+                    TopWindowControlsRow(
+                        isSidebarVisible: $isSidebarVisible,
+                        sidebarWidth: layout.sidebar,
+                        inspectorWidth: layout.inspector,
+                        totalWidth: proxy.size.width
+                    )
+                    .frame(width: proxy.size.width, height: 38, alignment: .topLeading)
+                    .ignoresSafeArea(.container, edges: .top)
+                    .zIndex(20)
 
                     if isSidebarVisible {
                         SplitResizeHotZone {
@@ -344,27 +355,81 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
 
 @MainActor
 private func clearTextFocus() {
-    NSApp.keyWindow?.makeFirstResponder(nil)
+    guard let window = NSApp.keyWindow else { return }
+    window.endEditing(for: nil)
+    if let contentView = window.contentView {
+        window.makeFirstResponder(contentView)
+    } else {
+        window.makeFirstResponder(nil)
+    }
 }
 
-private struct TitlebarNavigationControls: View {
-    @EnvironmentObject private var state: AppState
+private struct SidebarCollapseControl: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
-            TitlebarControlButton(
-                systemImage: "sidebar.left",
-                isActive: isSidebarVisible,
-                showsBackground: false,
-                accessibilityLabel: isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
-            ) {
-                withAnimation(StudioMotion.standard(reduceMotion: reduceMotion)) {
-                    isSidebarVisible.toggle()
-                }
+        TitlebarControlButton(
+            systemImage: "sidebar.left",
+            isActive: isSidebarVisible,
+            showsBackground: false,
+            accessibilityLabel: isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
+        ) {
+            withAnimation(StudioMotion.standard(reduceMotion: reduceMotion)) {
+                isSidebarVisible.toggle()
             }
+        }
+    }
+}
 
+private struct TopWindowControlsRow: View {
+    @Binding var isSidebarVisible: Bool
+    let sidebarWidth: CGFloat
+    let inspectorWidth: CGFloat
+    let totalWidth: CGFloat
+
+    private let topInset: CGFloat = 8
+    private let edgeInset: CGFloat = 14
+    private let mainInset: CGFloat = 24
+    private let scaleControlWidth: CGFloat = 196
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            SidebarCollapseControl(isSidebarVisible: $isSidebarVisible)
+                .padding(.top, topInset)
+                .padding(.leading, sidebarCollapseLeading)
+
+            TitlebarNavigationControls()
+                .padding(.top, topInset)
+                .padding(.leading, mainLeading)
+
+            ThumbnailScaleControl()
+                .frame(width: scaleControlWidth, alignment: .trailing)
+                .padding(.top, topInset)
+                .padding(.leading, scaleLeading)
+        }
+        .allowsHitTesting(true)
+    }
+
+    private var sidebarCollapseLeading: CGFloat {
+        guard isSidebarVisible else { return edgeInset }
+        return max(edgeInset, sidebarWidth - edgeInset - 26)
+    }
+
+    private var mainLeading: CGFloat {
+        (isSidebarVisible ? sidebarWidth : 0) + mainInset
+    }
+
+    private var scaleLeading: CGFloat {
+        max(mainLeading + 140, totalWidth - inspectorWidth - mainInset - scaleControlWidth)
+    }
+}
+
+private struct TitlebarNavigationControls: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        HStack(spacing: 5) {
             TitlebarControlButton(
                 systemImage: "arrow.left",
                 isEnabled: state.canNavigateBack,
@@ -447,6 +512,7 @@ private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var settingsHovered = false
+    @State private var sidebarScrollHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -462,12 +528,12 @@ private struct SidebarView: View {
             .padding(.horizontal, 14)
             .padding(.top, 12)
 
-            ScrollView(showsIndicators: false) {
+            SidebarHoverScrollView(isHovering: sidebarScrollHovered) {
                 VStack(alignment: .leading, spacing: 14) {
                     sidebarSection(nil) {
                         VStack(alignment: .leading, spacing: 4) {
                             SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                            SidebarRow(icon: "star.fill", title: "收藏", count: state.favoriteCount, collection: .favorites, tint: StudioColor.orange)
+                            SidebarRow(icon: "clock", title: "最近使用", count: state.recentCount, collection: .recent)
                             SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
                         }
                         Text("文件夹")
@@ -484,20 +550,30 @@ private struct SidebarView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 28)
             }
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+            .contentShape(Rectangle())
+            .onHover { sidebarScrollHovered = $0 }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    sidebarScrollHovered = true
+                case .ended:
+                    sidebarScrollHovered = false
+                }
+            }
 
             Button {
                 state.modal = .settings
             } label: {
-                HStack(spacing: 9) {
+                HStack(spacing: 8) {
                     Image(systemName: "gearshape")
                         .foregroundStyle(StudioColor.secondaryText)
                         .frame(width: 17)
                     Text("设置")
                     Spacer()
                 }
-                .font(StudioFont.font(13))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
                 .frame(height: 42)
                 .padding(.horizontal, 10)
@@ -515,7 +591,7 @@ private struct SidebarView: View {
             ZStack {
                 SidebarGlassBackground()
                     .ignoresSafeArea(.container, edges: .top)
-                StudioColor.sidebar.opacity(0.34)
+                StudioColor.sidebar.opacity(0.40)
                     .ignoresSafeArea(.container, edges: .top)
             }
         }
@@ -524,13 +600,13 @@ private struct SidebarView: View {
     private var windowChrome: some View {
         HStack {
             Text("PromptStudio")
-                .font(StudioFont.font(15))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
             Spacer()
         }
-        .padding(.top, 12)
+        .padding(.top, StudioLayout.contentTopPadding)
         .padding(.horizontal, 18)
     }
 
@@ -549,6 +625,116 @@ private struct SidebarView: View {
             }
             content()
         }
+    }
+}
+
+private struct SidebarHoverScrollView<Content: View>: View {
+    let isHovering: Bool
+    @ViewBuilder let content: () -> Content
+    @State private var internalHovering = false
+    @State private var scrollOffset: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { outerProxy in
+            ZStack(alignment: .topTrailing) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        GeometryReader { offsetProxy in
+                            Color.clear.preference(
+                                key: SidebarScrollOffsetPreferenceKey.self,
+                                value: offsetProxy.frame(in: .named("sidebarFolderScroll")).minY
+                            )
+                        }
+                        .frame(height: 0)
+
+                        content()
+                            .background(
+                                GeometryReader { contentProxy in
+                                    Color.clear.preference(
+                                        key: SidebarContentHeightPreferenceKey.self,
+                                        value: contentProxy.size.height
+                                    )
+                                }
+                            )
+                    }
+                }
+                .coordinateSpace(name: "sidebarFolderScroll")
+                .onPreferenceChange(SidebarScrollOffsetPreferenceKey.self) { scrollOffset = $0 }
+                .onPreferenceChange(SidebarContentHeightPreferenceKey.self) { contentHeight = $0 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if shouldShowScrollbar(viewportHeight: outerProxy.size.height) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.40))
+                        .frame(width: 2, height: scrollbarHeight(viewportHeight: outerProxy.size.height))
+                        .offset(y: scrollbarOffset(viewportHeight: outerProxy.size.height))
+                        .padding(.trailing, 12)
+                        .zIndex(10)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.clear)
+            .contentShape(Rectangle())
+            .onHover { internalHovering = $0 }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    internalHovering = true
+                case .ended:
+                    internalHovering = false
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.clear)
+        .contentShape(Rectangle())
+        .onHover { internalHovering = $0 }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                internalHovering = true
+            case .ended:
+                internalHovering = false
+            }
+        }
+    }
+
+    private func isScrollable(viewportHeight: CGFloat) -> Bool {
+        contentHeight > viewportHeight * 0.98
+    }
+
+    private func shouldShowScrollbar(viewportHeight: CGFloat) -> Bool {
+        isScrollable(viewportHeight: viewportHeight)
+    }
+
+    private func scrollbarHeight(viewportHeight: CGFloat) -> CGFloat {
+        guard contentHeight > 0 else { return 0 }
+        return max(34, viewportHeight * min(1, viewportHeight / contentHeight))
+    }
+
+    private func scrollbarOffset(viewportHeight: CGFloat) -> CGFloat {
+        let maxScroll = max(1, contentHeight - viewportHeight)
+        let progress = min(max(-scrollOffset / maxScroll, 0), 1)
+        return progress * max(0, viewportHeight - scrollbarHeight(viewportHeight: viewportHeight))
+    }
+}
+
+private struct SidebarScrollOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct SidebarContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -580,7 +766,7 @@ private struct FolderTreeRowView: View {
         HStack(spacing: 0) {
             treeIndent
 
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Image(systemName: "folder")
                     .foregroundStyle(StudioColor.text)
                     .frame(width: 17)
@@ -589,7 +775,7 @@ private struct FolderTreeRowView: View {
                     TextField("", text: $draftName)
                         .textFieldStyle(.plain)
                         .focused($nameFieldFocused)
-                        .font(StudioFont.font(13))
+                        .font(StudioFont.font(14))
                         .foregroundStyle(StudioColor.text)
                         .submitLabel(.done)
                         .onSubmit(commitInlineRename)
@@ -605,14 +791,14 @@ private struct FolderTreeRowView: View {
                         .truncationMode(.tail)
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 16)
 
                 if !isEditingName {
                     Text("\(row.count)")
                         .foregroundStyle(StudioColor.secondaryText)
                 }
             }
-            .font(StudioFont.font(13))
+            .font(StudioFont.font(14))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -888,18 +1074,18 @@ private struct SidebarRow: View {
         Button {
             state.setCollection(collection)
         } label: {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 Image(systemName: icon)
                     .foregroundStyle(tint)
                     .frame(width: 17)
                 Text(title)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer(minLength: 8)
+                Spacer(minLength: 16)
                 Text("\(count)")
                     .foregroundStyle(StudioColor.secondaryText)
             }
-            .font(StudioFont.font(13))
+            .font(StudioFont.font(14))
             .foregroundStyle(StudioColor.text)
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -1013,7 +1199,7 @@ private struct RecentRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             Text(item.title)
                 .lineLimit(1)
-                .font(StudioFont.font(12))
+                .font(StudioFont.font(14))
             Spacer()
             Text(item.lastUsedAt.formatted(date: .omitted, time: .shortened))
                 .font(StudioFont.font(11))
@@ -1039,10 +1225,10 @@ private struct MainContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-                TopToolbarView(isSidebarVisible: $isSidebarVisible)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 12)
-                    .padding(.bottom, 10)
+            TopToolbarView()
+                .padding(.horizontal, 24)
+                .padding(.top, StudioLayout.contentTopPadding)
+                .padding(.bottom, 8)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) {
                     AppKitBridge.zoomKeyWindow()
@@ -1063,10 +1249,14 @@ private struct MainContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(StudioColor.previewBackground)
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded {
+                clearTextFocus()
+            })
             .id(contentStateKey)
             .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
-        .background(StudioColor.appBackground)
+        .background(StudioColor.previewBackground)
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
     }
 
@@ -1082,38 +1272,99 @@ private struct MainContentView: View {
 private struct TopToolbarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Binding var isSidebarVisible: Bool
     @State private var searchHovered = false
+    @State private var searchFocused = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            TitlebarNavigationControls(isSidebarVisible: $isSidebarVisible)
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(StudioColor.secondaryText)
+            SearchInputField(text: Binding(
+                get: { state.filter.query },
+                set: { state.filter.query = $0 }
+            ), placeholder: "全能搜索：名称、提示词、分类、标签、描述", isFocused: $searchFocused)
+            .frame(height: 22)
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
+        .background(searchHovered || searchFocused ? StudioColor.panelRaised : StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(searchHovered || searchFocused ? StudioColor.primaryAction.opacity(0.32) : StudioColor.hairline, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { searchHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchFocused)
+    }
+}
 
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(StudioColor.secondaryText)
-                TextField("全能搜索：名称、提示词、分类、标签、描述", text: Binding(
-                    get: { state.filter.query },
-                    set: { state.filter.query = $0 }
-                ))
-                .textFieldStyle(.plain)
-                .font(StudioFont.font(14))
-                .foregroundStyle(StudioColor.text)
-            }
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .background(searchHovered ? StudioColor.panelRaised : StudioColor.panel)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(searchHovered ? StudioColor.primaryAction.opacity(0.32) : StudioColor.hairline, lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .onHover { searchHovered = $0 }
-            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: searchHovered)
+private struct SearchInputField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    @Binding var isFocused: Bool
 
-            ThumbnailScaleControl()
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField()
+        textField.delegate = context.coordinator
+        textField.isBordered = false
+        textField.isBezeled = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.textColor = NSColor.white
+        textField.font = NSFont(name: "PingFangSC-Regular", size: 14) ?? .systemFont(ofSize: 14)
+        textField.lineBreakMode = .byTruncatingTail
+        textField.placeholderAttributedString = NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.34),
+                .font: textField.font as Any
+            ]
+        )
+        textField.stringValue = text
+        return textField
+    }
+
+    func updateNSView(_ textField: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if textField.stringValue != text {
+            textField.stringValue = text
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: SearchInputField
+
+        init(_ parent: SearchInputField) {
+            self.parent = parent
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            parent.isFocused = true
+            setWhiteInsertionPoint(for: notification.object)
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            parent.isFocused = false
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let textField = notification.object as? NSTextField else { return }
+            parent.text = textField.stringValue
+            setWhiteInsertionPoint(for: textField)
+        }
+
+        private func setWhiteInsertionPoint(for object: Any?) {
+            guard let textField = object as? NSTextField,
+                  let editor = textField.window?.fieldEditor(true, for: textField) as? NSTextView else { return }
+            editor.insertionPointColor = NSColor.white
         }
     }
 }
@@ -1136,7 +1387,7 @@ private struct ThumbnailScaleControl: View {
                 .foregroundStyle(StudioColor.secondaryText)
         }
         .padding(.horizontal, 12)
-        .frame(height: 44)
+        .frame(height: 28)
         .background(isHovered ? StudioColor.panelRaised : StudioColor.panel)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
@@ -1179,6 +1430,7 @@ private struct ModelTabsView: View {
                 }
 
                 Button {
+                    clearTextFocus()
                     state.modal = .modelFilterManager
                 } label: {
                     Image(systemName: "plus")
@@ -1224,6 +1476,7 @@ private struct CompactModelChip: View {
 
     var body: some View {
         Button {
+            clearTextFocus()
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -1365,6 +1618,9 @@ private enum AssetCardMetrics {
     }
 
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
+        if item.assetKind.supportsGeneratedThumbnail, item.width > 0, item.height > 0 {
+            return width * CGFloat(item.height) / CGFloat(item.width)
+        }
         let parts = item.displayAspectRatio.split(separator: ":").compactMap { Double($0) }
         guard parts.count == 2, parts[0] > 0 else { return width * 1.25 }
         return max(170, min(430, width * CGFloat(parts[1] / parts[0])))
@@ -1415,30 +1671,30 @@ private struct AssetCardView: View {
                 .background(Capsule().fill(StudioColor.control))
                 .padding(12)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: infoSpacing) {
                 Spacer()
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: infoSpacing) {
                     Text(item.title)
-                        .font(StudioFont.font(14))
+                        .font(StudioFont.font(infoFontSize))
                         .lineLimit(1)
                     Text("\(item.modelName) · \(item.displaySize)")
-                        .font(StudioFont.font(12))
+                        .font(StudioFont.font(infoFontSize))
                         .foregroundStyle(StudioColor.secondaryText)
 
-                    if isSelected {
-                        HStack(spacing: 14) {
-                            cardAction("pencil") { state.modal = .editPrompt }
-                            cardAction("doc.on.doc") { state.copySelectedPrompt() }
-                            cardAction(item.favorite ? "star.fill" : "star") { state.toggleFavorite(item) }
-                            cardAction("clock") { state.modal = .versionHistory }
-                            Spacer()
-                        }
-                        .padding(.top, 2)
+                    HStack(spacing: 14) {
+                        cardAction("pencil") { state.requestInlineEdit(item) }
+                        cardAction("doc.on.doc") { state.copyItemContent(item) }
+                        cardAction("clock") { state.modal = .versionHistory }
+                        Spacer()
                     }
+                    .padding(.top, 2)
+                    .opacity(isSelected ? 1 : 0)
+                    .allowsHitTesting(isSelected)
                 }
-                .padding(14)
+                .padding(infoPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(width: contentWidth, height: contentHeight, alignment: .bottomLeading)
             .foregroundStyle(StudioColor.text)
 
         }
@@ -1571,10 +1827,10 @@ private struct AssetCardView: View {
 
         Button {
             runContextAction {
-                state.copySelectedPrompt()
+                state.copyItemContent(item)
             }
         } label: {
-            Label("复制提示词", systemImage: "doc.on.doc")
+            Label(item.assetKind == .markdown ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
         }
         .disabled(!hasPrompt)
 
@@ -1595,14 +1851,6 @@ private struct AssetCardView: View {
         }
 
         Divider()
-
-        Button {
-            runContextAction {
-                state.toggleFavorite(item)
-            }
-        } label: {
-            Label(item.favorite ? "取消收藏" : "收藏", systemImage: item.favorite ? "star.slash" : "star")
-        }
 
         Button {
             runContextAction {
@@ -1642,7 +1890,22 @@ private struct AssetCardView: View {
     }
 
     private var hasPrompt: Bool {
-        item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if item.assetKind == .markdown {
+            return !state.markdownDocumentText(for: item).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private var infoFontSize: CGFloat {
+        isSelected ? 14 : 12
+    }
+
+    private var infoSpacing: CGFloat {
+        isSelected ? 8 : 3
+    }
+
+    private var infoPadding: CGFloat {
+        isSelected ? 14 : 12
     }
 
     private var contextFolderRows: [AppState.FolderRow] {
@@ -1675,9 +1938,7 @@ private struct AssetCardView: View {
     }
 
     private func gradientHeight(for cardHeight: CGFloat) -> CGFloat {
-        let selectedHeight = min(210, max(132, cardHeight * 0.54))
-        let normalHeight = min(128, max(86, cardHeight * 0.36))
-        return isSelected ? selectedHeight : normalHeight
+        min(210, max(132, cardHeight * 0.54))
     }
 
     private var assetBadgeText: String {
@@ -1721,12 +1982,12 @@ private struct PromptListView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.title).font(StudioFont.font(14))
                             Text("\(item.modelName) · \(item.displayAspectRatio) · \(item.tags.joined(separator: " / "))")
-                                .font(StudioFont.font(12))
+                                .font(StudioFont.font(14))
                                 .foregroundStyle(StudioColor.secondaryText)
                         }
                         Spacer()
                         Text(item.updatedAt.formatted(date: .numeric, time: .shortened))
-                            .font(StudioFont.font(12))
+                            .font(StudioFont.font(14))
                             .foregroundStyle(StudioColor.tertiaryText)
                     }
                     .padding(12)
@@ -1757,7 +2018,7 @@ private struct EmptyStateView: View {
                     .frame(width: 58, height: 58)
                     .foregroundStyle(StudioColor.secondaryText)
                 Text("回收站为空")
-                    .font(StudioFont.font(24))
+                    .font(StudioFont.font(14))
                 Text("移入回收站的素材会显示在这里。")
                     .foregroundStyle(StudioColor.secondaryText)
             } else {
@@ -1765,7 +2026,7 @@ private struct EmptyStateView: View {
                     .font(StudioFont.symbol(44))
                     .foregroundStyle(StudioColor.secondaryText)
                 Text("没有找到素材")
-                .font(StudioFont.font(24))
+                .font(StudioFont.font(14))
                 Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
                     .foregroundStyle(StudioColor.secondaryText)
                 Button("导入素材") {
@@ -1878,7 +2139,7 @@ struct ThumbnailImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .scaledToFit()
             } else {
                 ZStack {
                     StudioColor.panelRaised
@@ -1888,6 +2149,7 @@ struct ThumbnailImage: View {
                 }
             }
         }
+        .background(StudioColor.panelRaised)
         .task(id: path) {
             await loader.load(path)
         }

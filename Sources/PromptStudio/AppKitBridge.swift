@@ -63,6 +63,16 @@ enum AppKitBridge {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    @MainActor
+    static func chooseExportURL(defaultName: String, allowedContentType: UTType) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "导出"
+        panel.nameFieldStringValue = defaultName
+        panel.allowedContentTypes = [allowedContentType]
+        panel.canCreateDirectories = true
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     static func revealInFinder(path: String) {
         let url = URL(fileURLWithPath: path)
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -94,6 +104,42 @@ enum AppKitBridge {
         guard let data = bitmap.representation(using: fileType, properties: properties) else {
             throw CocoaError(.fileWriteUnknown)
         }
+        try data.write(to: target, options: .atomic)
+    }
+
+    static func writeImagePDF(from source: URL, to target: URL) throws {
+        guard let image = NSImage(contentsOf: source) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        var mediaBox = CGRect(origin: .zero, size: image.size)
+        guard let consumer = CGDataConsumer(url: target as CFURL),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        context.beginPDFPage(nil)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        image.draw(in: NSRect(origin: .zero, size: image.size))
+        NSGraphicsContext.restoreGraphicsState()
+        context.endPDFPage()
+        context.closePDF()
+    }
+
+    static func writeDocx(text: String, to target: URL) throws {
+        let font = NSFont(name: "PingFang SC", size: 14) ?? .systemFont(ofSize: 14)
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.textColor
+            ]
+        )
+        let data = try attributed.data(
+            from: NSRange(location: 0, length: attributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]
+        )
         try data.write(to: target, options: .atomic)
     }
 

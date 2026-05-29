@@ -8,6 +8,8 @@ struct InspectorView: View {
     @State private var isEditing = false
     @State private var draftPrompt = ""
     @State private var draftNegativePrompt = ""
+    @State private var markdownDocumentText = ""
+    @State private var markdownDocumentItemID = ""
     @State private var isPromptExpanded = false
     @State private var isNegativePromptExpanded = false
 
@@ -18,20 +20,22 @@ struct InspectorView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("未选择素材")
-                        .font(StudioFont.font(20))
+                        .font(StudioFont.font(14))
                     Text("选择瀑布流中的图片后，这里会显示 Prompt、参数、标签和文件信息。")
                         .foregroundStyle(StudioColor.secondaryText)
                     Spacer()
                 }
                 .padding(.horizontal, 22)
                 .padding(.bottom, 22)
-                .padding(.top, 12)
+                .padding(.top, StudioLayout.contentTopPadding)
                 .foregroundStyle(StudioColor.text)
             }
         }
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, _ in
             stopEditing()
+            markdownDocumentText = ""
+            markdownDocumentItemID = ""
             isPromptExpanded = false
             isNegativePromptExpanded = false
         }
@@ -43,13 +47,13 @@ struct InspectorView: View {
         }
     }
 
+    @ViewBuilder
     private func inspector(for item: PromptItem) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if item.assetKind == .markdown {
-                    documentInfoSection(item)
-                    actionSection(item)
-                } else {
+        if item.assetKind == .markdown {
+            markdownInspector(for: item)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
                     header(item)
                     Divider().overlay(StudioColor.hairline)
                     if !item.referenceAssets.isEmpty {
@@ -67,31 +71,64 @@ struct InspectorView: View {
                     actionSection(item)
                     if !isEditing {
                         versionSection(item)
-                        fileInfoSection(item)
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                .padding(.top, StudioLayout.contentTopPadding)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-            .padding(.top, 12)
         }
     }
 
-    private func documentInfoSection(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("文档信息")
-            if isEditing {
-                InlinePromptEditor(text: $draftPrompt, minHeight: 220, maxHeight: 420, placeholder: "输入文档信息")
-            } else {
-                CollapsiblePromptPanel(
-                    text: item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? item.currentVersion?.prompt ?? "" : "暂无文档信息",
-                    collapsedLineLimit: 12,
-                    expandedMaxHeight: 520,
-                    minHeight: 220,
-                    textColor: StudioColor.text,
-                    isExpanded: $isPromptExpanded
+    private func markdownInspector(for item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            markdownHeader(item)
+                .padding(.horizontal, 20)
+                .padding(.top, StudioLayout.contentTopPadding)
+                .padding(.bottom, 14)
+
+            ZStack(alignment: .topLeading) {
+                MarkdownDocumentEditor(
+                    text: isEditing ? $draftPrompt : $markdownDocumentText,
+                    isEditable: isEditing
                 )
+
+                if activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("暂无文档信息")
+                        .font(StudioFont.font(13))
+                        .foregroundStyle(StudioColor.tertiaryText)
+                        .padding(.leading, 58)
+                        .padding(.top, 16)
+                        .allowsHitTesting(false)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 20)
+
+            actionSection(item)
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 18)
+                .background(StudioColor.panel)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: item.id) {
+            loadMarkdownDocument(item)
+        }
+    }
+
+    private func markdownHeader(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.title)
+                .font(StudioFont.font(14, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(2)
+
+            Text(markdownMetadata(for: item))
+                .font(StudioFont.font(11))
+                .foregroundStyle(StudioColor.tertiaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -109,7 +146,7 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(item.title)
-                        .font(StudioFont.font(15))
+                        .font(StudioFont.font(14))
                         .lineLimit(2)
                     Spacer()
                 }
@@ -201,32 +238,50 @@ struct InspectorView: View {
 
     private func actionSection(_ item: PromptItem) -> some View {
         HStack(spacing: 8) {
-            Button {
-                if isEditing {
+            if isEditing {
+                Button {
                     saveInlineEdit(item)
-                } else {
-                    startEditing(item)
+                } label: {
+                    Text("保存")
+                        .frame(width: 92)
                 }
-            } label: {
-                Text(isEditing ? "保存" : "编辑")
-                    .frame(width: 92)
-            }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
 
-            if isEditing {
                 Button {
                     stopEditing()
                 } label: {
                     Text("取消").frame(maxWidth: .infinity)
                 }
-                    .buttonStyle(CapsuleButtonStyle())
+                .buttonStyle(CapsuleButtonStyle())
             } else {
                 Button {
-                    state.copySelectedPrompt()
+                    startEditing(item)
+                } label: {
+                    Image(systemName: "pencil")
+                        .accessibilityLabel("编辑")
+                }
+                .buttonStyle(IconCircleButtonStyle())
+                .help("编辑")
+
+                Button {
+                    state.modal = .export
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .accessibilityLabel("导出")
+                }
+                .buttonStyle(IconCircleButtonStyle())
+                .help("导出")
+
+                Button {
+                    if item.assetKind == .markdown {
+                        state.copyMarkdownDocumentText(activeMarkdownText)
+                    } else {
+                        state.copySelectedPrompt()
+                    }
                 } label: {
                     Text(item.assetKind == .markdown ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
                 }
-                    .buttonStyle(CapsuleButtonStyle())
+                .buttonStyle(CapsuleButtonStyle(filled: true))
             }
         }
     }
@@ -242,7 +297,7 @@ struct InspectorView: View {
             HStack(spacing: 8) {
                 ForEach(item.versions.prefix(4)) { version in
                     Text(version.version)
-                        .font(StudioFont.font(12))
+                        .font(StudioFont.font(14))
                         .padding(.horizontal, 12)
                         .frame(height: 30)
                         .background(Capsule().fill(version.id == item.currentVersion?.id ? StudioColor.selection : StudioColor.control))
@@ -279,7 +334,7 @@ struct InspectorView: View {
                 .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.tertiaryText)
             Text(value)
-                .font(StudioFont.font(12))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(2)
         }
@@ -298,7 +353,7 @@ struct InspectorView: View {
                 .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.secondaryText)
             Text(value)
-                .font(StudioFont.font(12))
+                .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -327,7 +382,14 @@ struct InspectorView: View {
     }
 
     private func startEditing(_ item: PromptItem) {
-        draftPrompt = item.currentVersion?.prompt ?? ""
+        if item.assetKind == .markdown {
+            let text = state.markdownDocumentText(for: item)
+            markdownDocumentText = text
+            markdownDocumentItemID = item.id
+            draftPrompt = text
+        } else {
+            draftPrompt = item.currentVersion?.prompt ?? ""
+        }
         draftNegativePrompt = item.currentVersion?.negativePrompt ?? ""
         withAnimation(StudioMotion.fast(reduceMotion: reduceMotion)) {
             isEditing = true
@@ -343,6 +405,14 @@ struct InspectorView: View {
     }
 
     private func saveInlineEdit(_ item: PromptItem) {
+        if item.assetKind == .markdown {
+            markdownDocumentText = draftPrompt
+            markdownDocumentItemID = item.id
+            state.saveMarkdownDocument(draftPrompt, for: item)
+            stopEditing()
+            return
+        }
+
         state.savePrompt(
             title: item.title,
             type: item.type,
@@ -355,6 +425,25 @@ struct InspectorView: View {
             saveAsNewVersion: true
         )
         stopEditing()
+    }
+
+    private var activeMarkdownText: String {
+        isEditing ? draftPrompt : markdownDocumentText
+    }
+
+    private func loadMarkdownDocument(_ item: PromptItem) {
+        guard item.assetKind == .markdown, markdownDocumentItemID != item.id else { return }
+        markdownDocumentText = state.markdownDocumentText(for: item)
+        markdownDocumentItemID = item.id
+    }
+
+    private func markdownMetadata(for item: PromptItem) -> String {
+        let lineCount = max(1, activeMarkdownText.components(separatedBy: .newlines).count)
+        let fileName = URL(fileURLWithPath: item.assetPath).lastPathComponent
+        let format = item.format.isEmpty ? "MD" : item.format
+        return [format, "\(lineCount) 行", fileSizeText(item.fileSize), fileName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 }
 
@@ -478,7 +567,7 @@ private struct CollapsiblePromptPanel: View {
 
     private func promptText(lineLimit: Int?) -> some View {
         Text(text)
-            .font(StudioFont.font(12.5))
+            .font(StudioFont.font(14))
             .lineSpacing(lineSpacing)
             .foregroundStyle(textColor)
             .lineLimit(lineLimit)
@@ -527,14 +616,14 @@ private struct InlinePromptEditor: View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
                 Text(placeholder)
-                    .font(StudioFont.font(12.5))
+                    .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.tertiaryText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 15)
                     .allowsHitTesting(false)
             }
             TextEditor(text: $text)
-                .font(StudioFont.font(12.5))
+                .font(StudioFont.font(14))
                 .lineSpacing(3)
                 .foregroundStyle(StudioColor.text)
                 .scrollContentBackground(.hidden)
