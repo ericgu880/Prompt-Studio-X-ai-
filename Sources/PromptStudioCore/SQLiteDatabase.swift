@@ -13,11 +13,14 @@ public enum SQLiteError: Error, LocalizedError {
     case prepareFailed(String)
     case stepFailed(String)
     case bindFailed(String)
+    case transactionRollbackFailed(original: String, rollback: String)
 
     public var errorDescription: String? {
         switch self {
         case .openFailed(let message), .prepareFailed(let message), .stepFailed(let message), .bindFailed(let message):
             message
+        case .transactionRollbackFailed(let original, let rollback):
+            "SQLite transaction failed: \(original); rollback failed: \(rollback)"
         }
     }
 }
@@ -84,6 +87,25 @@ public final class SQLiteDatabase: @unchecked Sendable {
             rows.append(row)
         }
         return rows
+    }
+
+    public func transaction<T>(_ work: () throws -> T) throws -> T {
+        try execute("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let result = try work()
+            try execute("COMMIT;")
+            return result
+        } catch {
+            do {
+                try execute("ROLLBACK;")
+            } catch let rollbackError {
+                throw SQLiteError.transactionRollbackFailed(
+                    original: error.localizedDescription,
+                    rollback: rollbackError.localizedDescription
+                )
+            }
+            throw error
+        }
     }
 
     private func bind(_ values: [SQLiteValue], to statement: OpaquePointer?) throws {

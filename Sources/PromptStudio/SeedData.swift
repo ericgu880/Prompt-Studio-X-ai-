@@ -130,7 +130,7 @@ enum SeedData {
                 favorite: favorite,
                 createdAt: createdAt,
                 updatedAt: createdAt,
-                lastUsedAt: createdAt.addingTimeInterval(3_600),
+                lastUsedAt: Date(timeIntervalSince1970: 0),
                 tags: tags,
                 referenceAssets: [
                     ReferenceAsset(type: "风格参考", path: url("asset-samurai"), label: "Samurai mood"),

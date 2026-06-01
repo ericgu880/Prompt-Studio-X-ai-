@@ -8,6 +8,8 @@
     <string>PromptStudio</string>
     <key>CFBundleExecutable</key>
     <string>PromptStudio</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.creatigo.promptstudio</string>
     <key>CFBundleInfoDictionaryVersion</key>

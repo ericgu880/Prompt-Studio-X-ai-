@@ -48,7 +48,7 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     public var supportsGeneratedThumbnail: Bool {
-        self == .image || self == .video
+        self == .image || self == .video || self == .markdown
     }
 
     public static func infer(fileExtension: String, fallbackType: PromptType? = nil) -> AssetKind {
@@ -194,7 +194,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        lastUsedAt: Date = Date(),
+        lastUsedAt: Date = Date(timeIntervalSince1970: 0),
         sortOrder: Int = 0,
         tags: [String] = [],
         referenceAssets: [ReferenceAsset] = [],
@@ -379,7 +379,7 @@ public enum PromptFiltering {
                 break
             case .favorites where !item.favorite || item.isDeleted:
                 return false
-            case .recent where item.isDeleted:
+            case .recent where item.isDeleted || item.lastUsedAt.timeIntervalSince1970 <= 0:
                 return false
             case .folder(let folderID) where item.folderId != folderID || item.isDeleted:
                 return false

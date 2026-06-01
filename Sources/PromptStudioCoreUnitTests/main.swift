@@ -6,10 +6,10 @@ func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) thro
     if try condition() {
         return true
     }
-    throw SmokeTestError.failure(message)
+    throw CoreUnitTestError.failure(message)
 }
 
-enum SmokeTestError: Error, LocalizedError {
+enum CoreUnitTestError: Error, LocalizedError {
     case failure(String)
 
     var errorDescription: String? {
@@ -56,99 +56,10 @@ func sampleItem(
 
 func temporaryLibraryURL() throws -> URL {
     let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("PromptStudioSmokeTests")
+        .appendingPathComponent("PromptStudioCoreUnitTests")
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
-}
-
-func builtExecutableURL(_ name: String) throws -> URL {
-    let executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        .deletingLastPathComponent()
-        .appendingPathComponent(name)
-    guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
-        throw SmokeTestError.failure("missing executable \(name) at \(executableURL.path)")
-    }
-    return executableURL
-}
-
-func runProcess(_ executable: URL, arguments: [String], input: Data? = nil) throws -> (stdout: Data, stderr: String, status: Int32) {
-    let process = Process()
-    process.executableURL = executable
-    process.arguments = arguments
-    let outputPipe = Pipe()
-    let errorPipe = Pipe()
-    process.standardOutput = outputPipe
-    process.standardError = errorPipe
-    if let input {
-        let inputPipe = Pipe()
-        process.standardInput = inputPipe
-        try process.run()
-        inputPipe.fileHandleForWriting.write(input)
-        try inputPipe.fileHandleForWriting.close()
-    } else {
-        try process.run()
-    }
-    process.waitUntilExit()
-    let stdout = outputPipe.fileHandleForReading.readDataToEndOfFile()
-    let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-    return (stdout, String(data: stderrData, encoding: .utf8) ?? "", process.terminationStatus)
-}
-
-func jsonObject(from data: Data) throws -> Any {
-    try JSONSerialization.jsonObject(with: data)
-}
-
-func jsonDictionary(from data: Data) throws -> [String: Any] {
-    guard let object = try jsonObject(from: data) as? [String: Any] else {
-        throw SmokeTestError.failure("expected JSON object")
-    }
-    return object
-}
-
-func jsonArray(from data: Data) throws -> [[String: Any]] {
-    guard let object = try jsonObject(from: data) as? [[String: Any]] else {
-        throw SmokeTestError.failure("expected JSON array")
-    }
-    return object
-}
-
-func runCLI(_ arguments: [String], libraryURL: URL) throws -> Data {
-    let result = try runProcess(
-        try builtExecutableURL("promptstudioctl"),
-        arguments: ["--library", libraryURL.path] + arguments
-    )
-    try expect(result.status == 0, "CLI should succeed: \(result.stderr)")
-    return result.stdout
-}
-
-func mcpFrame(_ message: [String: Any]) throws -> Data {
-    let body = try JSONSerialization.data(withJSONObject: message)
-    var data = Data("Content-Length: \(body.count)\r\n\r\n".utf8)
-    data.append(body)
-    return data
-}
-
-func readMCPResponses(_ data: Data) throws -> [[String: Any]] {
-    var responses: [[String: Any]] = []
-    var cursor = data.startIndex
-    while cursor < data.endIndex {
-        guard let range = data[cursor...].range(of: Data("\r\n\r\n".utf8)) else { break }
-        let headerData = data[cursor..<range.lowerBound]
-        guard let header = String(data: headerData, encoding: .utf8),
-              let lengthLine = header.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") }),
-              let length = Int(lengthLine.split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces)) else {
-            throw SmokeTestError.failure("invalid MCP response header")
-        }
-        let bodyStart = range.upperBound
-        let bodyEnd = bodyStart + length
-        guard bodyEnd <= data.endIndex else {
-            throw SmokeTestError.failure("truncated MCP response body")
-        }
-        responses.append(try jsonDictionary(from: Data(data[bodyStart..<bodyEnd])))
-        cursor = bodyEnd
-    }
-    return responses
 }
 
 func testSearchFiltering() throws {
@@ -183,9 +94,7 @@ func testSQLiteRoundTrip() throws {
     try expect(loaded[0].assetKind == .markdown, "assetKind should persist")
     try expect(loaded[0].folderId == "folder-promptstudio", "folderId should persist")
 
-    loaded[0].versions.append(
-        PromptVersion(promptItemId: loaded[0].id, version: "V1.1", prompt: "updated prompt", note: "edit")
-    )
+    loaded[0].versions.append(PromptVersion(promptItemId: loaded[0].id, version: "V1.1", prompt: "updated prompt", note: "edit"))
     try repository.saveItem(loaded[0])
 
     let reloaded = try repository.loadItems()
@@ -254,10 +163,7 @@ func testSeedAssetRepairKeepsExistingUserData() throws {
 func testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let item = sampleItem(title: "缩略图测试", prompt: "thumbnail", assetPath: "/tmp/original.png")
-    let thumbnailPath = repository.libraryURL
-        .appendingPathComponent("thumbnails")
-        .appendingPathComponent(item.id + ".jpg")
-        .path
+    let thumbnailPath = repository.libraryURL.appendingPathComponent("thumbnails").appendingPathComponent(item.id + ".jpg").path
 
     try repository.saveItem(item)
     try repository.updateThumbnailPath(itemID: item.id, thumbnailPath: thumbnailPath)
@@ -277,8 +183,7 @@ func testLastUsedUpdatePersistsForRecentSorting() throws {
     let date = Date().addingTimeInterval(3_600)
     try repository.updateLastUsed(itemID: older.id, at: date)
 
-    let loaded = try repository.loadItems()
-    let recent = PromptFiltering.apply(loaded, filter: PromptFilter(collection: .recent))
+    let recent = PromptFiltering.apply(try repository.loadItems(), filter: PromptFilter(collection: .recent))
     try expect(recent.first?.id == older.id, "updated lastUsedAt should drive recent sorting")
 }
 
@@ -305,14 +210,13 @@ func testFolderCRUDRoundTrip() throws {
 
     try repository.saveFolder(parent)
     try repository.saveFolder(folder)
-    try expect(try repository.loadFolders().contains(where: { $0.parentId == parent.id && $0.name == "旧文件夹" }), "saved child folder should load with parent")
+    try expect(try repository.loadFolders().contains { $0.parentId == parent.id && $0.name == "旧文件夹" }, "saved child folder should load with parent")
 
     try repository.renameFolder(id: folder.id, name: "新文件夹")
-    let renamed = try repository.loadFolders()
-    try expect(renamed.first(where: { $0.id == folder.id })?.name == "新文件夹", "renamed folder should persist")
+    try expect(try repository.loadFolders().first { $0.id == folder.id }?.name == "新文件夹", "renamed folder should persist")
 
     try repository.deleteFolder(id: folder.id)
-    try expect(try repository.loadFolders().contains(where: { $0.id == folder.id }) == false, "deleted folder should be removed")
+    try expect(try repository.loadFolders().contains { $0.id == folder.id } == false, "deleted folder should be removed")
 }
 
 func testAutomationServiceCreatesAndUpdatesPrompts() throws {
@@ -333,10 +237,7 @@ func testAutomationServiceCreatesAndUpdatesPrompts() throws {
     try expect(created.folderId == folder.id, "agent-created prompt should attach to folder")
     try expect(created.currentVersion?.prompt == "cinematic product photo", "agent-created prompt should persist prompt")
 
-    let updated = try service.updatePrompt(
-        id: created.id,
-        input: AutomationUpdatePromptInput(prompt: "updated prompt", tags: ["更新"])
-    )
+    let updated = try service.updatePrompt(id: created.id, input: AutomationUpdatePromptInput(prompt: "updated prompt", tags: ["更新"]))
     try expect(updated.versions.count == 2, "agent prompt update should append a version")
     try expect(updated.currentVersion?.prompt == "updated prompt", "agent prompt update should become current version")
     try expect(updated.tags == ["更新"], "agent prompt update should replace tags")
@@ -370,106 +271,6 @@ func testAutomationServiceImportsImageMetadata() throws {
     try expect(imported[0].fileSize > 0, "png import should store file size")
 }
 
-func testCLISmokeLifecycle() throws {
-    let library = try temporaryLibraryURL()
-    let folder = try jsonDictionary(from: runCLI(["create-folder", "--name", "CLI Folder"], libraryURL: library))
-    guard let folderID = folder["id"] as? String else {
-        throw SmokeTestError.failure("CLI folder output should include id")
-    }
-    let created = try jsonDictionary(
-        from: runCLI(
-            [
-                "create-prompt",
-                "--title", "CLI Prompt",
-                "--prompt", "clean product photo",
-                "--tags", "产品,写实",
-                "--folder-id", folderID
-            ],
-            libraryURL: library
-        )
-    )
-    guard let itemID = created["id"] as? String else {
-        throw SmokeTestError.failure("CLI created item output should include id")
-    }
-
-    _ = try runCLI(["update-prompt", itemID, "--prompt", "updated product photo", "--tags", "更新"], libraryURL: library)
-    _ = try runCLI(["add-tags", itemID, "--tags", "CLI"], libraryURL: library)
-    let favorite = try jsonDictionary(from: runCLI(["favorite", itemID, "--on"], libraryURL: library))
-    try expect(favorite["favorite"] as? Bool == true, "CLI favorite should update item")
-    _ = try runCLI(["delete", itemID], libraryURL: library)
-    let trash = try jsonArray(from: runCLI(["list", "--trash"], libraryURL: library))
-    try expect(trash.contains { $0["id"] as? String == itemID }, "CLI deleted item should appear in trash")
-    _ = try runCLI(["restore", itemID], libraryURL: library)
-    let restored = try jsonDictionary(from: runCLI(["get", itemID], libraryURL: library))
-    try expect(restored["deletedAt"] is NSNull || restored["deletedAt"] == nil, "CLI restore should clear deletedAt")
-}
-
-func testCLIErrorsAreNonZero() throws {
-    let library = try temporaryLibraryURL()
-    let cli = try builtExecutableURL("promptstudioctl")
-    let missingTitle = try runProcess(cli, arguments: ["--library", library.path, "create-prompt", "--prompt", "body"])
-    try expect(missingTitle.status != 0, "CLI missing required parameter should fail")
-    try expect(missingTitle.stderr.contains("缺少参数"), "CLI missing required parameter should explain usage")
-
-    let missingFile = try runProcess(cli, arguments: ["--library", library.path, "import", "/tmp/promptstudio-missing-file.png"])
-    try expect(missingFile.status != 0, "CLI missing import file should fail")
-    try expect(missingFile.stderr.contains("文件不存在"), "CLI missing import file should report not found")
-}
-
-func testMCPToolsSmoke() throws {
-    let library = try temporaryLibraryURL()
-    var input = Data()
-    input.append(try mcpFrame([
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": ["protocolVersion": "2024-11-05"]
-    ]))
-    input.append(try mcpFrame([
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    ]))
-    input.append(try mcpFrame([
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": [
-            "name": "create_prompt",
-            "arguments": [
-                "title": "MCP Prompt",
-                "prompt": "cinematic forest",
-                "tags": ["MCP"]
-            ]
-        ]
-    ]))
-    input.append(try mcpFrame([
-        "jsonrpc": "2.0",
-        "id": 4,
-        "method": "tools/call",
-        "params": [
-            "name": "get_item",
-            "arguments": [:]
-        ]
-    ]))
-
-    let result = try runProcess(
-        try builtExecutableURL("PromptStudioMCP"),
-        arguments: ["--library", library.path],
-        input: input
-    )
-    try expect(result.status == 0, "MCP process should exit cleanly: \(result.stderr)")
-    let responses = try readMCPResponses(result.stdout)
-    try expect(responses.count == 4, "MCP should return one response per request")
-    let toolsResult = responses[1]["result"] as? [String: Any]
-    let tools = toolsResult?["tools"] as? [[String: Any]]
-    try expect(tools?.contains { $0["name"] as? String == "create_prompt" } == true, "MCP tools/list should expose create_prompt")
-    let createdItems = try PromptRepository(libraryURL: library).loadItems()
-    try expect(createdItems.contains { $0.title == "MCP Prompt" }, "MCP create_prompt should persist item")
-    let error = responses[3]["error"] as? [String: Any]
-    try expect(error?["message"] as? String == "Missing required argument: id", "MCP missing required argument should return JSON-RPC error")
-}
-
 do {
     try testSearchFiltering()
     try testFolderFilteringUsesStableFolderID()
@@ -486,11 +287,8 @@ do {
     try testAutomationServiceCreatesAndUpdatesPrompts()
     try testAutomationServiceImportsTextMetadata()
     try testAutomationServiceImportsImageMetadata()
-    try testCLISmokeLifecycle()
-    try testCLIErrorsAreNonZero()
-    try testMCPToolsSmoke()
-    print("PromptStudioSmokeTests passed")
+    print("PromptStudioCoreUnitTests passed")
 } catch {
-    fputs("PromptStudioSmokeTests failed: \(error.localizedDescription)\n", stderr)
+    fputs("PromptStudioCoreUnitTests failed: \(error.localizedDescription)\n", stderr)
     exit(1)
 }

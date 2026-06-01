@@ -23,7 +23,7 @@ struct PromptStudioApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("新建 Prompt") { appState.modal = .newPrompt }
+                Button("新建 Prompt") { appState.openNewPromptComposer() }
                     .keyboardShortcut("n", modifiers: .command)
                 Button("导入素材") { appState.modal = .importAssets }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
@@ -38,7 +38,11 @@ struct PromptStudioApp: App {
                     }
                 }
                     .keyboardShortcut("c", modifiers: .command)
-                Button("编辑 Prompt") { appState.modal = .editPrompt }
+                Button("编辑 Prompt") {
+                    if let item = appState.selectedItem {
+                        appState.requestInlineEdit(item)
+                    }
+                }
                     .keyboardShortcut("e", modifiers: .command)
             }
 

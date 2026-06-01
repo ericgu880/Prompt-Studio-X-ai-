@@ -1,4 +1,6 @@
+import AVFoundation
 import Foundation
+import ImageIO
 
 public struct AutomationListOptions: Sendable {
     public var query: String
@@ -126,17 +128,25 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
 
     @discardableResult
     public func createFolder(name: String, parentID: String? = nil) throws -> LibraryFolder {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw AutomationServiceError.invalidInput("文件夹名称不能为空")
+        }
         if let parentID, try repository.loadFolders().contains(where: { $0.id == parentID }) == false {
             throw AutomationServiceError.folderNotFound(parentID)
         }
         let sortOrder = ((try repository.loadFolders()).map(\.sortOrder).max() ?? 0) + 1
-        let folder = LibraryFolder(name: name, parentId: parentID, sortOrder: sortOrder)
+        let folder = LibraryFolder(name: trimmedName, parentId: parentID, sortOrder: sortOrder)
         try repository.saveFolder(folder)
         return folder
     }
 
     @discardableResult
     public func createPrompt(_ input: AutomationCreatePromptInput) throws -> PromptItem {
+        let title = input.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            throw AutomationServiceError.invalidInput("标题不能为空")
+        }
         let model = try resolveModel(input.model)
         let folder = try resolveFolder(input.folderID)
         let id = UUID().uuidString
@@ -149,7 +159,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         )
         let item = PromptItem(
             id: id,
-            title: input.title,
+            title: title,
             type: model.type,
             assetKind: .text,
             modelId: model.id,
@@ -246,7 +256,6 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
     @discardableResult
     public func importFiles(paths: [String], folderID: String? = nil) throws -> [PromptItem] {
         let folder = try resolveFolder(folderID)
-        let model = try resolveModel(nil)
         var imported: [PromptItem] = []
         for path in paths {
             let source = URL(fileURLWithPath: path)
@@ -254,8 +263,10 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
                 throw AutomationServiceError.fileNotFound(path)
             }
             let assetKind = AssetKind.infer(fileExtension: source.pathExtension)
+            let model = try defaultModel(for: assetKind)
             let destination = try repository.copyAssetIntoLibrary(from: source, assetKind: assetKind)
-            let metadata = parsedMetadata(for: source, assetKind: assetKind)
+            let metadata = parsedMetadata(for: destination, assetKind: assetKind)
+            let info = fileInfo(for: destination, assetKind: assetKind)
             let id = UUID().uuidString
             let version = PromptVersion(
                 promptItemId: id,
@@ -277,11 +288,11 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
                 category: assetKind.displayName,
                 assetPath: destination.path,
                 thumbnailPath: destination.path,
-                aspectRatio: "",
-                width: 0,
-                height: 0,
-                format: source.pathExtension.uppercased(),
-                fileSize: fileSize(at: source),
+                aspectRatio: normalizedAspectRatio(width: info.width, height: info.height),
+                width: info.width,
+                height: info.height,
+                format: info.format,
+                fileSize: info.fileSize,
                 sortOrder: try nextTopSortOrder() - imported.count,
                 tags: normalizedTags(metadata.tags),
                 versions: metadata.prompt.isEmpty && metadata.negativePrompt.isEmpty ? [] : [version],
@@ -291,6 +302,23 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             imported.append(item)
         }
         return imported
+    }
+
+    public func markdownExportText(for itemID: String) throws -> String {
+        let item = try item(id: itemID)
+        return """
+        # \(item.title)
+
+        Model: \(item.modelName)
+        Type: \(item.assetKind.displayName)
+        Size: \(item.displaySize)
+
+        ## Prompt
+        \(item.currentVersion?.prompt ?? "")
+
+        ## Negative Prompt
+        \(item.currentVersion?.negativePrompt ?? "")
+        """
     }
 
     private func resolveModel(_ requested: String?) throws -> ModelProfile {
@@ -303,6 +331,26 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             return ModelProfile(id: trimmed, name: trimmed, type: .text, parameters: [])
         }
         return models.first ?? ModelProfile(id: "default", name: "未指定", type: .text, parameters: [])
+    }
+
+    private func defaultModel(for assetKind: AssetKind) throws -> ModelProfile {
+        let models = try repository.loadModelProfiles()
+        let preferredID: String
+        let fallback: ModelProfile
+        switch assetKind {
+        case .image:
+            preferredID = "nano_banana_2"
+            fallback = ModelProfile(id: preferredID, name: "Nano Banana 2", type: .image, parameters: [])
+        case .video:
+            preferredID = "seedance_2"
+            fallback = ModelProfile(id: preferredID, name: "Seedance 2.0", type: .video, parameters: [])
+        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+            preferredID = "local_asset"
+            fallback = ModelProfile(id: preferredID, name: "Local Asset", type: .text, parameters: [])
+        }
+        return models.first { $0.id == preferredID }
+            ?? models.first { $0.type == fallback.type }
+            ?? fallback
     }
 
     private func resolveFolder(_ folderID: String?) throws -> LibraryFolder? {
@@ -323,15 +371,72 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
 
     private func parsedMetadata(for url: URL, assetKind: AssetKind) -> ParsedPromptMetadata {
         guard [.markdown, .json, .text, .data].contains(assetKind),
-              let text = try? String(contentsOf: url, encoding: .utf8) else {
+              let text = readTextFile(url) else {
             return ParsedPromptMetadata()
         }
         return PromptImportParser.parse(text: text, assetKind: assetKind)
     }
 
-    private func fileSize(at url: URL) -> Int64 {
+    private func readTextFile(_ url: URL) -> String? {
+        let maxBytes = 2 * 1024 * 1024
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count <= maxBytes else {
+            return nil
+        }
+        if let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        if let text = String(data: data, encoding: .utf16) {
+            return text
+        }
+        return String(data: data, encoding: .isoLatin1)
+    }
+
+    private func fileInfo(for url: URL, assetKind: AssetKind) -> (width: Int, height: Int, fileSize: Int64, format: String) {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey])
-        return Int64(values?.fileSize ?? 0)
+        let fileSize = Int64(values?.fileSize ?? 0)
+        let format = url.pathExtension.uppercased()
+        if assetKind == .image, let size = imageSize(for: url) {
+            return (size.width, size.height, fileSize, format.isEmpty ? "IMAGE" : format)
+        }
+        if assetKind == .video, let size = videoSize(for: url) {
+            return (size.width, size.height, fileSize, format.isEmpty ? "VIDEO" : format)
+        }
+        return (0, 0, fileSize, format.isEmpty ? "FILE" : format)
+    }
+
+    private func imageSize(for url: URL) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return (width, height)
+    }
+
+    private func videoSize(for url: URL) -> (width: Int, height: Int)? {
+        let asset = AVURLAsset(url: url)
+        guard let track = asset.tracks(withMediaType: .video).first else { return nil }
+        let transformedSize = track.naturalSize.applying(track.preferredTransform)
+        let width = Int(abs(transformedSize.width).rounded())
+        let height = Int(abs(transformedSize.height).rounded())
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
+    private func normalizedAspectRatio(width: Int, height: Int) -> String {
+        guard width > 0, height > 0 else { return "" }
+        var a = abs(width)
+        var b = abs(height)
+        while b != 0 {
+            let remainder = a % b
+            a = b
+            b = remainder
+        }
+        let divisor = max(a, 1)
+        return "\(width / divisor):\(height / divisor)"
     }
 
     private func normalizedTags(_ tags: [String]) -> [String] {

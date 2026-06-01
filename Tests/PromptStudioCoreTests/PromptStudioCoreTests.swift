@@ -3,7 +3,7 @@ import Foundation
 
 // The current Command Line Tools install does not expose XCTest/Testing to
 // SwiftPM test targets. Keep this target buildable for `swift test`; executable
-// assertions live in `swift run PromptStudioSmokeTests`.
+// Core assertions live in `swift run PromptStudioCoreUnitTests`.
 func promptStudioCoreTestsTargetLoads() -> Bool {
     AssetKind.infer(fileExtension: "png") == .image
         && PromptImportParser.parse(text: "Prompt: forest --no text", assetKind: .text).negativePrompt == "text"

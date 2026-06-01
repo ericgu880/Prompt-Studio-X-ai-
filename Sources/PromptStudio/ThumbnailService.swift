@@ -43,6 +43,10 @@ enum ThumbnailService {
             return destinationURL.path
         }
 
+        if item.assetKind == .markdown {
+            return try generateMarkdownThumbnail(from: sourceURL, to: destinationURL)
+        }
+
         if item.assetKind == .video {
             return try generateVideoThumbnail(from: sourceURL, to: destinationURL)
         }
@@ -77,6 +81,99 @@ enum ThumbnailService {
         }
 
         return destinationURL.path
+    }
+
+    private static func generateMarkdownThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
+        let text = (try? String(contentsOf: sourceURL, encoding: .utf8))
+            ?? (try? String(contentsOf: sourceURL, encoding: .utf16))
+            ?? ""
+        let lines = Array(text.components(separatedBy: .newlines).prefix(18))
+        let size = NSSize(width: 1280, height: 720)
+        let jpeg = Thread.isMainThread
+            ? renderMarkdownThumbnail(lines: lines, size: size)
+            : DispatchQueue.main.sync { renderMarkdownThumbnail(lines: lines, size: size) }
+        guard let jpeg else { return nil }
+        try jpeg.write(to: destinationURL, options: .atomic)
+        return destinationURL.path
+    }
+
+    private static func renderMarkdownThumbnail(lines: [String], size: NSSize) -> Data? {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return nil
+        }
+        rep.size = size
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        NSColor(hex: 0x151515).setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        let panelRect = NSRect(x: 30, y: 30, width: size.width - 60, height: size.height - 60)
+        let path = NSBezierPath(roundedRect: panelRect, xRadius: 18, yRadius: 18)
+        NSColor(hex: 0x1A1A1A).setFill()
+        path.fill()
+        NSColor(hex: 0x3D4248).setStroke()
+        path.lineWidth = 2
+        path.stroke()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let lineNumberParagraph = NSMutableParagraphStyle()
+        lineNumberParagraph.alignment = .right
+
+        let bodyFont = NSFont(name: "PingFangSC-Regular", size: 25) ?? .systemFont(ofSize: 25)
+        let headingFont = NSFont(name: "PingFangSC-Semibold", size: 28) ?? .systemFont(ofSize: 28, weight: .semibold)
+        let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 23, weight: .regular)
+        let muted = NSColor(hex: 0x8B9098)
+        let textColor = NSColor.white
+        let accent = NSColor(hex: 0xFF6B70)
+
+        var y = panelRect.maxY - 62
+        let lineHeight: CGFloat = 40
+        for (index, rawLine) in lines.enumerated() {
+            guard y > panelRect.minY + 24 else { break }
+            let line = rawLine.isEmpty ? " " : rawLine
+            let isHeading = line.trimmingCharacters(in: .whitespaces).hasPrefix("#")
+            let isList = line.trimmingCharacters(in: .whitespaces).hasPrefix("-")
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: isHeading ? headingFont : bodyFont,
+                .foregroundColor: isHeading || isList ? accent : textColor,
+                .paragraphStyle: paragraph
+            ]
+            let lineNumberAttributes: [NSAttributedString.Key: Any] = [
+                .font: lineNumberFont,
+                .foregroundColor: muted,
+                .paragraphStyle: lineNumberParagraph
+            ]
+
+            NSString(string: "\(index + 1)").draw(
+                in: NSRect(x: panelRect.minX + 28, y: y, width: 60, height: lineHeight),
+                withAttributes: lineNumberAttributes
+            )
+            NSString(string: line).draw(
+                in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 152, height: lineHeight),
+                withAttributes: attributes
+            )
+            y -= lineHeight
+        }
+
+        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
+            return nil
+        }
+        return jpeg
     }
 
     private static func generateVideoThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
@@ -155,5 +252,16 @@ private final class WeakThumbnailGenerationReceiver: @unchecked Sendable {
 
     init(_ receiver: ThumbnailGenerationReceiver) {
         self.receiver = receiver
+    }
+}
+
+private extension NSColor {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
+        self.init(
+            calibratedRed: CGFloat((hex >> 16) & 0xff) / 255.0,
+            green: CGFloat((hex >> 8) & 0xff) / 255.0,
+            blue: CGFloat(hex & 0xff) / 255.0,
+            alpha: alpha
+        )
     }
 }

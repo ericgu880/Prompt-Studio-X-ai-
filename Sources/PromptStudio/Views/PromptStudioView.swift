@@ -40,7 +40,7 @@ struct PromptStudioView: View {
 
                     TopWindowControlsRow(
                         isSidebarVisible: $isSidebarVisible,
-                        sidebarWidth: layout.sidebar,
+                        sidebarWidth: isSidebarVisible ? layout.sidebar : CGFloat(sidebarWidth),
                         inspectorWidth: layout.inspector,
                         totalWidth: proxy.size.width
                     )
@@ -107,6 +107,24 @@ struct PromptStudioView: View {
                     .padding(10)
                     .allowsHitTesting(false)
             )
+
+            if state.isPreviewPresented, let item = state.selectedItem {
+                ImmersivePreviewOverlay(item: item)
+                    .environmentObject(state)
+                    .zIndex(80)
+            }
+
+            if let item = state.markdownEditorItem {
+                MarkdownEditorOverlay(item: item)
+                    .environmentObject(state)
+                    .zIndex(88)
+            }
+
+            if let mode = state.promptComposerMode {
+                PromptComposerOverlay(mode: mode)
+                    .environmentObject(state)
+                    .zIndex(90)
+            }
 
             if let toast = state.toast {
                 Text(toast)
@@ -412,12 +430,11 @@ private struct TopWindowControlsRow: View {
     }
 
     private var sidebarCollapseLeading: CGFloat {
-        guard isSidebarVisible else { return edgeInset }
         return max(edgeInset, sidebarWidth - edgeInset - 26)
     }
 
     private var mainLeading: CGFloat {
-        (isSidebarVisible ? sidebarWidth : 0) + mainInset
+        sidebarWidth + mainInset
     }
 
     private var scaleLeading: CGFloat {
@@ -519,14 +536,14 @@ private struct SidebarView: View {
             windowChrome
 
             Button {
-                state.modal = .newPrompt
+                state.openNewPromptComposer()
             } label: {
                 Label("新建 Prompt", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))
             .padding(.horizontal, 14)
-            .padding(.top, 12)
+            .padding(.top, 24)
 
             SidebarHoverScrollView(isHovering: sidebarScrollHovered) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -600,7 +617,7 @@ private struct SidebarView: View {
     private var windowChrome: some View {
         HStack {
             Text("PromptStudio")
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(16, weight: .semibold))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
@@ -1618,6 +1635,9 @@ private enum AssetCardMetrics {
     }
 
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
+        if item.assetKind == .markdown {
+            return width * 9 / 16
+        }
         if item.assetKind.supportsGeneratedThumbnail, item.width > 0, item.height > 0 {
             return width * CGFloat(item.height) / CGFloat(item.width)
         }
@@ -1650,52 +1670,19 @@ private struct AssetCardView: View {
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
-            VStack {
-                Spacer()
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0),
-                        Color.black.opacity(isSelected ? 0.78 : 0.58)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: gradientHeight(for: contentHeight))
+            ImmediateCardClickLayer {
+                selectImmediately()
+            } onDoubleClick: {
+                selectImmediately()
+                state.previewSelected()
             }
+            .frame(width: contentWidth, height: contentHeight)
 
-            Text(assetBadgeText)
-                .font(StudioFont.caption(11))
-                .foregroundStyle(StudioColor.text)
-                .padding(.horizontal, 9)
-                .frame(height: 24)
-                .background(Capsule().fill(StudioColor.control))
-                .padding(12)
-
-            VStack(alignment: .leading, spacing: infoSpacing) {
-                Spacer()
-                VStack(alignment: .leading, spacing: infoSpacing) {
-                    Text(item.title)
-                        .font(StudioFont.font(infoFontSize))
-                        .lineLimit(1)
-                    Text("\(item.modelName) · \(item.displaySize)")
-                        .font(StudioFont.font(infoFontSize))
-                        .foregroundStyle(StudioColor.secondaryText)
-
-                    HStack(spacing: 14) {
-                        cardAction("pencil") { state.requestInlineEdit(item) }
-                        cardAction("doc.on.doc") { state.copyItemContent(item) }
-                        cardAction("clock") { state.modal = .versionHistory }
-                        Spacer()
-                    }
-                    .padding(.top, 2)
-                    .opacity(isSelected ? 1 : 0)
-                    .allowsHitTesting(isSelected)
-                }
-                .padding(infoPadding)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if isSelected {
+                selectedCardOverlay
+                    .frame(width: contentWidth, height: contentHeight, alignment: .bottom)
+                    .transition(.opacity)
             }
-            .frame(width: contentWidth, height: contentHeight, alignment: .bottomLeading)
-            .foregroundStyle(StudioColor.text)
 
         }
         .frame(width: contentWidth, height: contentHeight)
@@ -1703,12 +1690,10 @@ private struct AssetCardView: View {
         .padding(AssetCardMetrics.selectionOutset)
         .overlay(
             RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous)
-                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.88) : Color.clear, lineWidth: isSelected ? 2 : 0)
+                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: isSelected ? 1.5 : 0)
         )
         .frame(width: width, height: contentHeight + AssetCardMetrics.selectionOutset * 2)
         .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
-        .highPriorityGesture(cardSelectionGesture)
-        .simultaneousGesture(cardPreviewGesture)
         .contextMenu {
             assetContextMenu
         }
@@ -1726,7 +1711,8 @@ private struct AssetCardView: View {
                 state: state
             )
         )
-        .opacity(draggedItemID == item.id ? 0.72 : 1)
+        .scaleEffect(draggedItemID == item.id ? 0.94 : 1)
+        .opacity(draggedItemID == item.id ? 0.52 : 1)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
         .transaction { transaction in
             transaction.animation = nil
@@ -1734,19 +1720,42 @@ private struct AssetCardView: View {
         }
     }
 
-    private var cardSelectionGesture: some Gesture {
-        TapGesture(count: 1)
-            .onEnded {
-                selectImmediately()
-            }
-    }
+    private var selectedCardOverlay: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 10) {
+                Text(item.title)
+                    .font(StudioFont.font(13, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-    private var cardPreviewGesture: some Gesture {
-        TapGesture(count: 2)
-            .onEnded {
-                selectImmediately()
-                state.previewSelected()
+                Spacer(minLength: 8)
+
+                HStack(spacing: 8) {
+                    cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
+                    cardAction("doc.on.doc", help: item.assetKind == .markdown ? "复制文档信息" : "复制提示词") {
+                        state.copyItemContent(item)
+                    }
+                    cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
+                }
+                .allowsHitTesting(true)
             }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .frame(height: 82, alignment: .bottom)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0),
+                        Color.black.opacity(0.42),
+                        Color.black.opacity(0.68)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
     }
 
     private func selectImmediately() {
@@ -1896,18 +1905,6 @@ private struct AssetCardView: View {
         return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
-    private var infoFontSize: CGFloat {
-        isSelected ? 14 : 12
-    }
-
-    private var infoSpacing: CGFloat {
-        isSelected ? 8 : 3
-    }
-
-    private var infoPadding: CGFloat {
-        isSelected ? 14 : 12
-    }
-
     private var contextFolderRows: [AppState.FolderRow] {
         state.folderRows()
     }
@@ -1918,32 +1915,34 @@ private struct AssetCardView: View {
     }
 
     private var dragPreview: some View {
-        AssetMediaView(item: item)
-            .frame(width: 120, height: 90)
+        let previewWidth = min(138, max(88, width * 0.46))
+        let previewHeight = min(156, max(72, AssetCardMetrics.contentHeight(for: item, width: previewWidth)))
+        return AssetMediaView(item: item)
+            .frame(width: previewWidth, height: previewHeight)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous)
-                    .stroke(StudioColor.primaryAction.opacity(0.7), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.white.opacity(0.55), lineWidth: 1)
             )
-            .offset(x: 60, y: 45)
+            .shadow(color: .black.opacity(0.36), radius: 14, x: 0, y: 10)
+            .opacity(0.86)
+            .offset(x: 0, y: previewHeight * 0.64)
     }
 
-    private func cardAction(_ systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func cardAction(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button {
+            selectImmediately()
+            action()
+        } label: {
             Image(systemName: systemName)
                 .font(StudioFont.symbol(14))
         }
         .buttonStyle(IconCircleButtonStyle())
+        .help(help)
+        .accessibilityLabel(help)
     }
 
-    private func gradientHeight(for cardHeight: CGFloat) -> CGFloat {
-        min(210, max(132, cardHeight * 0.54))
-    }
-
-    private var assetBadgeText: String {
-        item.format.isEmpty ? item.assetKind.displayName.uppercased() : item.format.uppercased()
-    }
 }
 
 private struct AssetCardDropDelegate: DropDelegate {
@@ -1964,6 +1963,59 @@ private struct AssetCardDropDelegate: DropDelegate {
         guard let draggedItemID, draggedItemID != targetItemID else { return false }
         state.moveFilteredItem(draggedID: draggedItemID, before: targetItemID)
         return true
+    }
+}
+
+private struct ImmediateCardClickLayer: NSViewRepresentable {
+    let onClick: () -> Void
+    let onDoubleClick: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onClick: onClick, onDoubleClick: onDoubleClick)
+    }
+
+    func makeNSView(context: Context) -> ClickPassthroughView {
+        let view = ClickPassthroughView()
+        view.onMouseDown = { event in
+            if event.clickCount >= 2 {
+                context.coordinator.onDoubleClick()
+            } else {
+                context.coordinator.onClick()
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: ClickPassthroughView, context: Context) {
+        context.coordinator.onClick = onClick
+        context.coordinator.onDoubleClick = onDoubleClick
+        nsView.onMouseDown = { event in
+            if event.clickCount >= 2 {
+                context.coordinator.onDoubleClick()
+            } else {
+                context.coordinator.onClick()
+            }
+        }
+    }
+
+    final class Coordinator {
+        var onClick: () -> Void
+        var onDoubleClick: () -> Void
+
+        init(onClick: @escaping () -> Void, onDoubleClick: @escaping () -> Void) {
+            self.onClick = onClick
+            self.onDoubleClick = onDoubleClick
+        }
+    }
+}
+
+private final class ClickPassthroughView: NSView {
+    var onMouseDown: ((NSEvent) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?(event)
     }
 }
 
@@ -2081,11 +2133,21 @@ struct AssetMediaView: View {
     let item: PromptItem
 
     var body: some View {
-        if item.assetKind.supportsGeneratedThumbnail {
-            ThumbnailImage(path: item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath)
+        if item.assetKind.supportsGeneratedThumbnail, let thumbnailPath {
+            ThumbnailImage(path: thumbnailPath)
         } else {
             FileKindPlaceholder(assetKind: item.assetKind, format: item.format)
         }
+    }
+
+    private var thumbnailPath: String? {
+        if item.thumbnailPath != item.assetPath, !item.thumbnailPath.isEmpty {
+            return item.thumbnailPath
+        }
+        if item.assetKind == .image || item.assetKind == .video {
+            return item.assetPath
+        }
+        return nil
     }
 }
 

@@ -833,6 +833,563 @@ struct ExportSheet: View {
 
 struct SettingsSheet: View {
     @EnvironmentObject private var state: AppState
+    @State private var selectedPage: SettingsPage = .home
+    @State private var query = ""
+    @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
+    @AppStorage("promptStudio.settings.localFirst") private var localFirst = true
+    @AppStorage("promptStudio.settings.showPromptSummary") private var showPromptSummary = false
+    @AppStorage("promptStudio.settings.longPromptExpanded") private var longPromptExpanded = true
+    @AppStorage("promptStudio.settings.defaultCopyFormat") private var defaultCopyFormat = "纯文本"
+    @AppStorage("promptStudio.settings.autoBackup") private var autoBackup = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            settingsSidebar
+                .frame(width: 250)
+                .background(StudioColor.panel)
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(StudioColor.hairline).frame(width: 1)
+                }
+
+            VStack(spacing: 0) {
+                settingsTopBar
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        settingsHero
+                        pageContent
+                    }
+                    .padding(28)
+                }
+                .background(StudioColor.appBackground)
+            }
+        }
+        .foregroundStyle(StudioColor.text)
+        .background(StudioColor.appBackground)
+        .frame(width: 1180, height: 760)
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Text("PS")
+                    .font(StudioFont.font(13, weight: .semibold))
+                    .foregroundStyle(StudioColor.primaryActionText)
+                    .frame(width: 38, height: 38)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.primaryAction))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PromptStudio")
+                        .font(StudioFont.font(15, weight: .semibold))
+                    Text("设置中心 · 本地优先")
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+            }
+            .padding(.top, 22)
+
+            TextField("搜索设置页面...", text: $query)
+                .textFieldStyle(.plain)
+                .font(StudioFont.font(13))
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(StudioColor.control)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(SettingsPage.Section.allCases) { section in
+                        let pages = filteredPages(in: section)
+                        if !pages.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(section.title)
+                                    .font(StudioFont.font(11))
+                                    .tracking(1.1)
+                                    .foregroundStyle(StudioColor.tertiaryText)
+                                    .padding(.horizontal, 6)
+                                ForEach(pages) { page in
+                                    settingsNavRow(page)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.bottom, 20)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("PromptStudio Library")
+                    .font(StudioFont.font(12, weight: .semibold))
+                Text(state.libraryURL.path)
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(StudioColor.control)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioColor.hairline, lineWidth: 1))
+            .padding(.bottom, 18)
+        }
+        .padding(.horizontal, 14)
+    }
+
+    private var settingsTopBar: some View {
+        HStack(spacing: 12) {
+            Text("设置")
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.secondaryText)
+            Image(systemName: "chevron.right")
+                .font(StudioFont.symbol(10))
+                .foregroundStyle(StudioColor.mutedText)
+            Text(selectedPage.title)
+                .font(StudioFont.font(14, weight: .semibold))
+            Spacer()
+            Button("恢复默认") {
+                resetCurrentPage()
+            }
+            .buttonStyle(CapsuleButtonStyle())
+            Button("保存设置") {
+                state.modal = nil
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+            Button {
+                state.modal = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(StudioFont.symbol(12, weight: .semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(StudioColor.secondaryText)
+            .background(Circle().fill(StudioColor.control))
+            .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
+            .help("关闭设置")
+        }
+        .padding(.horizontal, 28)
+        .frame(height: 58)
+        .background(StudioColor.appBackground)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(StudioColor.hairline).frame(height: 1)
+        }
+    }
+
+    private var settingsHero: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(selectedPage.title)
+                .font(StudioFont.font(24, weight: .semibold))
+            Text(selectedPage.description)
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                statusPill("本地优先")
+                statusPill(selectedPage.priority)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [StudioColor.panelRaised, StudioColor.panel],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        switch selectedPage {
+        case .home:
+            overviewGrid
+            settingsGroup("快捷操作") {
+                settingsAction("立即备份当前库", detail: "生成一个包含数据库、附件、缩略图索引的完整备份。", button: "即将支持", disabled: true)
+                settingsAction("重建索引", detail: "搜索不准确、导入大量文件或标签规则变更后使用。", button: "即将支持", disabled: true)
+                settingsAction("打开库文件夹", detail: "在系统文件管理器中打开当前 PromptStudio Library。", button: "打开") {
+                    AppKitBridge.revealInFinder(path: state.libraryURL.path)
+                }
+            }
+        case .general:
+            settingsGroup("基础偏好") {
+                settingPicker("启动时打开", detail: "当前版本固定打开上次使用资料库。", value: "上次使用库", disabled: true)
+                ViewModeSettingsRow(isListView: $state.isListView)
+                settingToggle("自动备份提醒", detail: "保存偏好，备份任务将在后续接入。", isOn: $autoBackup)
+            }
+        case .library:
+            settingsGroup("当前库") {
+                settingsReadOnly("资料库路径", value: state.libraryURL.path)
+                settingsReadOnly("本地数据库", value: state.libraryURL.appendingPathComponent("database/promptstudio.sqlite").path)
+                settingsAction("打开库文件夹", detail: "查看数据库、附件和缩略图缓存。", button: "打开") {
+                    AppKitBridge.revealInFinder(path: state.libraryURL.path)
+                }
+            }
+        case .promptEditor:
+            settingsGroup("Prompt 编辑器") {
+                settingPicker("默认保存规则", detail: "编辑 Prompt 时默认保存为新版本。", value: "每次保存生成版本", disabled: true)
+                settingToggle("长 Prompt 默认展开", detail: "右侧详情和预览中的长文本默认展示更多内容。", isOn: $longPromptExpanded)
+                settingPicker("复制格式", detail: "影响后续复制/运行工作流默认格式。", value: defaultCopyFormat)
+            }
+        case .models:
+            settingsGroup("模型与 API") {
+                settingsReadOnly("筛选模型数量", value: "\(max(0, state.models.count - 1))")
+                settingPicker("API Key 存储", detail: "后续使用系统钥匙串保存密钥。", value: "Keychain 即将支持", disabled: true)
+                settingsAction("管理首页模型筛选标签", detail: "编辑素材区顶部的模型筛选项。", button: "管理") {
+                    state.modal = .modelFilterManager
+                }
+            }
+        case .search:
+            settingsGroup("搜索与索引") {
+                settingPicker("全文索引", detail: "标题、Prompt、描述、备注、标签。", value: "已启用", disabled: true)
+                settingToggle("本地优先搜索", detail: "禁用云端语义搜索和遥测。", isOn: $localFirst)
+                settingsAction("重建全文索引", detail: "索引服务后续接入。", button: "即将支持", disabled: true)
+            }
+        case .cards:
+            settingsGroup("卡片与预览") {
+                ViewModeSettingsRow(isListView: $state.isListView)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("缩略图大小")
+                        .font(StudioFont.caption(12))
+                        .tracking(1.2)
+                        .foregroundStyle(StudioColor.secondaryText)
+                    Slider(value: $thumbnailScale, in: 0.72...1.36)
+                }
+                .padding(12)
+                .studioPanel(radius: 8)
+                settingToggle("显示 Prompt 摘要", detail: "卡片底部显示 Prompt 前两行。", isOn: $showPromptSummary)
+            }
+        case .shortcuts:
+            settingsGroup("快捷键") {
+                shortcutRow("新建 Prompt", value: "⌘N")
+                shortcutRow("复制提示词", value: "⌘C")
+                shortcutRow("预览", value: "Space")
+                settingsAction("自定义快捷键", detail: "快捷键录入和冲突检测后续接入。", button: "即将支持", disabled: true)
+            }
+        case .backup:
+            settingsGroup("导出、备份与同步") {
+                settingToggle("自动备份提醒", detail: "当前保存偏好，不自动创建备份文件。", isOn: $autoBackup)
+                settingPicker("导出默认格式", detail: "用于导出 Prompt 的默认格式。", value: defaultCopyFormat)
+                settingsAction("立即备份", detail: "备份打包能力后续接入。", button: "即将支持", disabled: true)
+            }
+        case .privacy:
+            settingsGroup("隐私与安全") {
+                settingToggle("本地优先模式", detail: "禁止未授权的联网 AI 分析。", isOn: $localFirst)
+                settingPicker("API Key 安全", detail: "后续接入 macOS Keychain。", value: "不明文保存", disabled: true)
+                settingsAction("清除运行痕迹", detail: "运行历史和搜索历史清理后续接入。", button: "即将支持", disabled: true)
+            }
+        }
+    }
+
+    private var overviewGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 14)], spacing: 14) {
+            overviewCard("Prompt 数量", "\(state.items.filter { !$0.isDeleted }.count)", "当前库已整理 Prompt")
+            overviewCard("附件素材", "\(state.items.count)", "图片、视频、文档和参考素材")
+            overviewCard("模型标签", "\(max(0, state.models.count - 1))", "可用于顶部筛选")
+            overviewCard("标签数量", "\(state.tags.count)", "本地分类标签")
+        }
+    }
+
+    private func settingsNavRow(_ page: SettingsPage) -> some View {
+        Button {
+            selectedPage = page
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: page.icon)
+                    .frame(width: 17)
+                Text(page.title)
+                Spacer()
+                Text(page.badge)
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(selectedPage == page ? StudioColor.primaryActionText.opacity(0.72) : StudioColor.tertiaryText)
+            }
+            .font(StudioFont.font(13, weight: selectedPage == page ? .semibold : .regular))
+            .foregroundStyle(selectedPage == page ? StudioColor.primaryActionText : StudioColor.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(selectedPage == page ? StudioColor.primaryAction : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func filteredPages(in section: SettingsPage.Section) -> [SettingsPage] {
+        SettingsPage.allCases.filter { page in
+            page.section == section && (query.isEmpty || page.title.localizedCaseInsensitiveContains(query) || page.description.localizedCaseInsensitiveContains(query))
+        }
+    }
+
+    private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(StudioFont.font(15, weight: .semibold))
+                Text("P0 可用项会立即保存；未接入能力以禁用状态展示。")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            .padding(16)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func settingToggle(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            settingText(title, detail)
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        .padding(16)
+        .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
+    }
+
+    private func settingPicker(_ title: String, detail: String = "", value: String, disabled: Bool = false) -> some View {
+        HStack {
+            settingText(title, detail)
+            Spacer()
+            Text(value)
+                .font(StudioFont.font(12, weight: .medium))
+                .foregroundStyle(disabled ? StudioColor.tertiaryText : StudioColor.text)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(Capsule().fill(StudioColor.control))
+                .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+        }
+        .padding(16)
+        .opacity(disabled ? 0.62 : 1)
+        .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
+    }
+
+    private func settingsReadOnly(_ title: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            settingText(title, value)
+            Spacer()
+        }
+        .padding(16)
+        .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
+    }
+
+    private func settingsAction(_ title: String, detail: String, button: String, disabled: Bool = false, action: (() -> Void)? = nil) -> some View {
+        HStack {
+            settingText(title, detail)
+            Spacer()
+            Button(button) {
+                action?()
+            }
+            .buttonStyle(disabled ? CapsuleButtonStyle() : CapsuleButtonStyle(filled: button == "打开"))
+            .disabled(disabled)
+            .opacity(disabled ? 0.56 : 1)
+        }
+        .padding(16)
+        .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
+    }
+
+    private func shortcutRow(_ title: String, value: String) -> some View {
+        HStack {
+            settingText(title, "当前快捷键")
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(Capsule().fill(StudioColor.control))
+                .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+        }
+        .padding(16)
+        .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
+    }
+
+    private func settingText(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(StudioFont.font(13, weight: .semibold))
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func overviewCard(_ title: String, _ value: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(StudioFont.font(13, weight: .semibold))
+            Text(value)
+                .font(StudioFont.font(24, weight: .semibold))
+            Text(detail)
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.secondaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func statusPill(_ text: String) -> some View {
+        Text(text)
+            .font(StudioFont.font(11))
+            .foregroundStyle(StudioColor.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(Capsule().fill(StudioColor.control))
+            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func resetCurrentPage() {
+        switch selectedPage {
+        case .general:
+            state.isListView = false
+            autoBackup = false
+        case .promptEditor:
+            longPromptExpanded = true
+            defaultCopyFormat = "纯文本"
+        case .search, .privacy:
+            localFirst = true
+        case .cards:
+            thumbnailScale = 1.0
+            showPromptSummary = false
+            state.isListView = false
+        case .backup:
+            autoBackup = false
+            defaultCopyFormat = "纯文本"
+        default:
+            break
+        }
+    }
+}
+
+private enum SettingsPage: String, CaseIterable, Identifiable {
+    case home
+    case general
+    case library
+    case promptEditor
+    case models
+    case search
+    case cards
+    case shortcuts
+    case backup
+    case privacy
+
+    enum Section: CaseIterable, Identifiable {
+        case overview
+        case basics
+        case workflow
+        case system
+
+        var id: String { title }
+
+        var title: String {
+            switch self {
+            case .overview: "概览"
+            case .basics: "基础"
+            case .workflow: "PROMPT 工作流"
+            case .system: "系统"
+            }
+        }
+    }
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: "设置首页"
+        case .general: "通用"
+        case .library: "素材库与存储"
+        case .promptEditor: "Prompt 编辑器"
+        case .models: "模型与 API"
+        case .search: "搜索与索引"
+        case .cards: "卡片与预览"
+        case .shortcuts: "快捷键"
+        case .backup: "导出、备份与同步"
+        case .privacy: "隐私与安全"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .home: "把设置中心设计成 Prompt 工作流中控台，先确认库是否安全、索引是否健康、模型是否可用。"
+        case .general: "控制启动、视图和基础操作偏好。"
+        case .library: "查看当前本地资料库、数据库和附件存储。"
+        case .promptEditor: "配置 Prompt 编辑、版本保存、复制格式和长文本显示。"
+        case .models: "管理模型筛选、API Key 与本地模型连接状态。"
+        case .search: "控制全文索引、本地优先和未来语义搜索。"
+        case .cards: "控制瀑布流卡片、缩略图、详情和预览呈现。"
+        case .shortcuts: "查看效率操作快捷键，后续支持自定义。"
+        case .backup: "管理导出格式、备份策略和同步偏好。"
+        case .privacy: "保护 Prompt、图片、API Key 和本地工作流隐私。"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: "house"
+        case .general: "gearshape"
+        case .library: "square.stack.3d.up"
+        case .promptEditor: "pencil.line"
+        case .models: "shippingbox"
+        case .search: "magnifyingglass"
+        case .cards: "rectangle.grid.2x2"
+        case .shortcuts: "keyboard"
+        case .backup: "arrow.up.doc"
+        case .privacy: "lock"
+        }
+    }
+
+    var badge: String {
+        switch self {
+        case .home: "状态"
+        case .general: "应用"
+        case .library: "库级"
+        case .promptEditor, .models, .search: "核心"
+        case .cards: "界面"
+        case .shortcuts: "效率"
+        case .backup, .privacy: "安全"
+        }
+    }
+
+    var priority: String {
+        switch self {
+        case .home, .general, .library, .promptEditor, .models, .search, .shortcuts, .backup, .privacy:
+            "P0"
+        case .cards:
+            "P1"
+        }
+    }
+
+    var section: Section {
+        switch self {
+        case .home:
+            .overview
+        case .general, .library:
+            .basics
+        case .promptEditor, .models, .search, .cards:
+            .workflow
+        case .shortcuts, .backup, .privacy:
+            .system
+        }
+    }
+}
+
+/*
+Legacy compact settings rows remain below for older sheets and small reusable controls.
+*/
+
+private struct LegacySettingsSheetPlaceholder: View {
+    @EnvironmentObject private var state: AppState
 
     var body: some View {
         PromptFormShell(title: "设置") {

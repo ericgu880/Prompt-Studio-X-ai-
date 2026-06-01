@@ -19,6 +19,10 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$ROOT_DIR/Packaging/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/PromptStudio"
 
+if [[ -f "$ROOT_DIR/Packaging/AppIcon.icns" ]]; then
+    cp "$ROOT_DIR/Packaging/AppIcon.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
+fi
+
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
     cp -R "$RESOURCE_BUNDLE" "$APP_PATH/Contents/Resources/"
 fi

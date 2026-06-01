@@ -32,10 +32,14 @@ struct InspectorView: View {
             }
         }
         .background(StudioColor.panel)
-        .onChange(of: state.selectedID) { _, _ in
+        .onChange(of: state.selectedID) { _, selectedID in
             stopEditing()
-            markdownDocumentText = ""
-            markdownDocumentItemID = ""
+            if let item = state.items.first(where: { $0.id == selectedID }), item.assetKind == .markdown {
+                loadMarkdownDocument(item)
+            } else {
+                markdownDocumentText = ""
+                markdownDocumentItemID = ""
+            }
             isPromptExpanded = false
             isNegativePromptExpanded = false
         }
@@ -89,8 +93,9 @@ struct InspectorView: View {
 
             ZStack(alignment: .topLeading) {
                 MarkdownDocumentEditor(
-                    text: isEditing ? $draftPrompt : $markdownDocumentText,
-                    isEditable: isEditing
+                    text: $markdownDocumentText,
+                    isEditable: false,
+                    scrollResetID: item.id
                 )
 
                 if activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -383,10 +388,8 @@ struct InspectorView: View {
 
     private func startEditing(_ item: PromptItem) {
         if item.assetKind == .markdown {
-            let text = state.markdownDocumentText(for: item)
-            markdownDocumentText = text
-            markdownDocumentItemID = item.id
-            draftPrompt = text
+            state.openMarkdownEditor(for: item)
+            return
         } else {
             draftPrompt = item.currentVersion?.prompt ?? ""
         }

@@ -10,6 +10,8 @@ let package = Package(
     products: [
         .executable(name: "PromptStudio", targets: ["PromptStudio"]),
         .executable(name: "promptstudioctl", targets: ["PromptStudioCLI"]),
+        .executable(name: "PromptStudioMCP", targets: ["PromptStudioMCP"]),
+        .executable(name: "PromptStudioCoreUnitTests", targets: ["PromptStudioCoreUnitTests"]),
         .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"])
     ],
     targets: [
@@ -28,6 +30,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "PromptStudioCLI",
+            dependencies: ["PromptStudioCore"]
+        ),
+        .executableTarget(
+            name: "PromptStudioMCP",
+            dependencies: ["PromptStudioCore"]
+        ),
+        .executableTarget(
+            name: "PromptStudioCoreUnitTests",
             dependencies: ["PromptStudioCore"]
         ),
         .executableTarget(

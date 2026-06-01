@@ -5,6 +5,13 @@ import SwiftUI
 struct MarkdownDocumentEditor: NSViewRepresentable {
     @Binding var text: String
     let isEditable: Bool
+    let scrollResetID: String?
+
+    init(text: Binding<String>, isEditable: Bool, scrollResetID: String? = nil) {
+        self._text = text
+        self.isEditable = isEditable
+        self.scrollResetID = scrollResetID
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -17,6 +24,10 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.string = text
         textView.isEditable = isEditable
         MarkdownSyntaxHighlighter.apply(to: textView)
+        if let scrollResetID {
+            context.coordinator.lastScrollResetID = scrollResetID
+            containerView.scrollToTop()
+        }
         return containerView
     }
 
@@ -25,21 +36,32 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         let textView = containerView.textView
         textView.isEditable = isEditable
         textView.insertionPointColor = MarkdownEditorPalette.text
+        var shouldResetScroll = false
+
+        if let scrollResetID, context.coordinator.lastScrollResetID != scrollResetID {
+            context.coordinator.lastScrollResetID = scrollResetID
+            shouldResetScroll = true
+        }
 
         if textView.string != text {
             context.coordinator.isApplyingExternalChange = true
             textView.string = text
             MarkdownSyntaxHighlighter.apply(to: textView)
             context.coordinator.isApplyingExternalChange = false
+            shouldResetScroll = scrollResetID != nil
         }
 
         containerView.gutterView.needsDisplay = true
+        if shouldResetScroll {
+            containerView.scrollToTop()
+        }
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownDocumentEditor
         var isApplyingExternalChange = false
+        var lastScrollResetID: String?
 
         init(_ parent: MarkdownDocumentEditor) {
             self.parent = parent
@@ -94,7 +116,7 @@ final class MarkdownEditorContainerView: NSView {
         textView.autoresizingMask = [.width]
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
-        textView.textContainerInset = NSSize(width: 14, height: 14)
+        textView.textContainerInset = NSSize(width: 14, height: 24)
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textColor = MarkdownEditorPalette.text
@@ -147,6 +169,17 @@ final class MarkdownEditorContainerView: NSView {
 
     @objc private func scrollBoundsDidChange() {
         gutterView.needsDisplay = true
+    }
+
+    func scrollToTop() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+            textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            gutterView.needsDisplay = true
+        }
     }
 }
 

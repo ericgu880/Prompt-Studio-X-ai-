@@ -110,6 +110,20 @@ final class AppState: ObservableObject {
         let itemCount: Int
     }
 
+    enum PromptComposerMode: Identifiable, Equatable {
+        case create
+        case edit(String)
+
+        var id: String {
+            switch self {
+            case .create:
+                "create"
+            case .edit(let itemID):
+                "edit-\(itemID)"
+            }
+        }
+    }
+
     private struct NavigationSnapshot: Equatable {
         let filter: PromptFilter
         let selectedID: String?
@@ -175,6 +189,9 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     @Published var isListView = false
     @Published var isImporting = false
+    @Published var isPreviewPresented = false
+    @Published var promptComposerMode: PromptComposerMode?
+    @Published var markdownEditorItemID: String?
     @Published var inlineRenamingFolderID: String?
     @Published var inspectorEditRequest: InspectorEditRequest?
     @Published var expandedFolderIDs: Set<String> = []
@@ -197,6 +214,10 @@ final class AppState: ObservableObject {
         selectedID.flatMap { itemsByID[$0] }
     }
 
+    var markdownEditorItem: PromptItem? {
+        markdownEditorItemID.flatMap { itemsByID[$0] }
+    }
+
     var masonryLayoutItems: [PromptItem] { filteredItems }
 
     var trashCount: Int {
@@ -208,7 +229,7 @@ final class AppState: ObservableObject {
     }
 
     var recentCount: Int {
-        items.filter { !$0.isDeleted && $0.lastUsedAt.timeIntervalSince1970 > 0 }.count
+        items.filter { !$0.isDeleted && Self.hasRecentUse($0) }.count
     }
 
     func load() {
@@ -229,6 +250,7 @@ final class AppState: ObservableObject {
             self.folders = try repository.loadFolders()
             self.expandedFolderIDs = Set(self.folders.map(\.id))
             self.items = try repository.loadItems()
+            try repairLegacyRecentTimestampsIfNeeded(repository: repository)
             self.tags = try repository.loadTags()
             refreshFilteredItems(selecting: filteredItems.first?.id)
             prepareMissingThumbnails()
@@ -238,12 +260,50 @@ final class AppState: ObservableObject {
     }
 
     func select(_ item: PromptItem) {
-        guard selectedID != item.id else {
-            scheduleLastUsedUpdate(itemID: item.id)
-            return
-        }
+        guard selectedID != item.id else { return }
         selectedID = item.id
-        scheduleLastUsedUpdate(itemID: item.id)
+    }
+
+    func openNewPromptComposer() {
+        modal = nil
+        isPreviewPresented = false
+        markdownEditorItemID = nil
+        promptComposerMode = .create
+    }
+
+    func openEditPromptComposer(for item: PromptItem? = nil) {
+        let target = item ?? selectedItem
+        guard let target, target.assetKind != .markdown else { return }
+        if selectedID != target.id {
+            select(target)
+        }
+        modal = nil
+        isPreviewPresented = false
+        markdownEditorItemID = nil
+        promptComposerMode = .edit(target.id)
+    }
+
+    func closePromptComposer() {
+        promptComposerMode = nil
+    }
+
+    func openMarkdownEditor(for item: PromptItem? = nil) {
+        let target = item ?? selectedItem
+        guard let target, target.assetKind == .markdown else { return }
+        if selectedID != target.id {
+            select(target)
+        }
+        modal = nil
+        isPreviewPresented = false
+        promptComposerMode = nil
+        markdownEditorItemID = target.id
+    }
+
+    func closeMarkdownEditor(returnToPreview: Bool = false) {
+        markdownEditorItemID = nil
+        if returnToPreview {
+            isPreviewPresented = true
+        }
     }
 
     func setCollection(_ collection: LibraryCollection) {
@@ -285,7 +345,7 @@ final class AppState: ObservableObject {
         AppKitBridge.copyToPasteboard(prompt)
         showToast("已复制提示词")
         if let id = selectedID {
-            scheduleLastUsedUpdate(itemID: id)
+            markRecentlyUsed(itemID: id)
         }
     }
 
@@ -307,7 +367,7 @@ final class AppState: ObservableObject {
         AppKitBridge.copyToPasteboard(text)
         showToast("已复制文档信息")
         if let id = selectedID {
-            scheduleLastUsedUpdate(itemID: id)
+            markRecentlyUsed(itemID: id)
         }
     }
 
@@ -323,12 +383,12 @@ final class AppState: ObservableObject {
     }
 
     func requestInlineEdit(_ item: PromptItem) {
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            select(item)
-            inspectorEditRequest = InspectorEditRequest(itemID: item.id)
+        guard item.assetKind == .markdown else {
+            openEditPromptComposer(for: item)
+            return
         }
+
+        openMarkdownEditor(for: item)
     }
 
     func openSelectedInDefaultApplication() {
@@ -337,12 +397,14 @@ final class AppState: ObservableObject {
             showToast("源文件不存在")
             return
         }
+        markRecentlyUsed(itemID: item.id)
         showToast("已用默认应用打开")
     }
 
     func copySelectedFilePath() {
         guard let item = selectedItem else { return }
         AppKitBridge.copyToPasteboard(item.assetPath)
+        markRecentlyUsed(itemID: item.id)
         showToast("已复制文件路径")
     }
 
@@ -352,6 +414,7 @@ final class AppState: ObservableObject {
             showToast("源文件不存在")
             return
         }
+        markRecentlyUsed(itemID: item.id)
         showToast("已复制文件")
     }
 
@@ -436,7 +499,9 @@ final class AppState: ObservableObject {
         item.modelName = models.first(where: { $0.id == modelId })?.name ?? item.modelName
         item.tags = tags
         item.updatedAt = Date()
-        item.lastUsedAt = Date()
+        if filter.collection != .recent {
+            item.lastUsedAt = Date()
+        }
 
         if saveAsNewVersion || item.versions.isEmpty {
             item.versions.append(
@@ -457,6 +522,7 @@ final class AppState: ObservableObject {
         }
 
         save(item, toast: "已保存 Prompt")
+        markRecentlyUsed(itemID: item.id)
     }
 
     func saveMarkdownDocument(_ text: String, for item: PromptItem) {
@@ -470,7 +536,9 @@ final class AppState: ObservableObject {
                 }
             }
             current.updatedAt = Date()
-            current.lastUsedAt = Date()
+            if filter.collection != .recent {
+                current.lastUsedAt = Date()
+            }
             current.versions.append(
                 PromptVersion(
                     promptItemId: current.id,
@@ -478,10 +546,11 @@ final class AppState: ObservableObject {
                     prompt: text,
                     negativePrompt: "",
                     parameters: current.currentVersion?.parameters ?? [:],
-                    note: "右侧栏文档编辑"
+                    note: "Markdown 全窗口编辑"
                 )
             )
             save(current, toast: "已保存文档信息")
+            markRecentlyUsed(itemID: current.id)
         } catch {
             modal = .error("保存文档失败：\(error.localizedDescription)")
         }
@@ -549,6 +618,7 @@ final class AppState: ObservableObject {
             )
             try repository?.saveItem(item)
             reload(selecting: id)
+            markRecentlyUsed(itemID: id)
             showToast("已新建 Prompt")
         } catch {
             modal = .error(error.localizedDescription)
@@ -667,6 +737,7 @@ final class AppState: ObservableObject {
                 exportedCount += 1
             }
 
+            markRecentlyUsed(itemID: item.id)
             showToast(exportedCount > 1 ? "已导出 \(exportedCount) 个文件" : "导出完成")
         } catch {
             modal = .error(error.localizedDescription)
@@ -703,6 +774,7 @@ final class AppState: ObservableObject {
             case .promptWord:
                 try AppKitBridge.writeDocx(text: exportMarkdownText(for: item), to: target)
             }
+            markRecentlyUsed(itemID: item.id)
             showToast("导出完成")
         } catch {
             modal = .error(error.localizedDescription)
@@ -715,22 +787,26 @@ final class AppState: ObservableObject {
             return
         }
         AppKitBridge.revealInFinder(path: item.assetPath)
+        markRecentlyUsed(itemID: item.id)
     }
 
     func previewSelected() {
-        if selectedItem != nil {
-            modal = .preview
-        }
+        guard let item = selectedItem else { return }
+        modal = nil
+        promptComposerMode = nil
+        markdownEditorItemID = nil
+        isPreviewPresented = true
+        markRecentlyUsed(itemID: item.id)
     }
 
     func togglePreview() {
-        if modal == .preview {
-            modal = nil
+        if isPreviewPresented {
+            isPreviewPresented = false
             return
         }
 
-        guard modal == nil, selectedItem != nil else { return }
-        modal = .preview
+        guard modal == nil, promptComposerMode == nil, markdownEditorItemID == nil, selectedItem != nil else { return }
+        previewSelected()
     }
 
     func moveFilteredItem(draggedID: String, before targetID: String) {
@@ -1457,7 +1533,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func scheduleLastUsedUpdate(itemID: String) {
+    func markRecentlyUsed(itemID: String) {
+        guard filter.collection != .recent else { return }
         pendingLastUsedTask?.cancel()
         pendingLastUsedTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(650))
@@ -1465,13 +1542,36 @@ final class AppState: ObservableObject {
             let date = Date()
             do {
                 try repository?.updateLastUsed(itemID: itemID, at: date)
-                if filter.collection == .recent, let index = items.firstIndex(where: { $0.id == itemID }) {
+                if let index = items.firstIndex(where: { $0.id == itemID }) {
                     items[index].lastUsedAt = date
                 }
             } catch {
                 showToast("最近使用更新失败")
             }
         }
+    }
+
+    private func repairLegacyRecentTimestampsIfNeeded(repository: PromptRepository) throws {
+        let defaultsKey = "promptStudio.didRepairLegacyRecentTimestamps"
+        guard !UserDefaults.standard.bool(forKey: defaultsKey) else { return }
+        let activeItems = items.filter { !$0.isDeleted }
+        guard !activeItems.isEmpty, activeItems.allSatisfy(Self.hasRecentUse) else {
+            UserDefaults.standard.set(true, forKey: defaultsKey)
+            return
+        }
+
+        let neverUsedDate = Date(timeIntervalSince1970: 0)
+        for item in activeItems {
+            try repository.updateLastUsed(itemID: item.id, at: neverUsedDate)
+        }
+        for index in items.indices where !items[index].isDeleted {
+            items[index].lastUsedAt = neverUsedDate
+        }
+        UserDefaults.standard.set(true, forKey: defaultsKey)
+    }
+
+    private static func hasRecentUse(_ item: PromptItem) -> Bool {
+        item.lastUsedAt.timeIntervalSince1970 > 0
     }
 
     private func prepareMissingThumbnails() {

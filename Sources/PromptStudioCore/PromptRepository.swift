@@ -148,7 +148,7 @@ public final class PromptRepository: @unchecked Sendable {
                 deletedAt: date(row["deletedAt"] ?? nil),
                 createdAt: date(required(row, "createdAt")) ?? Date(),
                 updatedAt: date(required(row, "updatedAt")) ?? Date(),
-                lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(),
+                lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(timeIntervalSince1970: 0),
                 sortOrder: int(row, "sortOrder"),
                 tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
                 referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
@@ -200,48 +200,50 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveItem(_ item: PromptItem) throws {
-        try database.run(
-            """
-            INSERT OR REPLACE INTO prompt_items (
-                id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
-                aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
-                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            values: [
-                .text(item.id),
-                .text(item.title),
-                .text(item.type.rawValue),
-                .text(item.assetKind.rawValue),
-                .text(item.modelId),
-                .text(item.modelName),
-                .text(item.folderId),
-                .text(item.folderName),
-                .text(item.category),
-                .text(item.assetPath),
-                .text(item.thumbnailPath),
-                .text(item.aspectRatio),
-                .int(Int64(item.width)),
-                .int(Int64(item.height)),
-                .text(item.format),
-                .int(item.fileSize),
-                .int(item.favorite ? 1 : 0),
-                item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                .text(Self.string(from: item.createdAt)),
-                .text(Self.string(from: item.updatedAt)),
-                .text(Self.string(from: item.lastUsedAt)),
-                .int(Int64(item.sortOrder)),
-                .text(encode(item.tags)),
-                .text(encode(item.referenceAssets)),
-                .text(item.description)
-            ]
-        )
+        try database.transaction {
+            try database.run(
+                """
+                INSERT OR REPLACE INTO prompt_items (
+                    id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
+                    aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
+                    lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                values: [
+                    .text(item.id),
+                    .text(item.title),
+                    .text(item.type.rawValue),
+                    .text(item.assetKind.rawValue),
+                    .text(item.modelId),
+                    .text(item.modelName),
+                    .text(item.folderId),
+                    .text(item.folderName),
+                    .text(item.category),
+                    .text(item.assetPath),
+                    .text(item.thumbnailPath),
+                    .text(item.aspectRatio),
+                    .int(Int64(item.width)),
+                    .int(Int64(item.height)),
+                    .text(item.format),
+                    .int(item.fileSize),
+                    .int(item.favorite ? 1 : 0),
+                    item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
+                    .text(Self.string(from: item.createdAt)),
+                    .text(Self.string(from: item.updatedAt)),
+                    .text(Self.string(from: item.lastUsedAt)),
+                    .int(Int64(item.sortOrder)),
+                    .text(encode(item.tags)),
+                    .text(encode(item.referenceAssets)),
+                    .text(item.description)
+                ]
+            )
 
-        try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
-        for version in item.versions {
-            try saveVersion(version)
+            try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
+            for version in item.versions {
+                try saveVersion(version)
+            }
+            try refreshTags(from: try loadItems())
         }
-        try refreshTags(from: try loadItems())
     }
 
     public func markDeleted(itemID: String, deletedAt: Date?) throws {
