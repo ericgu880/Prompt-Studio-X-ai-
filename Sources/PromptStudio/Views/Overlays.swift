@@ -48,6 +48,13 @@ struct ImmersivePreviewOverlay: View {
                     .padding(.bottom, 36)
                 }
             }
+
+            OverlayCloseButton {
+                state.isPreviewPresented = false
+            }
+            .padding(.top, 28)
+            .padding(.trailing, 28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .transition(.opacity)
         .background {
@@ -80,75 +87,115 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private var previewInspector: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 12) {
-                    PreviewCloseButton {
-                        state.isPreviewPresented = false
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            previewInfoArea
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(item.title)
-                            .font(StudioFont.font(15, weight: .semibold))
-                            .foregroundStyle(StudioColor.text)
-                            .lineLimit(3)
-                        Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
-                            .font(StudioFont.font(12))
-                            .foregroundStyle(StudioColor.secondaryText)
-                            .lineLimit(2)
-                    }
-                }
+            fixedPromptFooter
 
-                metadataChips
+            Spacer(minLength: 0)
+        }
+    }
 
-                if item.assetKind != .image && item.assetKind != .video {
-                    PreviewDocumentBlock(title: "文件摘要", text: textSummary(for: item), minHeight: 160)
-                }
+    private var previewInfoArea: some View {
+        ViewThatFits(in: .vertical) {
+            previewInfoContent
+                .padding(.top, 58)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                if let prompt = item.currentVersion?.prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    PreviewDocumentBlock(title: "Prompt", text: prompt, minHeight: 180)
-                }
+            ScrollView {
+                previewInfoContent
+                    .padding(.top, 58)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxHeight: 260, alignment: .top)
+        }
+    }
 
-                if let negative = item.currentVersion?.negativePrompt, !negative.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    PreviewDocumentBlock(title: "Negative Prompt", text: negative, minHeight: 112)
-                }
+    private var previewInfoContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(item.title)
+                    .font(StudioFont.font(15, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(3)
+                Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(2)
+            }
 
-                if let parameters = item.currentVersion?.parameters, !parameters.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("参数")
-                            .font(StudioFont.caption(12))
-                            .tracking(1.2)
-                            .foregroundStyle(StudioColor.secondaryText)
-                        FlowLayout(spacing: 8) {
-                            ForEach(parameters.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                                Text("\(key) \(value)")
-                                    .font(StudioFont.font(11))
-                                    .foregroundStyle(StudioColor.text)
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 26)
-                                    .background(Capsule().fill(StudioColor.control))
-                                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
-                            }
+            metadataChips
+
+            if item.assetKind != .image && item.assetKind != .video {
+                PreviewDocumentBlock(title: "文件摘要", text: textSummary(for: item), minHeight: 160)
+            }
+
+            if let parameters = item.currentVersion?.parameters, !parameters.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("参数")
+                        .font(StudioFont.caption(12))
+                        .tracking(1.2)
+                        .foregroundStyle(StudioColor.secondaryText)
+                    FlowLayout(spacing: 8) {
+                        ForEach(parameters.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                            Text("\(key) \(value)")
+                                .font(StudioFont.font(11))
+                                .foregroundStyle(StudioColor.text)
+                                .padding(.horizontal, 10)
+                                .frame(height: 26)
+                                .background(Capsule().fill(StudioColor.control))
+                                .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                         }
                     }
                 }
-
-                Button {
-                    if item.assetKind == .markdown {
-                        state.copyMarkdownDocumentText(state.markdownDocumentText(for: item))
-                    } else {
-                        state.copySelectedPrompt()
-                    }
-                } label: {
-                    Label(item.assetKind == .markdown ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(CapsuleButtonStyle(filled: true))
             }
-            .padding(.top, 58)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 28)
         }
+    }
+
+    private var fixedPromptFooter: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let prompt = item.currentVersion?.prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                PreviewDocumentBlock(title: "Prompt", text: prompt, minHeight: 120)
+                    .frame(height: promptBlockHeight(for: prompt))
+            }
+
+            if let negative = item.currentVersion?.negativePrompt, !negative.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                PreviewDocumentBlock(title: "Negative Prompt", text: negative, minHeight: 80)
+                    .frame(height: negativePromptBlockHeight(for: negative))
+            }
+
+            Button {
+                if item.assetKind == .markdown {
+                    state.copyMarkdownDocumentText(state.markdownDocumentText(for: item))
+                } else {
+                    state.copySelectedPrompt()
+                }
+            } label: {
+                Label(item.assetKind == .markdown ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+        }
+        .padding(.top, 6)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 28)
+        .background(StudioColor.panel.opacity(0.98))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func promptBlockHeight(for text: String) -> CGFloat {
+        let count = text.trimmingCharacters(in: .whitespacesAndNewlines).count
+        if count < 220 { return 150 }
+        if count < 700 { return 220 }
+        return 280
+    }
+
+    private func negativePromptBlockHeight(for text: String) -> CGFloat {
+        text.count < 220 ? 104 : 132
     }
 
     private var metadataChips: some View {
@@ -232,22 +279,16 @@ private struct MarkdownDocumentPreviewContent: View {
     private var inspectorPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 12) {
-                    PreviewCloseButton {
-                        state.isPreviewPresented = false
-                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.title)
+                        .font(StudioFont.font(15, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(3)
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(item.title)
-                            .font(StudioFont.font(15, weight: .semibold))
-                            .foregroundStyle(StudioColor.text)
-                            .lineLimit(3)
-
-                        Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
-                            .font(StudioFont.font(12))
-                            .foregroundStyle(StudioColor.secondaryText)
-                            .lineLimit(2)
-                    }
+                    Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                        .lineLimit(2)
                 }
 
                 metadataChips
@@ -380,6 +421,13 @@ struct MarkdownEditorOverlay: View {
                             .frame(width: 1)
                     }
             }
+
+            OverlayCloseButton(help: "取消") {
+                requestClose()
+            }
+            .padding(.top, 28)
+            .padding(.trailing, 28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(StudioColor.text)
@@ -419,18 +467,6 @@ struct MarkdownEditorOverlay: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Button {
-                        requestClose()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(StudioFont.symbol(13, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.plain)
-                    .background(Circle().fill(StudioColor.control))
-                    .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
-                    .help("取消")
-
                     Spacer()
 
                     Text(draftText == initialText ? "已保存" : "未保存")
@@ -609,6 +645,13 @@ struct PromptComposerOverlay: View {
                         }
                 }
             }
+
+            OverlayCloseButton {
+                requestClose()
+            }
+            .padding(.top, 28)
+            .padding(.trailing, 28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .foregroundStyle(StudioColor.text)
         .transition(.opacity)
@@ -629,18 +672,6 @@ struct PromptComposerOverlay: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            Button {
-                requestClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(13, weight: .semibold))
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.plain)
-            .background(Circle().fill(StudioColor.control))
-            .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
-            .help("关闭")
-
             VStack(alignment: .leading, spacing: 3) {
                 Text(isEditing ? "编辑 Prompt" : "新建 Prompt")
                     .font(StudioFont.font(15, weight: .semibold))
@@ -651,9 +682,6 @@ struct PromptComposerOverlay: View {
 
             Spacer()
 
-            Button("取消") { requestClose() }
-                .buttonStyle(TextHoverButtonStyle())
-
             Button {
                 save()
             } label: {
@@ -662,7 +690,8 @@ struct PromptComposerOverlay: View {
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))
         }
-        .padding(.horizontal, 24)
+        .padding(.leading, 24)
+        .padding(.trailing, 64)
         .padding(.top, StudioLayout.contentTopPadding)
         .padding(.bottom, 14)
         .background(StudioColor.appBackground)
@@ -1127,19 +1156,20 @@ private final class OverlayImageLoader: ObservableObject {
     }
 }
 
-private struct PreviewCloseButton: View {
+private struct OverlayCloseButton: View {
+    var help = "关闭"
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(StudioFont.symbol(13, weight: .semibold))
-                .frame(width: 30, height: 30)
+                .font(StudioFont.symbol(11, weight: .semibold))
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.plain)
-        .background(Circle().fill(StudioColor.control))
+        .background(Circle().fill(StudioColor.control.opacity(0.92)))
         .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
-        .help("关闭")
+        .help(help)
     }
 }
 
