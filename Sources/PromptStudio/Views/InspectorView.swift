@@ -34,7 +34,7 @@ struct InspectorView: View {
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, selectedID in
             stopEditing()
-            if let item = state.items.first(where: { $0.id == selectedID }), item.assetKind == .markdown {
+            if let item = state.items.first(where: { $0.id == selectedID }), item.assetKind.isTextDocumentLike {
                 loadMarkdownDocument(item)
             } else {
                 markdownDocumentText = ""
@@ -53,9 +53,9 @@ struct InspectorView: View {
 
     @ViewBuilder
     private func inspector(for item: PromptItem) -> some View {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             markdownInspector(for: item)
-        } else {
+        } else if isEditing {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     header(item)
@@ -63,25 +63,73 @@ struct InspectorView: View {
                     if !item.referenceAssets.isEmpty {
                         referenceSection(item)
                     }
-                    if isEditing || hasPrompt(item) {
-                        promptSection(item)
-                    }
-                    if isEditing || hasNegativePrompt(item) {
-                        negativeSection(item)
-                    }
-                    if isEditing || !item.tags.isEmpty {
-                        tagSection(item)
-                    }
+                    promptSection(item)
+                    negativeSection(item)
+                    tagSection(item)
                     actionSection(item)
-                    if !isEditing {
-                        versionSection(item)
-                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
                 .padding(.top, StudioLayout.contentTopPadding)
             }
+        } else if item.assetKind == .image || item.assetKind == .video {
+            mediaReadOnlyInspector(item)
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                header(item)
+                Divider().overlay(StudioColor.hairline)
+                if !item.referenceAssets.isEmpty {
+                    referenceSection(item)
+                }
+                MidjourneyPromptInfoPanel(
+                    item: item,
+                    copyAction: { state.copySelectedPrompt() },
+                    editAction: { startEditing(item) },
+                    downloadAction: { state.modal = .export },
+                    historyAction: { state.modal = .versionHistory }
+                )
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
+            .padding(.top, StudioLayout.contentTopPadding)
         }
+    }
+
+    private func mediaReadOnlyInspector(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(item.title)
+                .font(StudioFont.font(15, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(3)
+
+            VStack(alignment: .leading, spacing: 10) {
+                mediaPreviewThumbnail(item)
+                mediaTopChips(item)
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                Text("Prompt")
+                    .font(StudioFont.caption(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .tracking(1.2)
+
+                Spacer(minLength: 12)
+
+                HStack(spacing: 10) {
+                    mediaActionButton("pencil", help: "编辑") { startEditing(item) }
+                    mediaActionButton("doc.on.doc", help: "复制提示词") { state.copySelectedPrompt() }
+                    mediaActionButton("arrow.down.circle", help: "下载") { state.modal = .export }
+                    mediaActionButton("clock", help: "历史版本") { state.modal = .versionHistory }
+                }
+            }
+
+            mediaPromptContent(item)
+                .frame(maxHeight: .infinity)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 28)
+        .padding(.top, 24)
     }
 
     private func markdownInspector(for item: PromptItem) -> some View {
@@ -148,7 +196,7 @@ struct InspectorView: View {
                 .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: thumbnailHovered)
                 .onTapGesture { state.previewSelected() }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .top) {
                     Text(item.title)
                         .font(StudioFont.font(14))
@@ -166,6 +214,123 @@ struct InspectorView: View {
             }
         }
         .foregroundStyle(StudioColor.text)
+    }
+
+    private func mediaPreviewThumbnail(_ item: PromptItem) -> some View {
+        GeometryReader { proxy in
+            let previewWidth = max(120, proxy.size.width * 0.6)
+            AssetMediaView(item: item)
+                .frame(width: previewWidth)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .background(Color.black)
+                .clipped()
+        }
+        .frame(height: 112)
+    }
+
+    @ViewBuilder
+    private func mediaPromptContent(_ item: PromptItem) -> some View {
+        if hasPrompt(item) {
+            mediaPromptBox(item)
+        } else {
+            Text("暂无提示词")
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.tertiaryText)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    private func mediaPromptBox(_ item: PromptItem) -> some View {
+        ScrollView {
+            Text(mediaPromptText(item))
+                .font(StudioFont.font(13))
+                .lineSpacing(4)
+                .foregroundStyle((item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(14)
+        }
+        .frame(maxWidth: .infinity)
+        .promptContainer()
+    }
+
+    private func mediaPromptText(_ item: PromptItem) -> String {
+        let prompt = item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return prompt.isEmpty ? "暂无 Prompt" : prompt
+    }
+
+    private func mediaTopChips(_ item: PromptItem) -> some View {
+        FlowLayout(spacing: 8) {
+            ForEach(mediaTopChipTexts(item), id: \.self) { text in
+                mediaChip(text)
+            }
+        }
+    }
+
+    private func mediaBottomChips(_ item: PromptItem) -> some View {
+        FlowLayout(spacing: 10) {
+            ForEach(mediaBottomChipTexts(item), id: \.self) { text in
+                mediaChip(text)
+            }
+        }
+    }
+
+    private func mediaTopChipTexts(_ item: PromptItem) -> [String] {
+        [
+            item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased(),
+            item.displaySize,
+            item.currentVersion?.version ?? "V1.0",
+            item.tags.first ?? item.category
+        ]
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        .prefix(4)
+        .map { $0 }
+    }
+
+    private func mediaBottomChipTexts(_ item: PromptItem) -> [String] {
+        var chips: [String] = []
+        chips.append(item.currentVersion?.version ?? "V1.0")
+        chips.append(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
+        if item.width > 0, item.height > 0 {
+            chips.append(item.displayAspectRatio)
+        }
+        chips.append(item.tags.first ?? item.category)
+        return chips.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func mediaChip(_ text: String) -> some View {
+        Text(text)
+            .font(StudioFont.font(11))
+            .foregroundStyle(StudioColor.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(Capsule().fill(StudioColor.control))
+            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func mediaActionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            LucideIcon(kind: lucideKind(for: systemName))
+                .frame(width: 14, height: 14)
+        }
+        .buttonStyle(IconCircleButtonStyle())
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private func lucideKind(for systemName: String) -> LucideIcon.Kind {
+        switch systemName {
+        case "pencil":
+            .pencil
+        case "doc.on.doc":
+            .copy
+        case "arrow.down.circle":
+            .circleArrowDown
+        case "clock":
+            .history
+        default:
+            .copy
+        }
     }
 
     private func tagSection(_ item: PromptItem) -> some View {
@@ -262,7 +427,8 @@ struct InspectorView: View {
                 Button {
                     startEditing(item)
                 } label: {
-                    Image(systemName: "pencil")
+                    LucideIcon(kind: .pencil)
+                        .frame(width: 14, height: 14)
                         .accessibilityLabel("编辑")
                 }
                 .buttonStyle(IconCircleButtonStyle())
@@ -271,20 +437,21 @@ struct InspectorView: View {
                 Button {
                     state.modal = .export
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
+                    LucideIcon(kind: .circleArrowDown)
+                        .frame(width: 14, height: 14)
                         .accessibilityLabel("导出")
                 }
                 .buttonStyle(IconCircleButtonStyle())
                 .help("导出")
 
                 Button {
-                    if item.assetKind == .markdown {
+                    if item.assetKind.isTextDocumentLike {
                         state.copyMarkdownDocumentText(activeMarkdownText)
                     } else {
                         state.copySelectedPrompt()
                     }
                 } label: {
-                    Text(item.assetKind == .markdown ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
+                    Text(item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
             }
@@ -334,15 +501,18 @@ struct InspectorView: View {
     }
 
     private func infoLine(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text("\(title)：")
                 .font(StudioFont.font(11))
                 .foregroundStyle(StudioColor.tertiaryText)
+                .fixedSize(horizontal: true, vertical: false)
             Text(value)
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(13))
                 .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func infoGrid(_ a: String, _ b: String, _ c: String, _ d: String) -> some View {
@@ -387,7 +557,7 @@ struct InspectorView: View {
     }
 
     private func startEditing(_ item: PromptItem) {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             state.openMarkdownEditor(for: item)
             return
         } else {
@@ -408,7 +578,7 @@ struct InspectorView: View {
     }
 
     private func saveInlineEdit(_ item: PromptItem) {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             markdownDocumentText = draftPrompt
             markdownDocumentItemID = item.id
             state.saveMarkdownDocument(draftPrompt, for: item)
@@ -435,7 +605,7 @@ struct InspectorView: View {
     }
 
     private func loadMarkdownDocument(_ item: PromptItem) {
-        guard item.assetKind == .markdown, markdownDocumentItemID != item.id else { return }
+        guard item.assetKind.isTextDocumentLike, markdownDocumentItemID != item.id else { return }
         markdownDocumentText = state.markdownDocumentText(for: item)
         markdownDocumentItemID = item.id
     }
@@ -447,6 +617,155 @@ struct InspectorView: View {
         return [format, "\(lineCount) 行", fileSizeText(item.fileSize), fileName]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+    }
+}
+
+private struct MidjourneyPromptInfoPanel: View {
+    let item: PromptItem
+    let copyAction: () -> Void
+    let editAction: () -> Void
+    let downloadAction: () -> Void
+    let historyAction: () -> Void
+
+    private var prompt: String {
+        item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ViewThatFits(in: .vertical) {
+                panelContent(prompt: promptText)
+
+                panelContent(prompt: scrollingPrompt)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func panelContent<PromptContent: View>(prompt: PromptContent) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(item.title)
+                    .font(StudioFont.font(14, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                HStack(spacing: 12) {
+                    iconButton("pencil", help: "编辑", action: editAction)
+                    iconButton("doc.on.doc", help: "复制提示词", action: copyAction)
+                    iconButton("arrow.down.circle", help: "下载", action: downloadAction)
+                    iconButton("clock", help: "历史版本", action: historyAction)
+                }
+            }
+
+            prompt
+
+            if !metadataChips.isEmpty {
+                FlowLayout(spacing: 8) {
+                    ForEach(metadataChips, id: \.self) { chip in
+                        Text(chip)
+                            .font(StudioFont.font(11))
+                            .foregroundStyle(StudioColor.secondaryText)
+                            .padding(.horizontal, 9)
+                            .frame(height: 24)
+                            .background(Capsule().fill(StudioColor.control.opacity(0.78)))
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var promptText: some View {
+        if prompt.isEmpty {
+            Text("暂无 Prompt")
+                .font(StudioFont.font(14))
+                .foregroundStyle(StudioColor.tertiaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .promptContainer()
+        } else {
+            Text(prompt)
+                .font(StudioFont.font(14))
+                .lineSpacing(5)
+                .foregroundStyle(StudioColor.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(14)
+                .promptContainer()
+        }
+    }
+
+    private var scrollingPrompt: some View {
+        ScrollView {
+            Text(prompt.isEmpty ? "暂无 Prompt" : prompt)
+                .font(StudioFont.font(14))
+                .lineSpacing(5)
+                .foregroundStyle(prompt.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(14)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .promptContainer()
+    }
+
+    private var metadataChips: [String] {
+        var chips: [String] = []
+        chips.append(item.currentVersion?.version ?? "V1.0")
+        chips.append(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
+        if item.width > 0, item.height > 0 {
+            chips.append(item.displayAspectRatio)
+        }
+        if let parameters = item.currentVersion?.parameters {
+            chips.append(contentsOf: parameters.sorted(by: { $0.key < $1.key }).prefix(3).map { "\($0.key) \($0.value)" })
+        }
+        chips.append(contentsOf: item.tags.prefix(2))
+        return chips.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func iconButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            LucideIcon(kind: lucideKind(for: systemName))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func lucideKind(for systemName: String) -> LucideIcon.Kind {
+        switch systemName {
+        case "pencil":
+            .pencil
+        case "doc.on.doc":
+            .copy
+        case "arrow.down.circle":
+            .circleArrowDown
+        case "clock":
+            .history
+        default:
+            .copy
+        }
+    }
+}
+
+private extension View {
+    func promptContainer() -> some View {
+        self
+            .background(Color(hex: 0x2D2D2D))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
+            )
     }
 }
 

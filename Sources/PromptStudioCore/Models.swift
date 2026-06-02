@@ -47,8 +47,17 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    public var isTextDocumentLike: Bool {
+        switch self {
+        case .markdown, .json, .text, .data:
+            true
+        case .image, .video, .audio, .document, .unknown:
+            false
+        }
+    }
+
     public var supportsGeneratedThumbnail: Bool {
-        self == .image || self == .video || self == .markdown
+        self == .image || self == .video || isTextDocumentLike
     }
 
     public static func infer(fileExtension: String, fallbackType: PromptType? = nil) -> AssetKind {

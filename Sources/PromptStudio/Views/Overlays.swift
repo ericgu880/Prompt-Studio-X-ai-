@@ -14,7 +14,7 @@ struct ImmersivePreviewOverlay: View {
             StudioColor.appBackground
                 .ignoresSafeArea()
 
-            if item.assetKind == .markdown {
+            if item.assetKind.isTextDocumentLike {
                 MarkdownDocumentPreviewContent(item: item)
                     .environmentObject(state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,126 +87,123 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private var previewInspector: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            previewInfoArea
-
-            fixedPromptFooter
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var previewInfoArea: some View {
-        ViewThatFits(in: .vertical) {
-            previewInfoContent
-                .padding(.top, 58)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-
-            ScrollView {
-                previewInfoContent
-                    .padding(.top, 58)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .frame(maxHeight: 260, alignment: .top)
-        }
-    }
-
-    private var previewInfoContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item.title)
-                    .font(StudioFont.font(15, weight: .semibold))
-                    .foregroundStyle(StudioColor.text)
-                    .lineLimit(3)
-                Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
-                    .font(StudioFont.font(12))
+            Text(item.title)
+                .font(StudioFont.font(15, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(3)
+
+            previewTopChips
+
+            HStack(alignment: .center, spacing: 10) {
+                Text("Prompt")
+                    .font(StudioFont.caption(12))
                     .foregroundStyle(StudioColor.secondaryText)
-                    .lineLimit(2)
-            }
+                    .tracking(1.2)
 
-            metadataChips
+                Spacer()
 
-            if item.assetKind != .image && item.assetKind != .video {
-                PreviewDocumentBlock(title: "文件摘要", text: textSummary(for: item), minHeight: 160)
-            }
-
-            if let parameters = item.currentVersion?.parameters, !parameters.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("参数")
-                        .font(StudioFont.caption(12))
-                        .tracking(1.2)
-                        .foregroundStyle(StudioColor.secondaryText)
-                    FlowLayout(spacing: 8) {
-                        ForEach(parameters.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                            Text("\(key) \(value)")
-                                .font(StudioFont.font(11))
-                                .foregroundStyle(StudioColor.text)
-                                .padding(.horizontal, 10)
-                                .frame(height: 26)
-                                .background(Capsule().fill(StudioColor.control))
-                                .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
-                        }
+                HStack(spacing: 10) {
+                    previewActionButton("pencil", help: "编辑") {
+                        state.openEditPromptComposer(for: item)
+                    }
+                    previewActionButton("doc.on.doc", help: "复制提示词") {
+                        state.copySelectedPrompt()
+                    }
+                    previewActionButton("arrow.down.circle", help: "下载") {
+                        state.isPreviewPresented = false
+                        state.modal = .export
+                    }
+                    previewActionButton("clock", help: "历史版本") {
+                        state.isPreviewPresented = false
+                        state.modal = .versionHistory
                     }
                 }
             }
+
+            previewPromptContent
+                .frame(maxHeight: .infinity)
         }
-    }
-
-    private var fixedPromptFooter: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let prompt = item.currentVersion?.prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                PreviewDocumentBlock(title: "Prompt", text: prompt, minHeight: 120)
-                    .frame(height: promptBlockHeight(for: prompt))
-            }
-
-            if let negative = item.currentVersion?.negativePrompt, !negative.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                PreviewDocumentBlock(title: "Negative Prompt", text: negative, minHeight: 80)
-                    .frame(height: negativePromptBlockHeight(for: negative))
-            }
-
-            Button {
-                if item.assetKind == .markdown {
-                    state.copyMarkdownDocumentText(state.markdownDocumentText(for: item))
-                } else {
-                    state.copySelectedPrompt()
-                }
-            } label: {
-                Label(item.assetKind == .markdown ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
-        }
-        .padding(.top, 6)
+        .padding(.top, 58)
         .padding(.horizontal, 24)
         .padding(.bottom, 28)
-        .background(StudioColor.panel.opacity(0.98))
-        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private func promptBlockHeight(for text: String) -> CGFloat {
-        let count = text.trimmingCharacters(in: .whitespacesAndNewlines).count
-        if count < 220 { return 150 }
-        if count < 700 { return 220 }
-        return 280
+    @ViewBuilder
+    private var previewPromptContent: some View {
+        if previewHasPrompt {
+            previewPromptBox
+        } else {
+            Text("暂无提示词")
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.tertiaryText)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
     }
 
-    private func negativePromptBlockHeight(for text: String) -> CGFloat {
-        text.count < 220 ? 104 : 132
+    private var previewPromptBox: some View {
+        ScrollView {
+            Text(previewPromptText)
+                .font(StudioFont.font(13))
+                .lineSpacing(4)
+                .foregroundStyle(previewPromptText.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(14)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(hex: 0x2D2D2D))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
+        )
     }
 
-    private var metadataChips: some View {
+    private var previewPromptText: String {
+        let prompt = item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return prompt.isEmpty ? "暂无 Prompt" : prompt
+    }
+
+    private var previewHasPrompt: Bool {
+        !(item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+    }
+
+    private var previewTopChips: some View {
         FlowLayout(spacing: 8) {
-            chip(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
-            chip(item.displaySize)
-            chip(item.currentVersion?.version ?? "V1.0")
-            ForEach(item.tags.prefix(4), id: \.self) { tag in
-                chip(tag)
+            ForEach(previewTopChipTexts, id: \.self) { text in
+                chip(text)
             }
         }
+    }
+
+    private var previewBottomChips: some View {
+        FlowLayout(spacing: 10) {
+            ForEach(previewBottomChipTexts, id: \.self) { text in
+                chip(text)
+            }
+        }
+    }
+
+    private var previewTopChipTexts: [String] {
+        [
+            item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased(),
+            item.displaySize,
+            item.currentVersion?.version ?? "V1.0",
+            item.tags.first ?? item.category
+        ]
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        .prefix(4)
+        .map { $0 }
+    }
+
+    private var previewBottomChipTexts: [String] {
+        [
+            item.currentVersion?.version ?? "V1.0",
+            item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased(),
+            item.displayAspectRatio,
+            item.tags.first ?? item.category
+        ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     private func chip(_ text: String) -> some View {
@@ -217,6 +214,31 @@ struct ImmersivePreviewOverlay: View {
             .frame(height: 26)
             .background(Capsule().fill(StudioColor.control))
             .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func previewActionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            LucideIcon(kind: lucideKind(for: systemName))
+                .frame(width: 14, height: 14)
+        }
+        .buttonStyle(IconCircleButtonStyle())
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private func lucideKind(for systemName: String) -> LucideIcon.Kind {
+        switch systemName {
+        case "pencil":
+            .pencil
+        case "doc.on.doc":
+            .copy
+        case "arrow.down.circle":
+            .circleArrowDown
+        case "clock":
+            .history
+        default:
+            .copy
+        }
     }
 
     private func textSummary(for item: PromptItem) -> String {
@@ -453,7 +475,7 @@ struct MarkdownEditorOverlay: View {
             MarkdownDocumentEditor(text: $draftText, isEditable: true, scrollResetID: item.id)
 
             if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("开始编写 Markdown 文档")
+                Text("开始编写文档内容")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.tertiaryText)
                     .padding(.leading, 62)

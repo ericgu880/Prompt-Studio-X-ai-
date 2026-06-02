@@ -273,7 +273,7 @@ final class AppState: ObservableObject {
 
     func openEditPromptComposer(for item: PromptItem? = nil) {
         let target = item ?? selectedItem
-        guard let target, target.assetKind != .markdown else { return }
+        guard let target, !target.assetKind.isTextDocumentLike else { return }
         if selectedID != target.id {
             select(target)
         }
@@ -289,7 +289,7 @@ final class AppState: ObservableObject {
 
     func openMarkdownEditor(for item: PromptItem? = nil) {
         let target = item ?? selectedItem
-        guard let target, target.assetKind == .markdown else { return }
+        guard let target, target.assetKind.isTextDocumentLike else { return }
         if selectedID != target.id {
             select(target)
         }
@@ -350,7 +350,6 @@ final class AppState: ObservableObject {
     }
 
     func markdownDocumentText(for item: PromptItem) -> String {
-        guard item.assetKind == .markdown else { return item.currentVersion?.prompt ?? "" }
         if !item.assetPath.isEmpty,
            let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
             return text
@@ -372,7 +371,7 @@ final class AppState: ObservableObject {
     }
 
     func copyItemContent(_ item: PromptItem) {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             copyMarkdownDocumentText(markdownDocumentText(for: item))
         } else {
             if selectedID != item.id {
@@ -383,7 +382,7 @@ final class AppState: ObservableObject {
     }
 
     func requestInlineEdit(_ item: PromptItem) {
-        guard item.assetKind == .markdown else {
+        guard item.assetKind.isTextDocumentLike else {
             openEditPromptComposer(for: item)
             return
         }
@@ -546,7 +545,7 @@ final class AppState: ObservableObject {
                     prompt: text,
                     negativePrompt: "",
                     parameters: current.currentVersion?.parameters ?? [:],
-                    note: "Markdown 全窗口编辑"
+                    note: "文档全窗口编辑"
                 )
             )
             save(current, toast: "已保存文档信息")
@@ -1646,7 +1645,7 @@ final class AppState: ObservableObject {
     }
 
     private func plainPrompt(for item: PromptItem) -> String {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             return markdownDocumentText(for: item)
         }
         return """
@@ -1664,7 +1663,7 @@ final class AppState: ObservableObject {
     }
 
     private func exportMarkdownText(for item: PromptItem) -> String {
-        item.assetKind == .markdown ? markdownDocumentText(for: item) : markdownPrompt(for: item)
+        item.assetKind.isTextDocumentLike ? markdownDocumentText(for: item) : markdownPrompt(for: item)
     }
 
     private func overwriteText(_ text: String, to url: URL) throws {

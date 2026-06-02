@@ -1635,7 +1635,7 @@ private enum AssetCardMetrics {
     }
 
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             return width * 9 / 16
         }
         if item.assetKind.supportsGeneratedThumbnail, item.width > 0, item.height > 0 {
@@ -1734,7 +1734,7 @@ private struct AssetCardView: View {
 
                 HStack(spacing: 8) {
                     cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
-                    cardAction("doc.on.doc", help: item.assetKind == .markdown ? "复制文档信息" : "复制提示词") {
+                    cardAction("doc.on.doc", help: item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
                         state.copyItemContent(item)
                     }
                     cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
@@ -1839,7 +1839,7 @@ private struct AssetCardView: View {
                 state.copyItemContent(item)
             }
         } label: {
-            Label(item.assetKind == .markdown ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
+            Label(item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
         }
         .disabled(!hasPrompt)
 
@@ -1899,7 +1899,7 @@ private struct AssetCardView: View {
     }
 
     private var hasPrompt: Bool {
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             return !state.markdownDocumentText(for: item).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -1935,12 +1935,25 @@ private struct AssetCardView: View {
             selectImmediately()
             action()
         } label: {
-            Image(systemName: systemName)
-                .font(StudioFont.symbol(14))
+            LucideIcon(kind: lucideKind(for: systemName))
+                .frame(width: 14, height: 14)
         }
         .buttonStyle(IconCircleButtonStyle())
         .help(help)
         .accessibilityLabel(help)
+    }
+
+    private func lucideKind(for systemName: String) -> LucideIcon.Kind {
+        switch systemName {
+        case "pencil":
+            .pencil
+        case "doc.on.doc":
+            .copy
+        case "clock":
+            .history
+        default:
+            .copy
+        }
     }
 
 }
@@ -2066,7 +2079,7 @@ private struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 16) {
             if isTrash {
-                LucideTrash2Icon()
+                LucideIcon(kind: .trash2)
                     .frame(width: 58, height: 58)
                     .foregroundStyle(StudioColor.secondaryText)
                 Text("回收站为空")
@@ -2093,39 +2106,6 @@ private struct EmptyStateView: View {
 
     private var isTrash: Bool {
         state.filter.collection == .trash
-    }
-}
-
-private struct LucideTrash2Icon: View {
-    var body: some View {
-        ZStack {
-            Path { path in
-                path.move(to: CGPoint(x: 20, y: 18))
-                path.addLine(to: CGPoint(x: 38, y: 18))
-                path.move(to: CGPoint(x: 25, y: 18))
-                path.addLine(to: CGPoint(x: 26.8, y: 13))
-                path.addLine(to: CGPoint(x: 31.2, y: 13))
-                path.addLine(to: CGPoint(x: 33, y: 18))
-                path.move(to: CGPoint(x: 14, y: 23))
-                path.addLine(to: CGPoint(x: 44, y: 23))
-            }
-            .stroke(style: StrokeStyle(lineWidth: 3.2, lineCap: .round, lineJoin: .round))
-
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(lineWidth: 3.2)
-                .frame(width: 26, height: 30)
-                .offset(y: 7)
-
-            Path { path in
-                path.move(to: CGPoint(x: 25, y: 30))
-                path.addLine(to: CGPoint(x: 25, y: 44))
-                path.move(to: CGPoint(x: 33, y: 30))
-                path.addLine(to: CGPoint(x: 33, y: 44))
-            }
-            .stroke(style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
-        }
-        .frame(width: 58, height: 58)
-        .accessibilityLabel("空回收站")
     }
 }
 

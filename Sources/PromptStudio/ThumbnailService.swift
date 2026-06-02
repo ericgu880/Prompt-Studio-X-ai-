@@ -43,7 +43,7 @@ enum ThumbnailService {
             return destinationURL.path
         }
 
-        if item.assetKind == .markdown {
+        if item.assetKind.isTextDocumentLike {
             return try generateMarkdownThumbnail(from: sourceURL, to: destinationURL)
         }
 
