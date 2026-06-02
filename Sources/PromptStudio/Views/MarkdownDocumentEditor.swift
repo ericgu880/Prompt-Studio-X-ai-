@@ -6,11 +6,13 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     @Binding var text: String
     let isEditable: Bool
     let scrollResetID: String?
+    let contentFontSize: CGFloat
 
-    init(text: Binding<String>, isEditable: Bool, scrollResetID: String? = nil) {
+    init(text: Binding<String>, isEditable: Bool, scrollResetID: String? = nil, contentFontSize: CGFloat = 14) {
         self._text = text
         self.isEditable = isEditable
         self.scrollResetID = scrollResetID
+        self.contentFontSize = contentFontSize
     }
 
     func makeCoordinator() -> Coordinator {
@@ -18,12 +20,12 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> MarkdownEditorContainerView {
-        let containerView = MarkdownEditorContainerView()
+        let containerView = MarkdownEditorContainerView(contentFontSize: contentFontSize)
         let textView = containerView.textView
         textView.delegate = context.coordinator
         textView.string = text
         textView.isEditable = isEditable
-        MarkdownSyntaxHighlighter.apply(to: textView)
+        MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
         if let scrollResetID {
             context.coordinator.lastScrollResetID = scrollResetID
             containerView.scrollToTop()
@@ -35,7 +37,8 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         context.coordinator.parent = self
         let textView = containerView.textView
         textView.isEditable = isEditable
-        textView.insertionPointColor = MarkdownEditorPalette.text
+        textView.insertionPointColor = MarkdownEditorPalette.strongText
+        let fontSizeChanged = containerView.updateContentFontSize(contentFontSize)
         var shouldResetScroll = false
 
         if let scrollResetID, context.coordinator.lastScrollResetID != scrollResetID {
@@ -46,9 +49,11 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         if textView.string != text {
             context.coordinator.isApplyingExternalChange = true
             textView.string = text
-            MarkdownSyntaxHighlighter.apply(to: textView)
+            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
             context.coordinator.isApplyingExternalChange = false
             shouldResetScroll = scrollResetID != nil
+        } else if fontSizeChanged {
+            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
         }
 
         containerView.gutterView.needsDisplay = true
@@ -73,7 +78,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
                 parent.text = textView.string
             }
             let selectedRanges = textView.selectedRanges
-            MarkdownSyntaxHighlighter.apply(to: textView)
+            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: parent.contentFontSize)
             textView.selectedRanges = selectedRanges
             (textView.enclosingScrollView?.superview as? MarkdownEditorContainerView)?.gutterView.needsDisplay = true
         }
@@ -87,12 +92,14 @@ final class MarkdownEditorContainerView: NSView {
     let gutterView: MarkdownLineNumberGutterView
 
     private let gutterWidth: CGFloat = 44
+    private(set) var contentFontSize: CGFloat
 
-    override init(frame frameRect: NSRect) {
+    init(contentFontSize: CGFloat = 14, frame frameRect: NSRect = .zero) {
+        self.contentFontSize = contentFontSize
         let textView = NSTextView(frame: .zero)
         self.textView = textView
         self.scrollView = NSScrollView(frame: .zero)
-        self.gutterView = MarkdownLineNumberGutterView(textView: textView)
+        self.gutterView = MarkdownLineNumberGutterView(textView: textView, contentFontSize: contentFontSize)
         super.init(frame: frameRect)
 
         wantsLayer = true
@@ -120,7 +127,7 @@ final class MarkdownEditorContainerView: NSView {
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textColor = MarkdownEditorPalette.text
-        textView.font = MarkdownEditorPalette.bodyFont
+        textView.font = MarkdownEditorPalette.bodyFont(size: contentFontSize)
         textView.allowsUndo = true
         textView.isRichText = false
         textView.importsGraphics = false
@@ -140,6 +147,16 @@ final class MarkdownEditorContainerView: NSView {
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
         )
+    }
+
+    func updateContentFontSize(_ size: CGFloat) -> Bool {
+        guard contentFontSize != size else { return false }
+        contentFontSize = size
+        gutterView.contentFontSize = size
+        textView.font = MarkdownEditorPalette.bodyFont(size: size)
+        textView.needsDisplay = true
+        gutterView.needsDisplay = true
+        return true
     }
 
     required init?(coder: NSCoder) {
@@ -186,9 +203,11 @@ final class MarkdownEditorContainerView: NSView {
 @MainActor
 final class MarkdownLineNumberGutterView: NSView {
     weak var textView: NSTextView?
+    var contentFontSize: CGFloat
 
-    init(textView: NSTextView) {
+    init(textView: NSTextView, contentFontSize: CGFloat) {
         self.textView = textView
+        self.contentFontSize = contentFontSize
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = MarkdownEditorPalette.background.cgColor
@@ -212,7 +231,8 @@ final class MarkdownLineNumberGutterView: NSView {
 
         let visibleRect = textView.visibleRect
         let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-        let lineHeight = MarkdownEditorPalette.bodyFont.ascender - MarkdownEditorPalette.bodyFont.descender + MarkdownEditorPalette.bodyFont.leading
+        let bodyFont = MarkdownEditorPalette.bodyFont(size: contentFontSize)
+        let lineHeight = bodyFont.ascender - bodyFont.descender + bodyFont.leading
         let text = textView.string as NSString
         var drawnLines = Set<Int>()
 
@@ -231,28 +251,39 @@ final class MarkdownLineNumberGutterView: NSView {
 
 @MainActor
 private enum MarkdownSyntaxHighlighter {
-    static func apply(to textView: NSTextView) {
+    static func apply(to textView: NSTextView, contentFontSize: CGFloat) {
         guard let storage = textView.textStorage else { return }
         let string = storage.string as NSString
         let fullRange = NSRange(location: 0, length: string.length)
         guard fullRange.length > 0 else { return }
 
         storage.beginEditing()
-        storage.setAttributes(MarkdownEditorPalette.baseAttributes, range: fullRange)
-        apply(pattern: #"(?m)^\s{0,6}#{1,6}\s.*$"#, to: storage, attributes: MarkdownEditorPalette.headingAttributes)
-        apply(pattern: #"(?m)^\s*[-*_]{3,}\s*$"#, to: storage, attributes: MarkdownEditorPalette.mutedAttributes)
-        apply(pattern: #"(?m)^\s*(?:\d+\.|[-*])"#, to: storage, attributes: MarkdownEditorPalette.listMarkerAttributes)
-        apply(pattern: #"`[^`]+`"#, to: storage, attributes: MarkdownEditorPalette.codeAttributes)
-        apply(pattern: #"[A-Za-z0-9_\-./\p{Han}]+\.md"#, to: storage, attributes: MarkdownEditorPalette.codeAttributes)
+        storage.setAttributes(MarkdownEditorPalette.baseAttributes(size: contentFontSize), range: fullRange)
+        apply(pattern: #"(?m)^\s{0,6}#{1,6}\s.*$"#, to: storage, attributes: MarkdownEditorPalette.headingAttributes(size: contentFontSize))
+        apply(pattern: #"(?m)^\s{0,3}(>)"#, to: storage, attributes: MarkdownEditorPalette.quoteMarkerAttributes(size: contentFontSize), captureGroup: 1)
+        apply(pattern: #"(?m)^\s*[-*_]{3,}\s*$"#, to: storage, attributes: MarkdownEditorPalette.mutedAttributes(size: contentFontSize))
+        apply(pattern: #"(?m)^\s*((?:\d+\.|[-*]))"#, to: storage, attributes: MarkdownEditorPalette.listMarkerAttributes(size: contentFontSize), captureGroup: 1)
+        apply(pattern: #"(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`)"#, to: storage, attributes: MarkdownEditorPalette.codeAttributes(size: contentFontSize))
+        apply(pattern: #"(?im)^.*(?:负面提示词|负面约束|反向提示词|Negative Prompt|不要|禁止|避免|不出现|不使用|无字幕|无文字|无水印|无logo|无Logo|无LOGO|无品牌|无现代|无多余|无夸张|无脸部崩坏|无身份不一致).*$"#, to: storage, attributes: MarkdownEditorPalette.negativeConstraintAttributes(size: contentFontSize))
+        apply(pattern: #"\*\*[^*\n]+?\*\*"#, to: storage, attributes: MarkdownEditorPalette.boldAttributes(size: contentFontSize))
         storage.endEditing()
     }
 
-    private static func apply(pattern: String, to storage: NSTextStorage, attributes: [NSAttributedString.Key: Any]) {
+    private static func apply(
+        pattern: String,
+        to storage: NSTextStorage,
+        attributes: [NSAttributedString.Key: Any],
+        captureGroup: Int = 0
+    ) {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
         let range = NSRange(location: 0, length: (storage.string as NSString).length)
         regex.enumerateMatches(in: storage.string, range: range) { match, _, _ in
             guard let match else { return }
-            storage.addAttributes(attributes, range: match.range)
+            let targetRange = captureGroup > 0 && captureGroup < match.numberOfRanges
+                ? match.range(at: captureGroup)
+                : match.range
+            guard targetRange.location != NSNotFound, targetRange.length > 0 else { return }
+            storage.addAttributes(attributes, range: targetRange)
         }
     }
 }
@@ -261,15 +292,24 @@ private enum MarkdownSyntaxHighlighter {
 private enum MarkdownEditorPalette {
     static let background = NSColor(hex: 0x141414)
     static let border = NSColor(hex: 0x363A3F)
-    static let text = NSColor(hex: 0xFFFFFF)
-    static let secondaryText = NSColor(hex: 0xDADBDF)
-    static let mutedText = NSColor(hex: 0x7D8187)
-    static let heading = NSColor(hex: 0xFF6B70)
-    static let code = NSColor(hex: 0x7EE787)
+    static let strongText = NSColor(hex: 0xFFFFFF)
+    static let text = NSColor(hex: 0xBDBEC0)
+    static let mutedText = NSColor(hex: 0xBDBEC0)
+    static let red = NSColor(hex: 0xFF5F57)
+    static let orange = NSColor(hex: 0xFF9F0A)
+    static let green = NSColor(hex: 0x37DD61)
+    static let blue = NSColor(hex: 0x41CBE0)
+    static let white = NSColor(hex: 0xEEEEEE)
 
-    static let bodyFont = NSFont(name: "PingFangSC-Regular", size: 13) ?? .systemFont(ofSize: 13)
-    static let headingFont = NSFont(name: "PingFangSC-Semibold", size: 13) ?? .systemFont(ofSize: 13, weight: .semibold)
     static let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
+    static func bodyFont(size: CGFloat) -> NSFont {
+        NSFont(name: "PingFangSC-Regular", size: size) ?? .systemFont(ofSize: size)
+    }
+
+    static func semanticFont(size: CGFloat) -> NSFont {
+        bodyFont(size: size)
+    }
 
     static let paragraphStyle: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
@@ -278,31 +318,46 @@ private enum MarkdownEditorPalette {
         return style
     }()
 
-    static let baseAttributes: [NSAttributedString.Key: Any] = [
-        .font: bodyFont,
-        .foregroundColor: text,
-        .paragraphStyle: paragraphStyle
-    ]
-    static let headingAttributes: [NSAttributedString.Key: Any] = [
-        .font: headingFont,
-        .foregroundColor: heading,
-        .paragraphStyle: paragraphStyle
-    ]
-    static let mutedAttributes: [NSAttributedString.Key: Any] = [
-        .font: bodyFont,
-        .foregroundColor: mutedText,
-        .paragraphStyle: paragraphStyle
-    ]
-    static let listMarkerAttributes: [NSAttributedString.Key: Any] = [
-        .font: headingFont,
-        .foregroundColor: heading,
-        .paragraphStyle: paragraphStyle
-    ]
-    static let codeAttributes: [NSAttributedString.Key: Any] = [
-        .font: headingFont,
-        .foregroundColor: code,
-        .paragraphStyle: paragraphStyle
-    ]
+    static func baseAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: bodyFont(size: size), color: text)
+    }
+
+    static func headingAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: blue)
+    }
+
+    static func mutedAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: bodyFont(size: size), color: mutedText)
+    }
+
+    static func quoteMarkerAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: green)
+    }
+
+    static func listMarkerAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: orange)
+    }
+
+    static func codeAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: green)
+    }
+
+    static func negativeConstraintAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: red)
+    }
+
+    static func boldAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        attributes(font: semanticFont(size: size), color: white)
+    }
+
+    private static func attributes(font: NSFont, color: NSColor) -> [NSAttributedString.Key: Any] {
+        [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraphStyle
+        ]
+    }
+
     static let lineNumberAttributes: [NSAttributedString.Key: Any] = [
         .font: lineNumberFont,
         .foregroundColor: mutedText,

@@ -1576,13 +1576,18 @@ final class AppState: ObservableObject {
     private func prepareMissingThumbnails() {
         let libraryURL = libraryURL
         var candidates: [PromptItem] = []
+        var existingGenerated: [(String, String)] = []
         for item in items {
             guard item.assetKind.supportsGeneratedThumbnail else { continue }
-            if ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) != nil {
+            if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
+                if existingPath != item.thumbnailPath {
+                    existingGenerated.append((item.id, existingPath))
+                }
                 continue
             }
             candidates.append(item)
         }
+        applyGeneratedThumbnails(existingGenerated)
         guard !candidates.isEmpty else { return }
         thumbnailGenerationID = UUID()
         ThumbnailGenerationCenter.shared.start(

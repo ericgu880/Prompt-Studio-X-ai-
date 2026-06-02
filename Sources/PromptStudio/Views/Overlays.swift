@@ -122,7 +122,7 @@ struct ImmersivePreviewOverlay: View {
             }
 
             previewPromptContent
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .padding(.top, 58)
         .padding(.horizontal, 24)
@@ -152,12 +152,20 @@ struct ImmersivePreviewOverlay: View {
                 .padding(14)
         }
         .frame(maxWidth: .infinity)
+        .frame(height: previewPromptBoxHeight)
         .background(Color(hex: 0x2D2D2D))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
         )
+    }
+
+    private var previewPromptBoxHeight: CGFloat {
+        let explicitLines = previewPromptText.components(separatedBy: .newlines).count
+        let wrappedLines = Int(ceil(Double(max(previewPromptText.count, 1)) / 26.0))
+        let estimatedLines = min(12, max(2, explicitLines + wrappedLines - 1))
+        return CGFloat(estimatedLines) * 22 + 28
     }
 
     private var previewPromptText: String {
@@ -361,23 +369,13 @@ private struct MarkdownDocumentPreviewContent: View {
 
     private var metadataChips: some View {
         FlowLayout(spacing: 8) {
-            chip(item.format.isEmpty ? "MD" : item.format.uppercased())
-            chip("\(max(1, text.components(separatedBy: .newlines).count)) 行")
-            chip(item.currentVersion?.version ?? "V1.0")
+            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
+            DocumentSemanticChip(text: "\(max(1, text.components(separatedBy: .newlines).count)) 行", role: .count)
+            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
             ForEach(item.tags.prefix(4), id: \.self) { tag in
-                chip(tag)
+                DocumentSemanticChip(text: tag, role: .tag)
             }
         }
-    }
-
-    private func chip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(11))
-            .foregroundStyle(StudioColor.secondaryText)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(Capsule().fill(StudioColor.control))
-            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -546,27 +544,17 @@ struct MarkdownEditorOverlay: View {
 
     private var metadataChips: some View {
         FlowLayout(spacing: 8) {
-            chip(item.format.isEmpty ? "MD" : item.format.uppercased())
-            chip("\(lineCount) 行")
-            chip(item.currentVersion?.version ?? "V1.0")
+            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
+            DocumentSemanticChip(text: "\(lineCount) 行", role: .count)
+            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
             ForEach(item.tags.prefix(4), id: \.self) { tag in
-                chip(tag)
+                DocumentSemanticChip(text: tag, role: .tag)
             }
         }
     }
 
     private var lineCount: Int {
         max(1, draftText.components(separatedBy: .newlines).count)
-    }
-
-    private func chip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(11))
-            .foregroundStyle(StudioColor.secondaryText)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(Capsule().fill(StudioColor.control))
-            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
     }
 
     private func sectionTitle(_ title: String) -> some View {

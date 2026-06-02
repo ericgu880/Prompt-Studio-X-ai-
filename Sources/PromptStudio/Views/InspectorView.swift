@@ -84,7 +84,7 @@ struct InspectorView: View {
                 MidjourneyPromptInfoPanel(
                     item: item,
                     copyAction: { state.copySelectedPrompt() },
-                    editAction: { startEditing(item) },
+                    editAction: { state.openEditPromptComposer(for: item) },
                     downloadAction: { state.modal = .export },
                     historyAction: { state.modal = .versionHistory }
                 )
@@ -117,7 +117,7 @@ struct InspectorView: View {
                 Spacer(minLength: 12)
 
                 HStack(spacing: 10) {
-                    mediaActionButton("pencil", help: "编辑") { startEditing(item) }
+                    mediaActionButton("pencil", help: "编辑") { state.openEditPromptComposer(for: item) }
                     mediaActionButton("doc.on.doc", help: "复制提示词") { state.copySelectedPrompt() }
                     mediaActionButton("arrow.down.circle", help: "下载") { state.modal = .export }
                     mediaActionButton("clock", help: "历史版本") { state.modal = .versionHistory }
@@ -125,7 +125,7 @@ struct InspectorView: View {
             }
 
             mediaPromptContent(item)
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 28)
@@ -143,7 +143,8 @@ struct InspectorView: View {
                 MarkdownDocumentEditor(
                     text: $markdownDocumentText,
                     isEditable: false,
-                    scrollResetID: item.id
+                    scrollResetID: item.id,
+                    contentFontSize: 13
                 )
 
                 if activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -171,7 +172,7 @@ struct InspectorView: View {
     }
 
     private func markdownHeader(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(item.title)
                 .font(StudioFont.font(14, weight: .semibold))
                 .foregroundStyle(StudioColor.text)
@@ -182,6 +183,19 @@ struct InspectorView: View {
                 .foregroundStyle(StudioColor.tertiaryText)
                 .lineLimit(1)
                 .truncationMode(.middle)
+
+            markdownHeaderChips(item)
+        }
+    }
+
+    private func markdownHeaderChips(_ item: PromptItem) -> some View {
+        FlowLayout(spacing: 8) {
+            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
+            DocumentSemanticChip(text: "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行", role: .count)
+            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
+            ForEach(item.tags.prefix(4), id: \.self) { tag in
+                DocumentSemanticChip(text: tag, role: .tag)
+            }
         }
     }
 
@@ -251,7 +265,15 @@ struct InspectorView: View {
                 .padding(14)
         }
         .frame(maxWidth: .infinity)
+        .frame(height: mediaPromptBoxHeight(for: mediaPromptText(item)))
         .promptContainer()
+    }
+
+    private func mediaPromptBoxHeight(for text: String) -> CGFloat {
+        let explicitLines = text.components(separatedBy: .newlines).count
+        let wrappedLines = Int(ceil(Double(max(text.count, 1)) / 26.0))
+        let estimatedLines = min(12, max(2, explicitLines + wrappedLines - 1))
+        return CGFloat(estimatedLines) * 22 + 28
     }
 
     private func mediaPromptText(_ item: PromptItem) -> String {

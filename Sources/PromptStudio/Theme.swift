@@ -24,6 +24,80 @@ enum StudioColor {
     static let twilight = Color(hex: 0xC4B5FD)
 }
 
+enum DocumentSemanticChipRole {
+    case format
+    case count
+    case version
+    case tag
+}
+
+enum DocumentSemanticColor {
+    static let gray = Color(hex: 0xBDBEC0)
+    static let red = Color(hex: 0xFF463B)
+    static let orange = Color(hex: 0xFF9F0A)
+    static let yellow = Color(hex: 0xFFD60A)
+    static let green = Color(hex: 0x30D159)
+    static let teal = Color(hex: 0x41CBE0)
+    static let blue = Color(hex: 0x00ABFF)
+    static let purple = Color(hex: 0xC499FF)
+    static let pink = Color(hex: 0xFF99CC)
+    static let white = Color(hex: 0xFFFFFF)
+
+    static func chipTint(for text: String, role: DocumentSemanticChipRole) -> Color {
+        switch role {
+        case .format:
+            return blue
+        case .count:
+            return gray
+        case .version:
+            return purple
+        case .tag:
+            return tagTint(for: text)
+        }
+    }
+
+    private static func tagTint(for text: String) -> Color {
+        let lowered = text.lowercased()
+        if lowered.contains("error") || lowered.contains("fixme") || text.contains("错误") || text.contains("禁止") || text.contains("不要") {
+            return red
+        }
+        if lowered.contains("warning") || lowered.contains("warn") || text.contains("警告") || text.contains("待整理") {
+            return orange
+        }
+        if lowered.contains("todo") || lowered.contains("note") || text.contains("注意") {
+            return yellow
+        }
+
+        let palette = [orange, yellow, green, teal, blue, purple, pink]
+        return palette[stableIndex(for: text, count: palette.count)]
+    }
+
+    private static func stableIndex(for text: String, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for scalar in text.unicodeScalars {
+            hash ^= UInt64(scalar.value)
+            hash &*= 1_099_511_628_211
+        }
+        return Int(hash % UInt64(count))
+    }
+}
+
+struct DocumentSemanticChip: View {
+    let text: String
+    var role: DocumentSemanticChipRole = .tag
+
+    var body: some View {
+        Text(text)
+            .font(StudioFont.font(11))
+            .foregroundStyle(StudioColor.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(Capsule().fill(StudioColor.control))
+            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+}
+
 enum StudioLayout {
     static let contentTopPadding: CGFloat = 40
 }

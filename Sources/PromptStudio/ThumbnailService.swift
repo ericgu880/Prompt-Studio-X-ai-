@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 
 enum ThumbnailService {
     static let maxPixelSize = 900
+    private static let documentThumbnailVersion = 3
 
     static func thumbnailURL(itemID: String, libraryURL: URL) -> URL {
         libraryURL
@@ -15,10 +16,11 @@ enum ThumbnailService {
     }
 
     static func existingThumbnailPath(for item: PromptItem, libraryURL: URL) -> String? {
-        let thumbnailURL = thumbnailURL(itemID: item.id, libraryURL: libraryURL)
+        let thumbnailURL = generatedThumbnailURL(for: item, libraryURL: libraryURL)
         if FileManager.default.fileExists(atPath: thumbnailURL.path) {
             return thumbnailURL.path
         }
+        guard !item.assetKind.isTextDocumentLike else { return nil }
         if !item.thumbnailPath.isEmpty,
            item.thumbnailPath != item.assetPath,
            FileManager.default.fileExists(atPath: item.thumbnailPath) {
@@ -33,7 +35,7 @@ enum ThumbnailService {
         guard item.assetKind.supportsGeneratedThumbnail else { return nil }
 
         let sourceURL = URL(fileURLWithPath: item.assetPath)
-        let destinationURL = thumbnailURL(itemID: item.id, libraryURL: libraryURL)
+        let destinationURL = generatedThumbnailURL(for: item, libraryURL: libraryURL)
         try FileManager.default.createDirectory(
             at: destinationURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -83,6 +85,15 @@ enum ThumbnailService {
         return destinationURL.path
     }
 
+    private static func generatedThumbnailURL(for item: PromptItem, libraryURL: URL) -> URL {
+        if item.assetKind.isTextDocumentLike {
+            return libraryURL
+                .appendingPathComponent("thumbnails")
+                .appendingPathComponent("\(item.id)-doc-v\(documentThumbnailVersion).jpg")
+        }
+        return thumbnailURL(itemID: item.id, libraryURL: libraryURL)
+    }
+
     private static func generateMarkdownThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
         let text = (try? String(contentsOf: sourceURL, encoding: .utf8))
             ?? (try? String(contentsOf: sourceURL, encoding: .utf16))
@@ -118,10 +129,10 @@ enum ThumbnailService {
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         defer { NSGraphicsContext.restoreGraphicsState() }
 
-        NSColor(hex: 0x151515).setFill()
+        NSColor(hex: 0x1A1A1A).setFill()
         NSRect(origin: .zero, size: size).fill()
 
-        let panelRect = NSRect(x: 30, y: 30, width: size.width - 60, height: size.height - 60)
+        let panelRect = NSRect(origin: .zero, size: size)
         let path = NSBezierPath(roundedRect: panelRect, xRadius: 18, yRadius: 18)
         NSColor(hex: 0x1A1A1A).setFill()
         path.fill()
@@ -141,10 +152,11 @@ enum ThumbnailService {
         let textColor = NSColor.white
         let accent = NSColor(hex: 0xFF6B70)
 
-        var y = panelRect.maxY - 62
         let lineHeight: CGFloat = 40
+        let contentInset: CGFloat = 28
+        var y = panelRect.maxY - contentInset - lineHeight
         for (index, rawLine) in lines.enumerated() {
-            guard y > panelRect.minY + 24 else { break }
+            guard y > panelRect.minY + contentInset else { break }
             let line = rawLine.isEmpty ? " " : rawLine
             let isHeading = line.trimmingCharacters(in: .whitespaces).hasPrefix("#")
             let isList = line.trimmingCharacters(in: .whitespaces).hasPrefix("-")
@@ -160,11 +172,11 @@ enum ThumbnailService {
             ]
 
             NSString(string: "\(index + 1)").draw(
-                in: NSRect(x: panelRect.minX + 28, y: y, width: 60, height: lineHeight),
+                in: NSRect(x: panelRect.minX + contentInset, y: y, width: 60, height: lineHeight),
                 withAttributes: lineNumberAttributes
             )
             NSString(string: line).draw(
-                in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 152, height: lineHeight),
+                in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 120 - contentInset, height: lineHeight),
                 withAttributes: attributes
             )
             y -= lineHeight

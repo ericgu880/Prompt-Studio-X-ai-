@@ -2181,7 +2181,7 @@ struct ThumbnailImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFit()
+                    .scaledToFill()
             } else {
                 ZStack {
                     StudioColor.panelRaised
@@ -2191,6 +2191,7 @@ struct ThumbnailImage: View {
                 }
             }
         }
+        .clipped()
         .background(StudioColor.panelRaised)
         .task(id: path) {
             await loader.load(path)
