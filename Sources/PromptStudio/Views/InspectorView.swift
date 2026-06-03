@@ -31,6 +31,7 @@ struct InspectorView: View {
                 .foregroundStyle(StudioColor.text)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, selectedID in
             stopEditing()

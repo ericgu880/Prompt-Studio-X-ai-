@@ -639,32 +639,37 @@ struct PromptComposerOverlay: View {
 
     var body: some View {
         ZStack {
-            StudioColor.appBackground
+            OPSColor.pageBackground
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 header
                 HStack(spacing: 0) {
-                    editorPane
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    sidePane
-                        .frame(width: 350)
+                    opsWorkspacePane
+                        .frame(width: 360)
                         .frame(maxHeight: .infinity)
-                        .background(StudioColor.panel)
-                        .overlay(alignment: .leading) {
-                            Rectangle().fill(StudioColor.hairline).frame(width: 1)
-                        }
+                    opsParserPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(OPSColor.pageBackground)
                 }
             }
 
-            OverlayCloseButton {
+            Button {
                 requestClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(StudioFont.symbol(11, weight: .semibold))
+                    .frame(width: 28, height: 28)
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(OPSColor.buttonText)
+            .background(OPSColor.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             .padding(.top, 28)
             .padding(.trailing, 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
-        .foregroundStyle(StudioColor.text)
+        .foregroundStyle(OPSColor.bodyText)
         .transition(.opacity)
         .onAppear(perform: loadDraft)
         .onChange(of: mode.id) { _, _ in loadDraft() }
@@ -683,31 +688,40 @@ struct PromptComposerOverlay: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(isEditing ? "编辑 Prompt" : "新建 Prompt")
-                    .font(StudioFont.font(15, weight: .semibold))
-                Text(isEditing ? "默认保存为新版本，保留历史记录" : "创建一条新的本地 Prompt 资产")
-                    .font(StudioFont.font(12))
-                    .foregroundStyle(StudioColor.secondaryText)
+            HStack(spacing: 8) {
+                Text("OPS/OpenPromptStudio")
+                    .font(.custom("JetBrains Mono", size: 14))
+                    .foregroundStyle(OPSColor.mutedText)
+                Image(systemName: "seal")
+                    .font(StudioFont.symbol(13))
+                    .foregroundStyle(OPSColor.mutedText)
             }
 
             Spacer()
 
             Button {
+                state.toast = "提示词词典将在后续接入"
+            } label: {
+                Text("提示词词典")
+            }
+            .buttonStyle(.plain)
+            .font(StudioFont.font(13))
+            .foregroundStyle(Color(hex: 0x5352C6))
+
+            Button {
                 save()
             } label: {
                 Text(isEditing ? "保存版本" : "创建 Prompt")
-                    .frame(minWidth: 96)
             }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
+            .buttonStyle(OPSComposerButtonStyle())
+
         }
-        .padding(.leading, 24)
+        .padding(.leading, 32)
         .padding(.trailing, 64)
-        .padding(.top, StudioLayout.contentTopPadding)
-        .padding(.bottom, 14)
-        .background(StudioColor.appBackground)
+        .frame(height: 64)
+        .background(OPSColor.pageBackground)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(StudioColor.hairline).frame(height: 1)
+            Rectangle().fill(OPSColor.divider).frame(height: 1)
         }
     }
 
@@ -737,6 +751,134 @@ struct PromptComposerOverlay: View {
             .padding(24)
         }
         .background(StudioColor.previewBackground)
+    }
+
+    private var opsWorkspacePane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("untitled", text: $title)
+                        .textFieldStyle(.plain)
+                        .font(.custom("JetBrains Mono", size: 14).weight(.semibold))
+                        .foregroundStyle(OPSColor.workTitle)
+                        .frame(maxWidth: 320)
+                }
+
+                OPSComposerTextArea(
+                    placeholder: "输入提示词",
+                    text: $prompt,
+                    minHeight: 178,
+                    fill: OPSColor.inputBackground,
+                    textColor: OPSColor.inputText
+                )
+                .frame(width: 320)
+
+                opsOutputCard
+                opsToolbar
+                opsNegativeCard
+                opsCounters
+            }
+            .padding(.leading, 20)
+            .padding(.top, 28)
+            .padding(.bottom, 28)
+            .frame(width: 360, alignment: .leading)
+        }
+        .background(OPSColor.pageBackground)
+    }
+
+    private var opsOutputCard: some View {
+        Text(outputPreviewText)
+            .font(.custom("JetBrains Mono", size: 14))
+            .lineSpacing(4)
+            .foregroundStyle(prompt.isEmpty ? OPSColor.outputPlaceholder : OPSColor.outputGreen)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(8)
+            .frame(minHeight: 74, alignment: .topLeading)
+            .background(OPSColor.outputBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .shadow(color: .black.opacity(0.24), radius: 4, y: 2)
+            .frame(width: 320)
+    }
+
+    private var opsToolbar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    AppKitBridge.copyToPasteboard(outputPreviewText)
+                    state.toast = "已复制 Prompt"
+                } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(OPSComposerButtonStyle())
+
+                HStack(spacing: 4) {
+                    opsIconTool("circle.slash", help: "全部禁用")
+                    opsIconTool("arrow.up", help: "用输出替换输入") {
+                        prompt = outputPreviewText
+                    }
+                    opsIconTool("trash", help: "清空输入") {
+                        prompt = ""
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(height: 32)
+                .background(OPSColor.buttonBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                HStack(spacing: 4) {
+                    opsIconTool("photo", help: "添加参考图") {
+                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    }
+                    opsIconTool("rectangle.badge.hd", help: "高清参数") {
+                        appendParameterLine("quality=high")
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(height: 32)
+                .background(OPSColor.buttonBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            }
+
+            HStack(spacing: 8) {
+                typeSegmentedControl.frame(width: 146)
+                modelMenu.frame(width: 166)
+            }
+        }
+        .frame(width: 320, alignment: .leading)
+    }
+
+    private var opsNegativeCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Negative Prompt")
+                .font(StudioFont.font(14, weight: .semibold))
+                .foregroundStyle(OPSColor.workTitle)
+            OPSComposerTextArea(
+                placeholder: "输入不希望出现的内容，例如 watermark, low quality, blurry...",
+                text: $negativePrompt,
+                minHeight: 150,
+                fill: OPSColor.inputBackground,
+                textColor: OPSColor.inputText
+            )
+            Text(negativePrompt.isEmpty ? "输出与输入相同" : negativePrompt)
+                .font(.custom("JetBrains Mono", size: 13))
+                .foregroundStyle(negativePrompt.isEmpty ? OPSColor.outputPlaceholder : OPSColor.outputGreen)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                .background(OPSColor.outputBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .frame(width: 320)
+    }
+
+    private var opsCounters: some View {
+        HStack(spacing: 10) {
+            counter("字符", prompt.count + negativePrompt.count)
+            counter("词数估算", estimatedTokenCount)
+            counter("参考图", referenceURLs.count + (editingItem?.referenceAssets.count ?? 0))
+            counter(type.displayName.replacingOccurrences(of: " Prompt", with: ""), 0, showValue: false)
+            Spacer()
+        }
+        .frame(width: 320)
     }
 
     private var sidePane: some View {
@@ -796,6 +938,116 @@ struct PromptComposerOverlay: View {
         }
     }
 
+    private var opsParserPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                opsPromptTokenGroups
+                opsReferencePanel
+                opsCompactSettingsPanel
+            }
+            .padding(24)
+        }
+    }
+
+    private var opsPromptTokenGroups: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            opsParserGroup(title: "权重组", subtitle: "-1", tokens: promptTokens.filter { $0.kind == .negative })
+            opsParserGroup(title: "权重组", subtitle: "2", tokens: promptTokens.filter { $0.kind == .weighted })
+            opsParserGroup(title: "参数", subtitle: nil, tokens: promptTokens.filter { $0.kind == .normal || $0.kind == .command })
+        }
+    }
+
+    private func opsParserGroup(title: String, subtitle: String?, tokens: [OPSParsedPromptToken]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.custom("JetBrains Mono", size: 12))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.custom("JetBrains Mono", size: 12))
+                        .padding(.horizontal, 6)
+                        .frame(height: 20)
+                        .background(Color(hex: 0xC4C4C4).opacity(0.56))
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
+            }
+            .foregroundStyle(Color(hex: 0x757985).opacity(0.72))
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(Color(hex: 0xE6E6E6))
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+            FlowLayout(spacing: 8) {
+                if tokens.isEmpty {
+                    Text("等待输入")
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(OPSColor.mutedText)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Capsule().fill(Color(hex: 0xE9E9E9)))
+                } else {
+                    ForEach(tokens) { token in
+                        OPSPromptTokenChip(token: token)
+                    }
+                }
+            }
+            .padding(.leading, 12)
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(groupAccent(tokens: tokens))
+                    .frame(width: 4)
+            }
+        }
+    }
+
+    private var opsReferencePanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("参考图")
+                    .font(StudioFont.font(13, weight: .semibold))
+                    .foregroundStyle(OPSColor.bodyText)
+                Spacer()
+                Text("\(referenceURLs.count + (editingItem?.referenceAssets.count ?? 0)) 张")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(OPSColor.mutedText)
+            }
+            referenceDropZone
+        }
+    }
+
+    private var opsCompactSettingsPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            composerSection("标题") {
+                composerInputField("未命名 Prompt", text: $title)
+            }
+            composerSection("参数") {
+                OPSComposerTextArea(
+                    placeholder: "ar=16:9\nquality=high",
+                    text: $parameters,
+                    minHeight: 84,
+                    fill: OPSColor.inputBackground,
+                    textColor: OPSColor.inputText,
+                    compact: true
+                )
+            }
+            composerSection("版本备注") {
+                composerInputField("例如：增强光影", text: $note)
+            }
+            composerSection("标签") {
+                tagEditor
+            }
+            if isEditing {
+                Toggle("保存为新版本", isOn: $saveAsNewVersion)
+                    .toggleStyle(.switch)
+                    .font(StudioFont.font(13))
+            }
+        }
+        .padding(14)
+        .background(Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(OPSColor.divider, lineWidth: 1))
+    }
+
     @ViewBuilder
     private func composerField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         composerSection(title) {
@@ -815,9 +1067,8 @@ struct PromptComposerOverlay: View {
     private func composerSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(StudioFont.caption(12))
-                .tracking(1.2)
-                .foregroundStyle(StudioColor.secondaryText)
+                .font(StudioFont.font(12))
+                .foregroundStyle(OPSColor.mutedText)
             content()
         }
     }
@@ -839,47 +1090,94 @@ struct PromptComposerOverlay: View {
                     .font(StudioFont.font(12))
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(Capsule().fill(StudioColor.control))
-                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+                    .background(Capsule().fill(OPSColor.buttonBackground))
                 }
             }
 
             TextField("输入标签后回车", text: $tagDraft)
                 .textFieldStyle(.plain)
                 .font(StudioFont.font(13))
+                .foregroundStyle(OPSColor.inputText)
                 .padding(.horizontal, 10)
                 .frame(height: 34)
-                .background(StudioColor.control)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+                .background(OPSColor.buttonBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 .onSubmit(addTag)
         }
     }
 
+    private func composerInputField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(StudioFont.font(13))
+            .foregroundStyle(OPSColor.inputText)
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(OPSColor.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
     private var referenceDropZone: some View {
-        Button {
-            appendReferenceImages(AppKitBridge.chooseReferenceImages())
-        } label: {
-            VStack(spacing: 9) {
-                Image(systemName: "photo.on.rectangle")
-                    .font(StudioFont.symbol(20))
-                Text(referenceSummary)
-                    .font(StudioFont.font(12))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
+        VStack(spacing: 10) {
+            if existingReferencePaths.isEmpty && referenceURLs.isEmpty {
+                Button {
+                    appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                } label: {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(StudioFont.symbol(24))
+                        Text("拖拽或点击添加参考图")
+                            .font(StudioFont.font(13))
+                        Text("支持 JPG、PNG、WEBP")
+                            .font(StudioFont.font(11))
+                            .foregroundStyle(OPSColor.mutedText)
+                    }
+                    .foregroundStyle(OPSColor.bodyText)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .background(isReferenceDropTarget ? Color(hex: 0xE0E0E0) : OPSColor.buttonBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .foregroundStyle(OPSColor.divider)
+                    )
+                }
+                .buttonStyle(.plain)
+            } else {
+                LazyVGrid(columns: referenceColumns, alignment: .leading, spacing: 8) {
+                    ForEach(existingReferencePaths, id: \.self) { path in
+                        OPSReferenceThumb(path: path, removable: false)
+                    }
+                    ForEach(referenceURLs, id: \.path) { url in
+                        OPSReferenceThumb(path: url.path, removable: true) {
+                            referenceURLs.removeAll { $0 == url }
+                        }
+                    }
+                    Button {
+                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(StudioFont.symbol(18))
+                            Text("添加")
+                                .font(StudioFont.font(11))
+                        }
+                        .foregroundStyle(OPSColor.bodyText)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 78)
+                        .background(OPSColor.buttonBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                .foregroundStyle(OPSColor.divider)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .foregroundStyle(StudioColor.secondaryText)
-            .frame(maxWidth: .infinity)
-            .frame(height: 96)
-            .background(isReferenceDropTarget ? StudioColor.blueSoft : StudioColor.control.opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .foregroundStyle(isReferenceDropTarget ? StudioColor.blue : StudioColor.hairline)
-            )
         }
-        .buttonStyle(.plain)
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
     }
 
@@ -906,13 +1204,127 @@ struct PromptComposerOverlay: View {
     }
 
     private func counter(_ title: String, _ value: Int) -> some View {
-        Text("\(title) \(value)")
+        counter(title, value, showValue: true)
+    }
+
+    private func counter(_ title: String, _ value: Int, showValue: Bool) -> some View {
+        Text(showValue ? "\(title) \(value)" : title)
             .font(StudioFont.font(12))
-            .foregroundStyle(StudioColor.secondaryText)
+            .foregroundStyle(OPSColor.buttonText)
             .padding(.horizontal, 10)
             .frame(height: 28)
-            .background(Capsule().fill(StudioColor.panel))
-            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+            .background(Capsule().fill(OPSColor.buttonBackground))
+    }
+
+    private var outputPreviewText: String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "输出与输入相同" : trimmed
+    }
+
+    private var typeSegmentedControl: some View {
+        HStack(spacing: 4) {
+            ForEach(PromptType.allCases) { option in
+                Button {
+                    type = option
+                    ensureModelMatchesType()
+                } label: {
+                    Text(option.displayName.replacingOccurrences(of: " Prompt", with: ""))
+                        .font(StudioFont.font(12, weight: type == option ? .semibold : .regular))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 28)
+                        .foregroundStyle(type == option ? Color.white : OPSColor.buttonText)
+                        .background(type == option ? Color(hex: 0x6C6C6C) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(OPSColor.buttonBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private var modelMenu: some View {
+        Menu {
+            ForEach(modelOptions) { model in
+                Button(model.name) {
+                    modelId = model.id
+                }
+            }
+        } label: {
+            HStack {
+                Text(modelOptions.first(where: { $0.id == modelId })?.name ?? "选择模型")
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(StudioFont.symbol(10))
+            }
+            .font(StudioFont.font(12))
+            .foregroundStyle(OPSColor.buttonText)
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(OPSColor.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func opsIconTool(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(StudioFont.symbol(12))
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(OPSColor.buttonText)
+        .background(OPSColor.buttonBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .help(help)
+    }
+
+    private var promptTokens: [OPSParsedPromptToken] {
+        parsePromptTokens(prompt)
+    }
+
+    private var existingReferencePaths: [String] {
+        editingItem?.referenceAssets.map(\.path) ?? []
+    }
+
+    private var referenceColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 8),
+            GridItem(.flexible(), spacing: 8),
+            GridItem(.flexible(), spacing: 8)
+        ]
+    }
+
+    private func groupAccent(tokens: [OPSParsedPromptToken]) -> Color {
+        switch tokens.first?.kind {
+        case .negative:
+            Color(hex: 0xDA4927)
+        case .weighted:
+            Color(hex: 0x9EC9C6)
+        case .command:
+            Color(hex: 0xD6D3EC)
+        case .normal:
+            Color(hex: 0xCECECE)
+        case nil:
+            Color(hex: 0xCECECE)
+        }
+    }
+
+    private func appendParameterLine(_ line: String) {
+        if parameters.split(separator: "\n").map(String.init).contains(line) {
+            return
+        }
+        parameters = parameters.isEmpty ? line : "\(parameters)\n\(line)"
+    }
+
+    private func ensureModelMatchesType() {
+        let options = modelOptions
+        if !options.contains(where: { $0.id == modelId }), let first = options.first {
+            modelId = first.id
+        }
     }
 
     private func loadDraft() {
@@ -941,6 +1353,7 @@ struct PromptComposerOverlay: View {
             saveAsNewVersion = true
             referenceURLs = []
         }
+        ensureModelMatchesType()
         initialSignature = draftSignature
     }
 
@@ -1097,6 +1510,244 @@ private struct PromptComposerTextEditor: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
         }
+    }
+}
+
+private enum OPSColor {
+    static let pageBackground = Color(hex: 0xF7F7F7)
+    static let divider = Color(hex: 0xD7D7D7)
+    static let bodyText = Color(hex: 0x484644)
+    static let mutedText = Color(hex: 0x8E8E8E)
+    static let workTitle = Color(hex: 0x5F5C5C)
+    static let inputBackground = Color(hex: 0xE9E9E9)
+    static let inputText = Color(hex: 0x252525).opacity(0.81)
+    static let inputRing = Color(hex: 0xBDB8B8).opacity(0.50)
+    static let outputBackground = Color(hex: 0x2B2828)
+    static let outputGreen = Color(hex: 0x4DC177)
+    static let outputPlaceholder = Color(hex: 0x7A8B7E)
+    static let buttonBackground = Color(hex: 0xE9E9E9)
+    static let buttonHover = Color(hex: 0xE0E0E0)
+    static let buttonPressed = Color(hex: 0xD7D7D7)
+    static let buttonText = Color(hex: 0x484644)
+}
+
+private enum OPSLayout {
+    static let p1: CGFloat = 4
+    static let p2: CGFloat = 8
+    static let p3: CGFloat = 16
+    static let p4: CGFloat = 22
+    static let radius: CGFloat = 4
+    static let workWidth: CGFloat = 320
+}
+
+private struct OPSComposerTextArea: View {
+    let placeholder: String
+    @Binding var text: String
+    let minHeight: CGFloat
+    let fill: Color
+    let textColor: Color
+    var compact = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if text.isEmpty {
+                Text(placeholder)
+                    .font(.custom("JetBrains Mono", size: compact ? 12 : 14))
+                    .foregroundStyle(OPSColor.mutedText)
+                    .padding(OPSLayout.p2)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $text)
+                .font(.custom("JetBrains Mono", size: compact ? 12 : 14))
+                .lineSpacing(compact ? 2 : 4)
+                .foregroundStyle(textColor)
+                .scrollContentBackground(.hidden)
+                .padding(OPSLayout.p1)
+                .frame(minHeight: minHeight)
+                .background(Color.clear)
+        }
+        .background(fill)
+        .clipShape(RoundedRectangle(cornerRadius: OPSLayout.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: OPSLayout.radius).stroke(OPSColor.inputRing, lineWidth: 2))
+    }
+}
+
+private struct OPSParsedPromptToken: Identifiable {
+    enum Kind {
+        case normal
+        case weighted
+        case negative
+        case command
+    }
+
+    let id = UUID()
+    let text: String
+    let weight: String?
+    let kind: Kind
+}
+
+private func parsePromptTokens(_ prompt: String) -> [OPSParsedPromptToken] {
+    prompt
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .flatMap { segment -> [OPSParsedPromptToken] in
+            if segment.hasPrefix("--") {
+                return [OPSParsedPromptToken(text: segment, weight: nil, kind: .command)]
+            }
+
+            let parts = segment.components(separatedBy: "::")
+            if parts.count == 2 {
+                let text = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                let weight = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = Double(weight) ?? 1
+                return [OPSParsedPromptToken(text: text, weight: weight, kind: value < 0 ? .negative : .weighted)]
+            }
+
+            return [OPSParsedPromptToken(text: segment, weight: nil, kind: .normal)]
+        }
+}
+
+private struct OPSPromptTokenChip: View {
+    let token: OPSParsedPromptToken
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text(token.text)
+                    .font(.custom("JetBrains Mono", size: 12))
+                    .lineLimit(1)
+                if let weight = token.weight {
+                    Text(weight)
+                        .font(.custom("JetBrains Mono", size: 11))
+                        .foregroundStyle(Color(hex: 0x262626))
+                        .padding(.horizontal, 5)
+                        .frame(height: 18)
+                        .background(Color.white.opacity(0.92))
+                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(primaryFill)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            if let translatedLabel {
+                Text(translatedLabel)
+                    .font(StudioFont.font(12, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .background(secondaryFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+        }
+        .shadow(color: .black.opacity(0.22), radius: 3, y: 2)
+    }
+
+    private var primaryFill: LinearGradient {
+        LinearGradient(colors: baseColors, startPoint: .top, endPoint: .bottom)
+    }
+
+    private var secondaryFill: LinearGradient {
+        LinearGradient(colors: descColors, startPoint: .top, endPoint: .bottom)
+    }
+
+    private var baseColors: [Color] {
+        switch token.kind {
+        case .normal:
+            [Color(hex: 0x606060), Color(hex: 0x6C6C6C)]
+        case .weighted:
+            [Color(hex: 0x406E6D), Color(hex: 0x749B98)]
+        case .negative:
+            [Color(hex: 0x844444), Color(hex: 0x7C6C6C)]
+        case .command:
+            [Color(hex: 0x584589), Color(hex: 0x7774A0)]
+        }
+    }
+
+    private var descColors: [Color] {
+        switch token.kind {
+        case .normal:
+            [Color(hex: 0xA0B181), Color(hex: 0x57B049)]
+        case .weighted:
+            [Color(hex: 0x75A19F), Color(hex: 0x31AAA3)]
+        case .negative:
+            [Color(hex: 0xDA4927), Color(hex: 0xC78A6E)]
+        case .command:
+            [Color(hex: 0x8D79C0), Color(hex: 0x7A78DC)]
+        }
+    }
+
+    private var translatedLabel: String? {
+        let table = [
+            "apple": "苹果",
+            "forest": "森林",
+            "big bad wolf": "大灰狼",
+            "wood": "木料",
+            "cinematic lighting": "电影光效",
+            "unreal engine": "虚幻引擎",
+            "super detail": "非常详细",
+            "uhd": "超高清",
+            "--aspect 2:3": "宽高比 2:3"
+        ]
+        return table[token.text.lowercased()]
+    }
+}
+
+private struct OPSReferenceThumb: View {
+    let path: String
+    var removable = false
+    var onRemove: () -> Void = {}
+    @StateObject private var loader = OverlayImageLoader()
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                if let image = loader.image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    OPSColor.buttonBackground
+                    Image(systemName: "photo")
+                        .font(StudioFont.symbol(16))
+                        .foregroundStyle(OPSColor.mutedText)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 78)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: OPSLayout.radius, style: .continuous))
+
+            if removable {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(StudioFont.symbol(9, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .background(Circle().fill(Color.black.opacity(0.72)))
+                .padding(5)
+            }
+        }
+        .task(id: path) {
+            await loader.load(path)
+        }
+    }
+}
+
+private struct OPSComposerButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(StudioFont.font(14))
+            .foregroundStyle(OPSColor.buttonText)
+            .padding(.horizontal, OPSLayout.p3)
+            .frame(height: 32)
+            .background(configuration.isPressed ? OPSColor.buttonPressed : OPSColor.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
     }
 }
 
