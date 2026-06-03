@@ -245,7 +245,10 @@ struct InspectorView: View {
     @ViewBuilder
     private func mediaPromptContent(_ item: PromptItem) -> some View {
         if hasPrompt(item) {
-            mediaPromptBox(item)
+            GeometryReader { proxy in
+                mediaPromptBox(item, maxHeight: proxy.size.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         } else {
             Text("暂无提示词")
                 .font(StudioFont.font(12))
@@ -254,26 +257,29 @@ struct InspectorView: View {
         }
     }
 
-    private func mediaPromptBox(_ item: PromptItem) -> some View {
-        ScrollView {
-            Text(mediaPromptText(item))
-                .font(StudioFont.font(13))
-                .lineSpacing(4)
-                .foregroundStyle((item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(14)
+    private func mediaPromptBox(_ item: PromptItem, maxHeight: CGFloat) -> some View {
+        ViewThatFits(in: .vertical) {
+            promptTextView(item)
+                .fixedSize(horizontal: false, vertical: true)
+                .promptContainer()
+
+            ScrollView {
+                promptTextView(item)
+            }
+            .frame(height: max(72, maxHeight))
+            .promptContainer()
         }
         .frame(maxWidth: .infinity)
-        .frame(height: mediaPromptBoxHeight(for: mediaPromptText(item)))
-        .promptContainer()
     }
 
-    private func mediaPromptBoxHeight(for text: String) -> CGFloat {
-        let explicitLines = text.components(separatedBy: .newlines).count
-        let wrappedLines = Int(ceil(Double(max(text.count, 1)) / 26.0))
-        let estimatedLines = min(12, max(2, explicitLines + wrappedLines - 1))
-        return CGFloat(estimatedLines) * 22 + 28
+    private func promptTextView(_ item: PromptItem) -> some View {
+        Text(mediaPromptText(item))
+            .font(StudioFont.font(13))
+            .lineSpacing(4)
+            .foregroundStyle((item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(14)
     }
 
     private func mediaPromptText(_ item: PromptItem) -> String {

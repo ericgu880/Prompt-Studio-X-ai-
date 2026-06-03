@@ -132,7 +132,10 @@ struct ImmersivePreviewOverlay: View {
     @ViewBuilder
     private var previewPromptContent: some View {
         if previewHasPrompt {
-            previewPromptBox
+            GeometryReader { proxy in
+                previewPromptBox(maxHeight: proxy.size.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         } else {
             Text("暂无提示词")
                 .font(StudioFont.font(12))
@@ -141,31 +144,29 @@ struct ImmersivePreviewOverlay: View {
         }
     }
 
-    private var previewPromptBox: some View {
-        ScrollView {
-            Text(previewPromptText)
-                .font(StudioFont.font(13))
-                .lineSpacing(4)
-                .foregroundStyle(previewPromptText.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(14)
+    private func previewPromptBox(maxHeight: CGFloat) -> some View {
+        ViewThatFits(in: .vertical) {
+            previewPromptTextView
+                .fixedSize(horizontal: false, vertical: true)
+                .promptContainer()
+
+            ScrollView {
+                previewPromptTextView
+            }
+            .frame(height: max(72, maxHeight))
+            .promptContainer()
         }
         .frame(maxWidth: .infinity)
-        .frame(height: previewPromptBoxHeight)
-        .background(Color(hex: 0x2D2D2D))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
-        )
     }
 
-    private var previewPromptBoxHeight: CGFloat {
-        let explicitLines = previewPromptText.components(separatedBy: .newlines).count
-        let wrappedLines = Int(ceil(Double(max(previewPromptText.count, 1)) / 26.0))
-        let estimatedLines = min(12, max(2, explicitLines + wrappedLines - 1))
-        return CGFloat(estimatedLines) * 22 + 28
+    private var previewPromptTextView: some View {
+        Text(previewPromptText)
+            .font(StudioFont.font(13))
+            .lineSpacing(4)
+            .foregroundStyle(previewPromptText.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(14)
     }
 
     private var previewPromptText: String {
@@ -1460,5 +1461,17 @@ private struct FlowLayout<Content: View>: View {
         HStack(spacing: spacing) {
             content
         }
+    }
+}
+
+private extension View {
+    func promptContainer() -> some View {
+        self
+            .background(Color(hex: 0x2D2D2D))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
+            )
     }
 }

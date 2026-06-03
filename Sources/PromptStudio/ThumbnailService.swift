@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 enum ThumbnailService {
     static let maxPixelSize = 900
-    private static let documentThumbnailVersion = 3
+    private static let documentThumbnailVersion = 4
 
     static func thumbnailURL(itemID: String, libraryURL: URL) -> URL {
         libraryURL
@@ -146,23 +146,46 @@ enum ThumbnailService {
         lineNumberParagraph.alignment = .right
 
         let bodyFont = NSFont(name: "PingFangSC-Regular", size: 25) ?? .systemFont(ofSize: 25)
-        let headingFont = NSFont(name: "PingFangSC-Semibold", size: 28) ?? .systemFont(ofSize: 28, weight: .semibold)
+        let headingFont = NSFont(name: "PingFangSC-Regular", size: 28) ?? .systemFont(ofSize: 28)
         let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 23, weight: .regular)
-        let muted = NSColor(hex: 0x8B9098)
-        let textColor = NSColor.white
-        let accent = NSColor(hex: 0xFF6B70)
+        let muted = NSColor(hex: 0xBDBEC0)
+        let textColor = NSColor(hex: 0xBDBEC0)
+        let headingColor = NSColor(hex: 0x41CBE0)
+        let listColor = NSColor(hex: 0xFF9F0A)
+        let quoteColor = NSColor(hex: 0x37DD61)
+        let negativeColor = NSColor(hex: 0xFF5F57)
+        let strongColor = NSColor(hex: 0xEEEEEE)
 
         let lineHeight: CGFloat = 40
-        let contentInset: CGFloat = 28
+        let contentInset: CGFloat = 40
         var y = panelRect.maxY - contentInset - lineHeight
         for (index, rawLine) in lines.enumerated() {
             guard y > panelRect.minY + contentInset else { break }
             let line = rawLine.isEmpty ? " " : rawLine
-            let isHeading = line.trimmingCharacters(in: .whitespaces).hasPrefix("#")
-            let isList = line.trimmingCharacters(in: .whitespaces).hasPrefix("-")
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            let isHeading = trimmedLine.hasPrefix("#")
+            let isList = trimmedLine.hasPrefix("-")
+            let isQuote = trimmedLine.hasPrefix(">")
+            let isNegative = line.range(
+                of: #"负面提示词|负面约束|反向提示词|Negative Prompt|不要|禁止|避免|不出现|不使用|无字幕|无文字|无水印|无logo|无Logo|无LOGO|无品牌|无现代|无多余|无夸张|无脸部崩坏|无身份不一致"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+            let hasStrong = line.contains("**")
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: isHeading ? headingFont : bodyFont,
-                .foregroundColor: isHeading || isList ? accent : textColor,
+                .foregroundColor: thumbnailTextColor(
+                    isHeading: isHeading,
+                    isList: isList,
+                    isQuote: isQuote,
+                    isNegative: isNegative,
+                    hasStrong: hasStrong,
+                    headingColor: headingColor,
+                    listColor: listColor,
+                    quoteColor: quoteColor,
+                    negativeColor: negativeColor,
+                    strongColor: strongColor,
+                    textColor: textColor
+                ),
                 .paragraphStyle: paragraph
             ]
             let lineNumberAttributes: [NSAttributedString.Key: Any] = [
@@ -186,6 +209,27 @@ enum ThumbnailService {
             return nil
         }
         return jpeg
+    }
+
+    private static func thumbnailTextColor(
+        isHeading: Bool,
+        isList: Bool,
+        isQuote: Bool,
+        isNegative: Bool,
+        hasStrong: Bool,
+        headingColor: NSColor,
+        listColor: NSColor,
+        quoteColor: NSColor,
+        negativeColor: NSColor,
+        strongColor: NSColor,
+        textColor: NSColor
+    ) -> NSColor {
+        if hasStrong { return strongColor }
+        if isNegative { return negativeColor }
+        if isHeading { return headingColor }
+        if isQuote { return quoteColor }
+        if isList { return listColor }
+        return textColor
     }
 
     private static func generateVideoThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
