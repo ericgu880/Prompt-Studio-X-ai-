@@ -2111,10 +2111,11 @@ private struct EmptyStateView: View {
 
 struct AssetMediaView: View {
     let item: PromptItem
+    var contentMode: ContentMode = .fill
 
     var body: some View {
         if item.assetKind.supportsGeneratedThumbnail, let thumbnailPath {
-            ThumbnailImage(path: thumbnailPath)
+            ThumbnailImage(path: thumbnailPath, contentMode: contentMode)
         } else {
             FileKindPlaceholder(assetKind: item.assetKind, format: item.format)
         }
@@ -2174,6 +2175,7 @@ private struct FileKindPlaceholder: View {
 
 struct ThumbnailImage: View {
     let path: String
+    var contentMode: ContentMode = .fill
     @StateObject private var loader = CachedImageLoader()
 
     var body: some View {
@@ -2181,7 +2183,7 @@ struct ThumbnailImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 ZStack {
                     StudioColor.panelRaised

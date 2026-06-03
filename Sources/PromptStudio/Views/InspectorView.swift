@@ -231,15 +231,30 @@ struct InspectorView: View {
     }
 
     private func mediaPreviewThumbnail(_ item: PromptItem) -> some View {
-        GeometryReader { proxy in
-            let previewWidth = max(120, proxy.size.width * 0.6)
-            AssetMediaView(item: item)
-                .frame(width: previewWidth)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .background(Color.black)
-                .clipped()
+        let size = mediaPreviewSize(for: item)
+        return AssetMediaView(item: item, contentMode: .fit)
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(StudioColor.hairline, lineWidth: 1)
+            )
+    }
+
+    private func mediaPreviewSize(for item: PromptItem) -> CGSize {
+        let maxHeight: CGFloat = 80
+        let maxWidth: CGFloat = 260
+        let aspectRatio: CGFloat
+        if item.width > 0, item.height > 0 {
+            aspectRatio = max(0.15, CGFloat(item.width) / CGFloat(item.height))
+        } else {
+            aspectRatio = 16.0 / 9.0
         }
-        .frame(height: 112)
+        let widthAtMaxHeight = maxHeight * aspectRatio
+        if widthAtMaxHeight <= maxWidth {
+            return CGSize(width: widthAtMaxHeight, height: maxHeight)
+        }
+        return CGSize(width: maxWidth, height: maxWidth / aspectRatio)
     }
 
     @ViewBuilder
