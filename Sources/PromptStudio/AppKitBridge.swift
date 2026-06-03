@@ -18,8 +18,22 @@ enum AppKitBridge {
     static func copyFileToPasteboard(path: String) -> Bool {
         guard FileManager.default.fileExists(atPath: path) else { return false }
         let url = URL(fileURLWithPath: path)
-        NSPasteboard.general.clearContents()
-        return NSPasteboard.general.writeObjects([url as NSURL])
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let wroteFile = pasteboard.writeObjects([url as NSURL])
+        pasteboard.setPropertyList([path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        return wroteFile
+    }
+
+    static func pasteboardFileURLs() -> [URL] {
+        let pasteboard = NSPasteboard.general
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [NSURL] {
+            return urls.map { $0 as URL }
+        }
+        return []
     }
 
     @MainActor

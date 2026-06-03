@@ -29,15 +29,32 @@ struct PromptStudioApp: App {
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
-            CommandGroup(after: .pasteboard) {
-                Button("复制提示词") {
+            CommandGroup(replacing: .pasteboard) {
+                Button("剪切") {
+                    NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
+                }
+                    .keyboardShortcut("x", modifiers: .command)
+                    .disabled(!AppKitBridge.isTextInputActive())
+                Button("复制文件") {
                     if AppKitBridge.isTextInputActive() {
                         NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
                     } else {
-                        appState.copySelectedPrompt()
+                        appState.copySelectedFileForPasteboard()
                     }
                 }
                     .keyboardShortcut("c", modifiers: .command)
+                Button("粘贴导入") {
+                    if AppKitBridge.isTextInputActive() {
+                        NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+                    } else {
+                        appState.pasteFilesFromPasteboard()
+                    }
+                }
+                    .keyboardShortcut("v", modifiers: .command)
+                Button("全选") {
+                    NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+                }
+                    .keyboardShortcut("a", modifiers: .command)
                 Button("编辑 Prompt") {
                     if let item = appState.selectedItem {
                         appState.requestInlineEdit(item)

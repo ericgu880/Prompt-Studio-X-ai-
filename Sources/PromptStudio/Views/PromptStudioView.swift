@@ -1663,7 +1663,6 @@ private enum AssetCardMetrics {
 
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: PromptItem
     let width: CGFloat
     @Binding var draggedItemID: String?
@@ -1721,9 +1720,6 @@ private struct AssetCardView: View {
                 state: state
             )
         )
-        .scaleEffect(draggedItemID == item.id ? 0.94 : 1)
-        .opacity(draggedItemID == item.id ? 0.52 : 1)
-        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: draggedItemID)
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true

@@ -408,6 +408,10 @@ final class AppState: ObservableObject {
     }
 
     func copySelectedFile() {
+        copySelectedFileForPasteboard()
+    }
+
+    func copySelectedFileForPasteboard() {
         guard let item = selectedItem else { return }
         guard AppKitBridge.copyFileToPasteboard(path: item.assetPath) else {
             showToast("源文件不存在")
@@ -415,6 +419,15 @@ final class AppState: ObservableObject {
         }
         markRecentlyUsed(itemID: item.id)
         showToast("已复制文件")
+    }
+
+    func pasteFilesFromPasteboard() {
+        let urls = AppKitBridge.pasteboardFileURLs()
+        guard !urls.isEmpty else {
+            showToast("剪贴板没有可导入文件")
+            return
+        }
+        importFiles(urls)
     }
 
     func toggleFavorite(_ item: PromptItem) {
@@ -562,6 +575,7 @@ final class AppState: ObservableObject {
         prompt: String,
         negativePrompt: String,
         tags: [String],
+        previewImageURL: URL? = nil,
         referenceURLs: [URL] = []
     ) {
         let model = models.first(where: { $0.id == modelId }) ?? SeedData.models[1]
@@ -576,6 +590,9 @@ final class AppState: ObservableObject {
         )
 
         do {
+            let previewPath = try previewImageURL.map { source in
+                try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+            }?.path ?? ""
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
                 let copied = try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
                 return (source, copied)
@@ -587,7 +604,6 @@ final class AppState: ObservableObject {
                     label: pair.original.deletingPathExtension().lastPathComponent
                 )
             }
-            let previewPath = selectedItem?.assetPath ?? copiedReferences.first?.copied.path ?? ""
             let assetKind: AssetKind = previewPath.isEmpty ? .text : .image
             let previewInfo = previewPath.isEmpty
                 ? (width: 0, height: 0, fileSize: Int64(0), format: "PROMPT")

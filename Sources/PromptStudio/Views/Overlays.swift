@@ -294,7 +294,7 @@ private struct MarkdownDocumentPreviewContent: View {
 
     private var editorPane: some View {
         ZStack(alignment: .topLeading) {
-            MarkdownDocumentEditor(text: $text, isEditable: false, scrollResetID: item.id)
+            MarkdownDocumentEditor(text: $text, isEditable: false, scrollResetID: item.id, contentFontSize: 13)
 
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("暂无文档信息")
@@ -620,9 +620,11 @@ struct PromptComposerOverlay: View {
     @State private var parameters = ""
     @State private var note = ""
     @State private var saveAsNewVersion = true
+    @State private var previewImageURL: URL?
     @State private var referenceURLs: [URL] = []
     @State private var initialSignature = ""
     @State private var showCloseConfirmation = false
+    @State private var isPreviewImageDropTarget = false
     @State private var isReferenceDropTarget = false
 
     private var editingItem: PromptItem? {
@@ -638,6 +640,31 @@ struct PromptComposerOverlay: View {
     }
 
     var body: some View {
+        Group {
+            if isEditing {
+                legacyComposerBody
+            } else {
+                createComposerBody
+            }
+        }
+        .foregroundStyle(OPSColor.bodyText)
+        .transition(.opacity)
+        .onAppear(perform: loadDraft)
+        .onChange(of: mode.id) { _, _ in loadDraft() }
+        .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
+            Button("放弃修改", role: .destructive) {
+                state.closePromptComposer()
+            }
+            Button("继续编辑", role: .cancel) {}
+        }
+        .background {
+            EscapeKeyMonitor {
+                requestClose()
+            }
+        }
+    }
+
+    private var legacyComposerBody: some View {
         ZStack {
             OPSColor.pageBackground
                 .ignoresSafeArea()
@@ -669,22 +696,378 @@ struct PromptComposerOverlay: View {
             .padding(.trailing, 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
-        .foregroundStyle(OPSColor.bodyText)
-        .transition(.opacity)
-        .onAppear(perform: loadDraft)
-        .onChange(of: mode.id) { _, _ in loadDraft() }
-        .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
-            Button("放弃修改", role: .destructive) {
-                state.closePromptComposer()
+    }
+
+    private var createComposerBody: some View {
+        GeometryReader { geometry in
+            let previewWidth: CGFloat = geometry.size.width >= 1_700 ? 420 : 360
+            let workspaceWidth = max(720, geometry.size.width - previewWidth)
+
+            HStack(spacing: 0) {
+                createWorkspacePane
+                    .frame(width: workspaceWidth, height: geometry.size.height)
+                createPreviewPane
+                    .frame(width: previewWidth)
+                    .frame(maxHeight: .infinity)
             }
-            Button("继续编辑", role: .cancel) {}
         }
-        .background {
-            EscapeKeyMonitor {
-                requestClose()
+        .background(CreateComposerColor.workspace)
+    }
+
+    private var createWorkspacePane: some View {
+        GeometryReader { geometry in
+            let horizontalPadding: CGFloat = geometry.size.width >= 1_250 ? 72 : 44
+            let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 68 : 40
+            let availableWidth = max(0, geometry.size.width - horizontalPadding * 2 - columnSpacing)
+            let uploadWidth = min(560, max(300, availableWidth * 0.38))
+            let leftWidth = max(420, availableWidth - uploadWidth)
+            let controlsInline = leftWidth >= 760
+
+            ZStack {
+                CreateComposerColor.workspace
+                    .ignoresSafeArea()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .center) {
+                        Text("新建Prompt")
+                            .font(StudioFont.font(22))
+                            .foregroundStyle(CreateComposerColor.primaryText)
+                        Spacer()
+                        Button("创建") {
+                            save()
+                        }
+                        .buttonStyle(CreateComposerPrimaryButtonStyle())
+                    }
+                    .padding(.top, 48)
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.bottom, 54)
+
+                    ScrollView(.vertical) {
+                        HStack(alignment: .top, spacing: columnSpacing) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Group {
+                                    if controlsInline {
+                                        HStack(alignment: .center) {
+                                            createTypeTabs
+                                                .frame(width: 420, alignment: .leading)
+                                            Spacer(minLength: 36)
+                                            createModelMenu
+                                                .frame(width: 316)
+                                        }
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 18) {
+                                            createTypeTabs
+                                                .frame(width: leftWidth, alignment: .leading)
+                                            createModelMenu
+                                                .frame(width: min(316, leftWidth))
+                                        }
+                                    }
+                                }
+                                .frame(width: leftWidth, alignment: .leading)
+                                .padding(.bottom, controlsInline ? 64 : 54)
+
+                                createPromptColumn
+                                    .frame(width: leftWidth, alignment: .topLeading)
+                            }
+
+                            createUploadColumn
+                                .frame(width: uploadWidth, alignment: .topLeading)
+                        }
+                        .padding(.horizontal, horizontalPadding)
+                        .padding(.bottom, 64)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .scrollIndicators(.hidden)
+                }
             }
         }
     }
+
+    private var createPromptColumn: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            createField("标题") {
+                createTextInput("请输入标题", text: $title)
+            }
+
+            createField("Prompt（提示词）") {
+                createPromptTextArea
+            }
+        }
+    }
+
+    private var createUploadColumn: some View {
+        VStack(alignment: .leading, spacing: 54) {
+            createField("上传提示词预览图") {
+                previewImageDropZone
+            }
+
+            createField("上传参考图") {
+                referenceImagesDropZone
+            }
+        }
+    }
+
+    private var createTypeTabs: some View {
+        HStack(spacing: 34) {
+            createTypeTab("图片", active: true, enabled: true)
+            createTypeTab("视频", active: false, enabled: false)
+            createTypeTab("文本", active: false, enabled: false)
+        }
+    }
+
+    private func createTypeTab(_ title: String, active: Bool, enabled: Bool) -> some View {
+        Button {
+            if enabled {
+                type = .image
+            }
+        } label: {
+            Text(title)
+                .font(StudioFont.font(14))
+                .foregroundStyle(active ? CreateComposerColor.activeTabText : CreateComposerColor.secondaryText.opacity(enabled ? 1 : 0.38))
+                .frame(width: 108, height: 54)
+                .background(active ? Color.white : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(active ? Color.clear : CreateComposerColor.border.opacity(enabled ? 1 : 0), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(enabled ? title : "\(title)新建稍后接入")
+    }
+
+    private var createModelMenu: some View {
+        Menu {
+            ForEach(modelOptions) { model in
+                Button(model.name) {
+                    modelId = model.id
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Text(activeModelName.isEmpty ? "选择模型" : activeModelName)
+                    .font(StudioFont.font(14))
+                    .foregroundStyle(activeModelName.isEmpty ? CreateComposerColor.placeholderText : CreateComposerColor.primaryText)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(StudioFont.symbol(14))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 52)
+            .background(CreateComposerColor.inputBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func createField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(StudioFont.font(14))
+                .foregroundStyle(CreateComposerColor.primaryText)
+            content()
+        }
+    }
+
+    private func createTextInput(_ placeholder: String, text: Binding<String>) -> some View {
+        ZStack(alignment: .leading) {
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(StudioFont.font(14))
+                    .foregroundStyle(CreateComposerColor.placeholderText)
+                    .padding(.leading, 16)
+                    .allowsHitTesting(false)
+            }
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .font(StudioFont.font(14))
+                .foregroundStyle(CreateComposerColor.primaryText)
+                .padding(.horizontal, 16)
+        }
+        .frame(height: 58)
+        .background(CreateComposerColor.inputBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+    }
+
+    private var createPromptTextArea: some View {
+        ZStack(alignment: .topLeading) {
+            if prompt.isEmpty {
+                Text("请输入提示词内容")
+                    .font(StudioFont.font(14))
+                    .foregroundStyle(CreateComposerColor.placeholderText)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: $prompt)
+                .font(StudioFont.font(14))
+                .lineSpacing(4)
+                .foregroundStyle(CreateComposerColor.primaryText)
+                .scrollContentBackground(.hidden)
+                .padding(10)
+                .frame(minHeight: 710)
+                .background(Color.clear)
+        }
+        .background(CreateComposerColor.inputBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+    }
+
+    private var previewImageDropZone: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isPreviewImageDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.inputBackground)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+
+            if let previewImageURL {
+                ComposerUploadThumb(path: previewImageURL.path, width: 150, height: 88) {
+                    self.previewImageURL = nil
+                }
+                .padding(22)
+            } else {
+                Button {
+                    setPreviewImage(AppKitBridge.chooseReferenceImages())
+                } label: {
+                    Text("拖拽或点击添加预览图")
+                        .font(StudioFont.font(14))
+                        .foregroundStyle(CreateComposerColor.primaryText)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(height: 420)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isPreviewImageDropTarget, perform: handlePreviewImageDrop)
+    }
+
+    private var referenceImagesDropZone: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.inputBackground)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+
+            if referenceURLs.isEmpty {
+                Button {
+                    appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                } label: {
+                    Text("拖拽或点击添加参考图")
+                        .font(StudioFont.font(14))
+                        .foregroundStyle(CreateComposerColor.primaryText)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+                .buttonStyle(.plain)
+            } else {
+                LazyVGrid(columns: createReferenceColumns, alignment: .leading, spacing: 18) {
+                    ForEach(referenceURLs, id: \.path) { url in
+                        ComposerUploadThumb(path: url.path, width: 146, height: 86) {
+                            referenceURLs.removeAll { $0 == url }
+                        }
+                    }
+                    Button {
+                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(StudioFont.symbol(18, weight: .semibold))
+                            .foregroundStyle(CreateComposerColor.primaryText)
+                            .frame(width: 146, height: 86)
+                            .background(CreateComposerColor.inputBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(CreateComposerColor.border, style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(22)
+            }
+        }
+        .frame(height: 420)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
+    }
+
+    private var createPreviewPane: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center) {
+                Text("预览窗口")
+                    .font(StudioFont.font(16, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                Spacer()
+                Button {
+                    requestClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(StudioFont.symbol(13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StudioColor.primaryActionText)
+                .background(Circle().fill(StudioColor.primaryAction))
+            }
+
+            Text(previewTitle)
+                .font(StudioFont.font(16, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(2)
+
+            if let previewImageURL {
+                ComposerPreviewImage(path: previewImageURL.path)
+                    .frame(width: 205, height: 112)
+            } else {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(StudioColor.panelRaised)
+                    .frame(width: 205, height: 112)
+                    .overlay(
+                        Text("暂无预览图")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.tertiaryText)
+                    )
+            }
+
+            FlowLayout(spacing: 8) {
+                ForEach(previewMetadataChips, id: \.self) { chip in
+                    composerPreviewChip(chip)
+                }
+            }
+
+            if !referenceURLs.isEmpty {
+                LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
+                    ForEach(referenceURLs, id: \.path) { url in
+                        ComposerPreviewImage(path: url.path)
+                            .frame(width: 62, height: 40)
+                    }
+                }
+            }
+
+            Text("Prompt")
+                .font(StudioFont.font(14, weight: .medium))
+                .foregroundStyle(StudioColor.secondaryText)
+                .padding(.top, 6)
+
+            ScrollView {
+                Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "暂无 Prompt" : prompt)
+                    .font(StudioFont.font(13))
+                    .lineSpacing(5)
+                    .foregroundStyle(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(hex: 0x2D2D2D))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0x3E3E3E), lineWidth: 1))
+        }
+        .padding(.top, 44)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 28)
+        .background(StudioColor.panel)
+    }
+
 
     private var header: some View {
         HStack(spacing: 14) {
@@ -1191,8 +1574,80 @@ struct PromptComposerOverlay: View {
         return "拖拽或点击添加参考图"
     }
 
+    private var activeModelName: String {
+        modelOptions.first(where: { $0.id == modelId })?.name ?? ""
+    }
+
+    private var previewTitle: String {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle
+    }
+
+    private var previewImageInfo: (width: Int, height: Int, fileSize: Int64, format: String)? {
+        guard let previewImageURL else { return nil }
+        return AppKitBridge.fileInfo(for: previewImageURL, assetKind: .image)
+    }
+
+    private var previewMetadataChips: [String] {
+        [
+            activeModelName.isEmpty ? "选择模型" : activeModelName,
+            previewResolutionText,
+            previewFormatText,
+            extractedStyleTag
+        ]
+    }
+
+    private var previewResolutionText: String {
+        guard let previewImageInfo, previewImageInfo.width > 0, previewImageInfo.height > 0 else {
+            return "--"
+        }
+        return "\(previewImageInfo.width) x \(previewImageInfo.height)"
+    }
+
+    private var previewFormatText: String {
+        guard let previewImageInfo else { return "IMG" }
+        return previewImageInfo.format.isEmpty ? "IMG" : previewImageInfo.format.uppercased()
+    }
+
+    private var extractedStyleTag: String {
+        let source = "\(title) \(prompt) \(tags.joined(separator: " "))".lowercased()
+        let rules: [([String], String)] = [
+            (["写实", "真实", "摄影", "photography", "realistic", "cinematic"], "写实"),
+            (["插画", "illustration", "illustrated"], "插画"),
+            (["角色", "人物", "portrait", "character"], "人物"),
+            (["风景", "landscape", "scene"], "风景"),
+            (["极简", "minimal", "minimalist"], "极简"),
+            (["时装", "服装", "fashion"], "时装")
+        ]
+        return rules.first { rule in
+            rule.0.contains { source.contains($0) }
+        }?.1 ?? "待整理"
+    }
+
+    private var createReferenceColumns: [GridItem] {
+        [
+            GridItem(.fixed(146), spacing: 18),
+            GridItem(.fixed(146), spacing: 18),
+            GridItem(.fixed(146), spacing: 18)
+        ]
+    }
+
+    private var previewReferenceColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
+    }
+
+    private func composerPreviewChip(_ text: String) -> some View {
+        Text(text)
+            .font(StudioFont.font(12))
+            .foregroundStyle(StudioColor.secondaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(Capsule().fill(StudioColor.control))
+    }
+
     private var modelOptions: [ModelProfile] {
-        let matching = state.models.filter { $0.id != "all" && $0.type == type }
+        let matching = state.models.filter { $0.id != "all" && $0.type == .image }
         return matching.isEmpty ? state.models.filter { $0.id != "all" } : matching
     }
 
@@ -1332,13 +1787,14 @@ struct PromptComposerOverlay: View {
         case .create:
             title = ""
             type = .image
-            modelId = defaultModelID(for: .image)
+            modelId = ""
             prompt = ""
             negativePrompt = ""
             tags = []
             parameters = ""
             note = ""
             saveAsNewVersion = true
+            previewImageURL = nil
             referenceURLs = []
         case .edit:
             guard let item = editingItem else { return }
@@ -1351,9 +1807,12 @@ struct PromptComposerOverlay: View {
             parameters = (item.currentVersion?.parameters ?? [:]).map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n")
             note = ""
             saveAsNewVersion = true
+            previewImageURL = nil
             referenceURLs = []
         }
-        ensureModelMatchesType()
+        if isEditing {
+            ensureModelMatchesType()
+        }
         initialSignature = draftSignature
     }
 
@@ -1368,6 +1827,7 @@ struct PromptComposerOverlay: View {
                 prompt: prompt,
                 negativePrompt: negativePrompt,
                 tags: tags,
+                previewImageURL: previewImageURL,
                 referenceURLs: referenceURLs
             )
         case .edit:
@@ -1406,6 +1866,7 @@ struct PromptComposerOverlay: View {
             parameters,
             note,
             "\(saveAsNewVersion)",
+            previewImageURL?.path ?? "",
             referenceURLs.map(\.path).joined(separator: "\u{1f}")
         ].joined(separator: "\u{1e}")
     }
@@ -1441,6 +1902,33 @@ struct PromptComposerOverlay: View {
         for url in next where !referenceURLs.contains(url) {
             referenceURLs.append(url)
         }
+    }
+
+    private func setPreviewImage(_ urls: [URL]) {
+        let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
+        previewImageURL = urls.first { imageExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    private func handlePreviewImageDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            handled = true
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let itemURL = item as? URL {
+                    url = itemURL
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard let url else { return }
+                DispatchQueue.main.async {
+                    setPreviewImage([url])
+                }
+            }
+        }
+        return handled
     }
 
     private func handleReferenceDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -1733,6 +2221,78 @@ private struct OPSReferenceThumb: View {
                 .padding(5)
             }
         }
+        .task(id: path) {
+            await loader.load(path)
+        }
+    }
+}
+
+private enum CreateComposerColor {
+    static let workspace = Color(hex: 0x333333)
+    static let inputBackground = Color(hex: 0x2D2D2D)
+    static let dropActive = Color(hex: 0x363636)
+    static let border = Color.white.opacity(0.42)
+    static let primaryText = Color(hex: 0xEEEEEE)
+    static let secondaryText = Color(hex: 0xBDBEC0)
+    static let placeholderText = Color.white.opacity(0.48)
+    static let activeTabText = Color(hex: 0x111111)
+}
+
+private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(StudioFont.font(14, weight: .medium))
+            .foregroundStyle(StudioColor.primaryActionText)
+            .frame(width: 220, height: 54)
+            .background(configuration.isPressed ? Color.white.opacity(0.82) : StudioColor.primaryAction)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct ComposerUploadThumb: View {
+    let path: String
+    let width: CGFloat
+    let height: CGFloat
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ComposerPreviewImage(path: path)
+                .frame(width: width, height: height)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(StudioFont.symbol(9, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(StudioColor.text)
+            .background(Circle().fill(Color.black.opacity(0.76)))
+            .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .offset(x: 8, y: -8)
+        }
+    }
+}
+
+private struct ComposerPreviewImage: View {
+    let path: String
+    @StateObject private var loader = OverlayImageLoader()
+
+    var body: some View {
+        ZStack {
+            if let image = loader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                StudioColor.panelRaised
+                Image(systemName: "photo")
+                    .font(StudioFont.symbol(18))
+                    .foregroundStyle(StudioColor.tertiaryText)
+            }
+        }
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .task(id: path) {
             await loader.load(path)
         }
