@@ -716,12 +716,13 @@ struct PromptComposerOverlay: View {
 
     private var createWorkspacePane: some View {
         GeometryReader { geometry in
-            let horizontalPadding: CGFloat = geometry.size.width >= 1_250 ? 72 : 44
-            let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 68 : 40
+            let horizontalPadding: CGFloat = geometry.size.width >= 1_250 ? 64 : 40
+            let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 52 : 34
             let availableWidth = max(0, geometry.size.width - horizontalPadding * 2 - columnSpacing)
-            let uploadWidth = min(560, max(300, availableWidth * 0.38))
+            let uploadWidth = min(500, max(300, availableWidth * 0.38))
             let leftWidth = max(420, availableWidth - uploadWidth)
-            let controlsInline = leftWidth >= 760
+            let promptHeight = max(360, geometry.size.height - 370)
+            let uploadBoxHeight = max(190, min(260, (geometry.size.height - 314) / 2))
 
             ZStack {
                 CreateComposerColor.workspace
@@ -730,7 +731,7 @@ struct PromptComposerOverlay: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center) {
                         Text("新建Prompt")
-                            .font(StudioFont.font(22))
+                            .font(StudioFont.font(22, weight: .medium))
                             .foregroundStyle(CreateComposerColor.primaryText)
                         Spacer()
                         Button("创建") {
@@ -738,43 +739,31 @@ struct PromptComposerOverlay: View {
                         }
                         .buttonStyle(CreateComposerPrimaryButtonStyle())
                     }
-                    .padding(.top, 48)
+                    .padding(.top, 44)
                     .padding(.horizontal, horizontalPadding)
-                    .padding(.bottom, 54)
+                    .padding(.bottom, 44)
 
                     ScrollView(.vertical) {
                         HStack(alignment: .top, spacing: columnSpacing) {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Group {
-                                    if controlsInline {
-                                        HStack(alignment: .center) {
-                                            createTypeTabs
-                                                .frame(width: 420, alignment: .leading)
-                                            Spacer(minLength: 36)
-                                            createModelMenu
-                                                .frame(width: 316)
-                                        }
-                                    } else {
-                                        VStack(alignment: .leading, spacing: 18) {
-                                            createTypeTabs
-                                                .frame(width: leftWidth, alignment: .leading)
-                                            createModelMenu
-                                                .frame(width: min(316, leftWidth))
-                                        }
-                                    }
+                            VStack(alignment: .leading, spacing: 36) {
+                                HStack(alignment: .center, spacing: 0) {
+                                    createTypeTabs
+                                        .frame(width: 330, alignment: .leading)
+                                    Spacer(minLength: 24)
+                                    createModelMenu
+                                        .frame(width: 316)
                                 }
                                 .frame(width: leftWidth, alignment: .leading)
-                                .padding(.bottom, controlsInline ? 64 : 54)
 
-                                createPromptColumn
+                                createPromptColumn(promptHeight: promptHeight)
                                     .frame(width: leftWidth, alignment: .topLeading)
                             }
 
-                            createUploadColumn
+                            createUploadColumn(boxHeight: uploadBoxHeight)
                                 .frame(width: uploadWidth, alignment: .topLeading)
                         }
                         .padding(.horizontal, horizontalPadding)
-                        .padding(.bottom, 64)
+                        .padding(.bottom, 40)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .scrollIndicators(.hidden)
@@ -783,32 +772,32 @@ struct PromptComposerOverlay: View {
         }
     }
 
-    private var createPromptColumn: some View {
-        VStack(alignment: .leading, spacing: 26) {
+    private func createPromptColumn(promptHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
             createField("标题") {
                 createTextInput("请输入标题", text: $title)
             }
 
             createField("Prompt（提示词）") {
-                createPromptTextArea
+                createPromptTextArea(height: promptHeight)
             }
         }
     }
 
-    private var createUploadColumn: some View {
-        VStack(alignment: .leading, spacing: 54) {
+    private func createUploadColumn(boxHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 36) {
             createField("上传提示词预览图") {
-                previewImageDropZone
+                previewImageDropZone(height: boxHeight)
             }
 
             createField("上传参考图") {
-                referenceImagesDropZone
+                referenceImagesDropZone(height: boxHeight)
             }
         }
     }
 
     private var createTypeTabs: some View {
-        HStack(spacing: 34) {
+        HStack(spacing: 26) {
             createTypeTab("图片", active: true, enabled: true)
             createTypeTab("视频", active: false, enabled: false)
             createTypeTab("文本", active: false, enabled: false)
@@ -822,10 +811,10 @@ struct PromptComposerOverlay: View {
             }
         } label: {
             Text(title)
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(12, weight: active ? .medium : .regular))
                 .foregroundStyle(active ? CreateComposerColor.activeTabText : CreateComposerColor.secondaryText.opacity(enabled ? 1 : 0.38))
-                .frame(width: 108, height: 54)
-                .background(active ? Color.white : Color.clear)
+                .frame(width: 76, height: 40)
+                .background(active ? StudioColor.primaryAction : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -847,16 +836,16 @@ struct PromptComposerOverlay: View {
         } label: {
             HStack(spacing: 12) {
                 Text(activeModelName.isEmpty ? "选择模型" : activeModelName)
-                    .font(StudioFont.font(14))
+                    .font(StudioFont.font(13))
                     .foregroundStyle(activeModelName.isEmpty ? CreateComposerColor.placeholderText : CreateComposerColor.primaryText)
                     .lineLimit(1)
                 Spacer()
                 Image(systemName: "chevron.down")
-                    .font(StudioFont.symbol(14))
+                    .font(StudioFont.symbol(12))
                     .foregroundStyle(CreateComposerColor.primaryText)
             }
             .padding(.horizontal, 14)
-            .frame(height: 52)
+            .frame(height: 44)
             .background(CreateComposerColor.inputBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
@@ -867,8 +856,8 @@ struct PromptComposerOverlay: View {
     private func createField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
-                .font(StudioFont.font(14))
-                .foregroundStyle(CreateComposerColor.primaryText)
+                .font(StudioFont.font(14, weight: .medium))
+                .foregroundStyle(CreateComposerColor.secondaryText)
             content()
         }
     }
@@ -877,51 +866,51 @@ struct PromptComposerOverlay: View {
         ZStack(alignment: .leading) {
             if text.wrappedValue.isEmpty {
                 Text(placeholder)
-                    .font(StudioFont.font(14))
+                    .font(StudioFont.font(13))
                     .foregroundStyle(CreateComposerColor.placeholderText)
                     .padding(.leading, 16)
                     .allowsHitTesting(false)
             }
             TextField("", text: text)
                 .textFieldStyle(.plain)
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(13))
                 .foregroundStyle(CreateComposerColor.primaryText)
                 .padding(.horizontal, 16)
         }
-        .frame(height: 58)
-        .background(CreateComposerColor.inputBackground)
+        .frame(height: 52)
+        .background(CreateComposerColor.fieldBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
     }
 
-    private var createPromptTextArea: some View {
+    private func createPromptTextArea(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             if prompt.isEmpty {
                 Text("请输入提示词内容")
-                    .font(StudioFont.font(14))
+                    .font(StudioFont.font(13))
                     .foregroundStyle(CreateComposerColor.placeholderText)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
                     .allowsHitTesting(false)
             }
             TextEditor(text: $prompt)
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(13))
                 .lineSpacing(4)
                 .foregroundStyle(CreateComposerColor.primaryText)
                 .scrollContentBackground(.hidden)
                 .padding(10)
-                .frame(minHeight: 710)
+                .frame(height: height)
                 .background(Color.clear)
         }
-        .background(CreateComposerColor.inputBackground)
+        .background(CreateComposerColor.fieldBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
     }
 
-    private var previewImageDropZone: some View {
+    private func previewImageDropZone(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isPreviewImageDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.inputBackground)
+                .fill(isPreviewImageDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
 
             if let previewImageURL {
@@ -933,32 +922,26 @@ struct PromptComposerOverlay: View {
                 Button {
                     setPreviewImage(AppKitBridge.chooseReferenceImages())
                 } label: {
-                    Text("拖拽或点击添加预览图")
-                        .font(StudioFont.font(14))
-                        .foregroundStyle(CreateComposerColor.primaryText)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    createUploadPlaceholder("拖拽或点击添加预览图")
                 }
                 .buttonStyle(.plain)
             }
         }
-        .frame(height: 420)
+        .frame(height: height)
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isPreviewImageDropTarget, perform: handlePreviewImageDrop)
     }
 
-    private var referenceImagesDropZone: some View {
+    private func referenceImagesDropZone(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.inputBackground)
+                .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
 
             if referenceURLs.isEmpty {
                 Button {
                     appendReferenceImages(AppKitBridge.chooseReferenceImages())
                 } label: {
-                    Text("拖拽或点击添加参考图")
-                        .font(StudioFont.font(14))
-                        .foregroundStyle(CreateComposerColor.primaryText)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    createUploadPlaceholder("拖拽或点击添加参考图")
                 }
                 .buttonStyle(.plain)
             } else {
@@ -972,7 +955,7 @@ struct PromptComposerOverlay: View {
                         appendReferenceImages(AppKitBridge.chooseReferenceImages())
                     } label: {
                         Image(systemName: "plus")
-                            .font(StudioFont.symbol(18, weight: .semibold))
+                            .font(StudioFont.symbol(16, weight: .medium))
                             .foregroundStyle(CreateComposerColor.primaryText)
                             .frame(width: 146, height: 86)
                             .background(CreateComposerColor.inputBackground)
@@ -987,12 +970,24 @@ struct PromptComposerOverlay: View {
                 .padding(22)
             }
         }
-        .frame(height: 420)
+        .frame(height: height)
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
     }
 
+    private func createUploadPlaceholder(_ text: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "photo.on.rectangle")
+                .font(StudioFont.symbol(22))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+            Text(text)
+                .font(StudioFont.font(12))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
     private var createPreviewPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center) {
                 Text("预览窗口")
                     .font(StudioFont.font(16, weight: .semibold))
@@ -1010,62 +1005,115 @@ struct PromptComposerOverlay: View {
                 .background(Circle().fill(StudioColor.primaryAction))
             }
 
-            Text(previewTitle)
-                .font(StudioFont.font(16, weight: .semibold))
-                .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
-
-            if let previewImageURL {
-                ComposerPreviewImage(path: previewImageURL.path)
-                    .frame(width: 205, height: 112)
-            } else {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(StudioColor.panelRaised)
-                    .frame(width: 205, height: 112)
-                    .overlay(
-                        Text("暂无预览图")
-                            .font(StudioFont.font(12))
-                            .foregroundStyle(StudioColor.tertiaryText)
-                    )
-            }
-
-            FlowLayout(spacing: 8) {
-                ForEach(previewMetadataChips, id: \.self) { chip in
-                    composerPreviewChip(chip)
+            if hasCreatePreviewContent {
+                if hasTitle {
+                    Text(previewTitle)
+                        .font(StudioFont.font(15, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(3)
                 }
-            }
 
-            if !referenceURLs.isEmpty {
-                LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                    ForEach(referenceURLs, id: \.path) { url in
-                        ComposerPreviewImage(path: url.path)
-                            .frame(width: 62, height: 40)
+                if let previewImageURL {
+                    ComposerPreviewImage(path: previewImageURL.path, contentMode: .fit)
+                        .frame(width: previewImageSize.width, height: previewImageSize.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(StudioColor.hairline, lineWidth: 1)
+                        )
+                }
+
+                if !previewMetadataChips.isEmpty {
+                    FlowLayout(spacing: 8) {
+                        ForEach(previewMetadataChips, id: \.self) { chip in
+                            composerPreviewChip(chip)
+                        }
+                    }
+                }
+
+                if !referenceURLs.isEmpty {
+                    LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
+                        ForEach(referenceURLs, id: \.path) { url in
+                            ComposerPreviewImage(path: url.path)
+                                .frame(width: 62, height: 40)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        }
+                    }
+                }
+
+                if hasPrompt {
+                    Text("Prompt")
+                        .font(StudioFont.caption(12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                        .tracking(1.2)
+                        .padding(.top, 6)
+
+                    GeometryReader { proxy in
+                        createPromptPreviewBox(maxHeight: proxy.size.height)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
                 }
             }
 
-            Text("Prompt")
-                .font(StudioFont.font(14, weight: .medium))
-                .foregroundStyle(StudioColor.secondaryText)
-                .padding(.top, 6)
-
-            ScrollView {
-                Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "暂无 Prompt" : prompt)
-                    .font(StudioFont.font(13))
-                    .lineSpacing(5)
-                    .foregroundStyle(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(16)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(hex: 0x2D2D2D))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0x3E3E3E), lineWidth: 1))
+            Spacer(minLength: 0)
         }
-        .padding(.top, 44)
-        .padding(.horizontal, 28)
+        .padding(.top, 34)
+        .padding(.horizontal, 24)
         .padding(.bottom, 28)
         .background(StudioColor.panel)
+    }
+
+    private var hasTitle: Bool {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private var hasPrompt: Bool {
+        prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private var hasCreatePreviewContent: Bool {
+        hasTitle || hasPrompt || previewImageURL != nil || !referenceURLs.isEmpty || !previewMetadataChips.isEmpty
+    }
+
+    private var previewImageSize: CGSize {
+        let maxHeight: CGFloat = 80
+        let maxWidth: CGFloat = 260
+        let aspectRatio: CGFloat
+        if let previewImageInfo, previewImageInfo.width > 0, previewImageInfo.height > 0 {
+            aspectRatio = max(0.15, CGFloat(previewImageInfo.width) / CGFloat(previewImageInfo.height))
+        } else {
+            aspectRatio = 16.0 / 9.0
+        }
+        let widthAtMaxHeight = maxHeight * aspectRatio
+        if widthAtMaxHeight <= maxWidth {
+            return CGSize(width: widthAtMaxHeight, height: maxHeight)
+        }
+        return CGSize(width: maxWidth, height: maxWidth / aspectRatio)
+    }
+
+    private func createPromptPreviewBox(maxHeight: CGFloat) -> some View {
+        ViewThatFits(in: .vertical) {
+            createPromptPreviewText
+                .fixedSize(horizontal: false, vertical: true)
+                .promptContainer()
+
+            ScrollView {
+                createPromptPreviewText
+            }
+            .frame(height: max(72, maxHeight))
+            .promptContainer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var createPromptPreviewText: some View {
+        Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+            .font(StudioFont.font(13))
+            .lineSpacing(4)
+            .foregroundStyle(StudioColor.text)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(14)
     }
 
 
@@ -1589,27 +1637,35 @@ struct PromptComposerOverlay: View {
     }
 
     private var previewMetadataChips: [String] {
-        [
-            activeModelName.isEmpty ? "选择模型" : activeModelName,
-            previewResolutionText,
-            previewFormatText,
-            extractedStyleTag
-        ]
+        var chips: [String] = []
+        if !activeModelName.isEmpty {
+            chips.append(activeModelName)
+        }
+        if let resolution = previewResolutionText {
+            chips.append(resolution)
+        }
+        if let format = previewFormatText {
+            chips.append(format)
+        }
+        if let style = extractedStyleTag {
+            chips.append(style)
+        }
+        return chips
     }
 
-    private var previewResolutionText: String {
+    private var previewResolutionText: String? {
         guard let previewImageInfo, previewImageInfo.width > 0, previewImageInfo.height > 0 else {
-            return "--"
+            return nil
         }
         return "\(previewImageInfo.width) x \(previewImageInfo.height)"
     }
 
-    private var previewFormatText: String {
-        guard let previewImageInfo else { return "IMG" }
+    private var previewFormatText: String? {
+        guard let previewImageInfo else { return nil }
         return previewImageInfo.format.isEmpty ? "IMG" : previewImageInfo.format.uppercased()
     }
 
-    private var extractedStyleTag: String {
+    private var extractedStyleTag: String? {
         let source = "\(title) \(prompt) \(tags.joined(separator: " "))".lowercased()
         let rules: [([String], String)] = [
             (["写实", "真实", "摄影", "photography", "realistic", "cinematic"], "写实"),
@@ -1621,7 +1677,7 @@ struct PromptComposerOverlay: View {
         ]
         return rules.first { rule in
             rule.0.contains { source.contains($0) }
-        }?.1 ?? "待整理"
+        }?.1
     }
 
     private var createReferenceColumns: [GridItem] {
@@ -2229,21 +2285,22 @@ private struct OPSReferenceThumb: View {
 
 private enum CreateComposerColor {
     static let workspace = Color(hex: 0x333333)
-    static let inputBackground = Color(hex: 0x2D2D2D)
-    static let dropActive = Color(hex: 0x363636)
-    static let border = Color.white.opacity(0.42)
-    static let primaryText = Color(hex: 0xEEEEEE)
-    static let secondaryText = Color(hex: 0xBDBEC0)
-    static let placeholderText = Color.white.opacity(0.48)
-    static let activeTabText = Color(hex: 0x111111)
+    static let inputBackground = StudioColor.control
+    static let fieldBackground = Color(hex: 0x2D2D2D)
+    static let dropActive = Color(hex: 0x343434)
+    static let border = StudioColor.hairline
+    static let primaryText = StudioColor.text
+    static let secondaryText = StudioColor.secondaryText
+    static let placeholderText = StudioColor.tertiaryText
+    static let activeTabText = StudioColor.primaryActionText
 }
 
 private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(StudioFont.font(14, weight: .medium))
+            .font(StudioFont.font(12, weight: .medium))
             .foregroundStyle(StudioColor.primaryActionText)
-            .frame(width: 220, height: 54)
+            .frame(width: 180, height: 46)
             .background(configuration.isPressed ? Color.white.opacity(0.82) : StudioColor.primaryAction)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
@@ -2275,7 +2332,13 @@ private struct ComposerUploadThumb: View {
 }
 
 private struct ComposerPreviewImage: View {
+    enum ContentMode {
+        case fill
+        case fit
+    }
+
     let path: String
+    var contentMode: ContentMode = .fill
     @StateObject private var loader = OverlayImageLoader()
 
     var body: some View {
@@ -2283,7 +2346,7 @@ private struct ComposerPreviewImage: View {
             if let image = loader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode == .fill ? .fill : .fit)
             } else {
                 StudioColor.panelRaised
                 Image(systemName: "photo")
