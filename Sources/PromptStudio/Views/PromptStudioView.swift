@@ -9,7 +9,6 @@ struct PromptStudioView: View {
     @AppStorage("promptStudio.sidebarWidth") private var sidebarWidth = 220.0
     @AppStorage("promptStudio.inspectorWidth") private var inspectorWidth = 330.0
     @AppStorage("promptStudio.sidebarVisible") private var isSidebarVisible = true
-    @State private var isFileDropTargeted = false
     @State private var sidebarDragStartWidth: Double?
     @State private var inspectorDragStartWidth: Double?
     @State private var liveSidebarWidth: Double?
@@ -101,12 +100,6 @@ struct PromptStudioView: View {
                 }
             }
             .background(StudioColor.appBackground)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
-                    .padding(10)
-                    .allowsHitTesting(false)
-            )
 
             if state.isPreviewPresented, let item = state.selectedItem {
                 ImmersivePreviewOverlay(item: item)
@@ -143,15 +136,6 @@ struct PromptStudioView: View {
             SpacePreviewKeyMonitor {
                 state.togglePreview()
             }
-        }
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isFileDropTargeted) { providers in
-            Task { @MainActor in
-                let urls = await loadDroppedFileURLs(from: providers)
-                if !urls.isEmpty {
-                    state.importFiles(urls)
-                }
-            }
-            return true
         }
         .sheet(item: $state.modal) { modal in
             sheet(for: modal)
@@ -608,7 +592,7 @@ private struct SidebarView: View {
             ZStack {
                 SidebarGlassBackground()
                     .ignoresSafeArea(.container, edges: .top)
-                StudioColor.sidebar.opacity(0.40)
+                StudioColor.sidebar.opacity(0.30)
                     .ignoresSafeArea(.container, edges: .top)
             }
         }
@@ -843,8 +827,18 @@ private struct FolderTreeRowView: View {
             )
         }
         .onHover { isHovered = $0 }
-        .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
-            guard let provider = providers.first else { return false }
+        .onDrop(of: [UTType.plainText.identifier, UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
+            if providers.contains(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
+                Task { @MainActor in
+                    let urls = await loadDroppedFileURLs(from: providers)
+                    if !urls.isEmpty {
+                        state.importFiles(urls, targetFolderID: row.folder.id)
+                    }
+                }
+                return true
+            }
+
+            guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
             provider.loadObject(ofClass: NSString.self) { object, _ in
                 guard let itemID = object as? String else { return }
                 Task { @MainActor in
@@ -1239,6 +1233,7 @@ private struct MainContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
+    @State private var isFileDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1274,6 +1269,21 @@ private struct MainContentView: View {
             .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
         .background(StudioColor.previewBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
+                .padding(10)
+                .allowsHitTesting(false)
+        )
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isFileDropTargeted) { providers in
+            Task { @MainActor in
+                let urls = await loadDroppedFileURLs(from: providers)
+                if !urls.isEmpty {
+                    state.importFiles(urls)
+                }
+            }
+            return true
+        }
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
     }
 

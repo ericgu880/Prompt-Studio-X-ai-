@@ -503,8 +503,7 @@ struct ImportSheet: View {
                     .foregroundStyle(StudioColor.secondaryText)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 240)
-            .studioPanel(radius: 8)
+            .frame(height: 320)
         } footer: {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
