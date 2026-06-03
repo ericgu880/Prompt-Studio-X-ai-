@@ -1666,7 +1666,7 @@ private struct AssetCardView: View {
         let contentWidth = AssetCardMetrics.contentWidth(for: width)
         let contentHeight = AssetCardMetrics.contentHeight(for: item, width: contentWidth)
         ZStack(alignment: .topLeading) {
-            AssetMediaView(item: item)
+            cardContent
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
@@ -1717,6 +1717,15 @@ private struct AssetCardView: View {
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true
+        }
+    }
+
+    @ViewBuilder
+    private var cardContent: some View {
+        if item.assetKind.isTextDocumentLike {
+            TextDocumentCardPreview(item: item)
+        } else {
+            AssetMediaView(item: item)
         }
     }
 
@@ -2107,6 +2116,167 @@ private struct EmptyStateView: View {
     private var isTrash: Bool {
         state.filter.collection == .trash
     }
+}
+
+private struct TextDocumentCardPreview: View {
+    let item: PromptItem
+    @State private var text = ""
+
+    private var allPreviewLines: [String] {
+        let source = text.isEmpty ? item.currentVersion?.prompt ?? "" : text
+        return source
+            .components(separatedBy: .newlines)
+            .map { line in
+                let limit = 160
+                guard line.count > limit else { return line }
+                return String(line.prefix(limit)) + "..."
+            }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            previewContent(size: proxy.size)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous)
+                .stroke(TextDocumentCardPalette.border, lineWidth: 1)
+        )
+        .task(id: previewReloadID) {
+            text = Self.loadText(for: item)
+        }
+    }
+
+    @ViewBuilder
+    private func previewContent(size: CGSize) -> some View {
+        let lines = visibleLines(for: size)
+        ZStack(alignment: .topLeading) {
+            TextDocumentCardPalette.background
+
+            if allPreviewLines.isEmpty || allPreviewLines.allSatisfy({ $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                VStack(spacing: 8) {
+                    Image(systemName: item.assetKind == .json ? "curlybraces" : "doc.text")
+                        .font(StudioFont.symbol(26))
+                    Text(item.format.isEmpty ? item.assetKind.displayName.uppercased() : item.format.uppercased())
+                        .font(StudioFont.caption(10))
+                }
+                .foregroundStyle(TextDocumentCardPalette.mutedText)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        TextDocumentPreviewLine(line: line)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .clipped()
+    }
+
+    private var previewReloadID: String {
+        "\(item.assetPath)|\(item.updatedAt.timeIntervalSince1970)"
+    }
+
+    private func visibleLines(for size: CGSize) -> [String] {
+        let verticalPadding: CGFloat = 24
+        let rowHeight: CGFloat = 17
+        let maxLines = max(1, min(18, Int((size.height - verticalPadding) / rowHeight)))
+        return Array(allPreviewLines.prefix(maxLines))
+    }
+
+    private static func loadText(for item: PromptItem) -> String {
+        if !item.assetPath.isEmpty,
+           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
+            return text
+        }
+        if !item.assetPath.isEmpty,
+           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf16) {
+            return text
+        }
+        return item.currentVersion?.prompt ?? ""
+    }
+}
+
+private struct TextDocumentPreviewLine: View {
+    let line: String
+
+    var body: some View {
+        lineText
+            .font(.system(size: 11, weight: .regular, design: .default))
+    }
+
+    private var lineText: Text {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("#") {
+            return Text(line).foregroundColor(TextDocumentCardPalette.blue)
+        }
+        if isNegativeConstraint(trimmed) {
+            return Text(line).foregroundColor(TextDocumentCardPalette.red)
+        }
+        if trimmed.hasPrefix(">") {
+            let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+            let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+            return Text(indent)
+                + Text(">").foregroundColor(TextDocumentCardPalette.green)
+                + Text(" " + rest).foregroundColor(TextDocumentCardPalette.text)
+        }
+        if let marker = listMarker(in: trimmed) {
+            let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+            let rest = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+            return Text(indent)
+                + Text(marker).foregroundColor(TextDocumentCardPalette.orange)
+                + Text(rest.isEmpty ? "" : " " + rest).foregroundColor(TextDocumentCardPalette.text)
+        }
+        return inlineCodeText(line)
+    }
+
+    private func inlineCodeText(_ value: String) -> Text {
+        let parts = value.split(separator: "`", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count > 1 else {
+            return Text(value).foregroundColor(TextDocumentCardPalette.text)
+        }
+        return parts.enumerated().reduce(Text("")) { result, part in
+            let color = part.offset % 2 == 1 ? TextDocumentCardPalette.green : TextDocumentCardPalette.text
+            return result + Text(part.element).foregroundColor(color)
+        }
+    }
+
+    private func listMarker(in value: String) -> String? {
+        if value.hasPrefix("- ") { return "-" }
+        if value.hasPrefix("* ") { return "*" }
+        let prefix = value.prefix { $0.isNumber }
+        if !prefix.isEmpty, value.dropFirst(prefix.count).hasPrefix(". ") {
+            return "\(prefix)."
+        }
+        return nil
+    }
+
+    private func isNegativeConstraint(_ value: String) -> Bool {
+        let keywords = [
+            "负面提示词", "负面约束", "反向提示词", "Negative Prompt",
+            "不要", "禁止", "避免", "不出现", "不使用",
+            "无字幕", "无文字", "无水印", "无logo", "无Logo", "无LOGO",
+            "无品牌", "无现代", "无多余", "无夸张", "无脸部崩坏", "无身份不一致"
+        ]
+        return keywords.contains { value.localizedCaseInsensitiveContains($0) }
+    }
+}
+
+private enum TextDocumentCardPalette {
+    static let background = Color(hex: 0x141414)
+    static let border = Color(hex: 0x363A3F)
+    static let text = Color(hex: 0xBDBEC0)
+    static let mutedText = Color(hex: 0xBDBEC0).opacity(0.72)
+    static let red = Color(hex: 0xFF5F57)
+    static let orange = Color(hex: 0xFF9F0A)
+    static let green = Color(hex: 0x37DD61)
+    static let blue = Color(hex: 0x41CBE0)
 }
 
 struct AssetMediaView: View {
