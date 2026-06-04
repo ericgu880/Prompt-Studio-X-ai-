@@ -39,6 +39,12 @@ public final class PromptRepository: @unchecked Sendable {
             url.appendingPathComponent("assets/audio"),
             url.appendingPathComponent("assets/documents"),
             url.appendingPathComponent("assets/data"),
+            url.appendingPathComponent("assets/sources"),
+            url.appendingPathComponent("assets/raw"),
+            url.appendingPathComponent("assets/three_d"),
+            url.appendingPathComponent("assets/textures"),
+            url.appendingPathComponent("assets/fonts"),
+            url.appendingPathComponent("assets/web"),
             url.appendingPathComponent("assets/references"),
             url.appendingPathComponent("thumbnails"),
             url.appendingPathComponent("database"),
@@ -301,6 +307,18 @@ public final class PromptRepository: @unchecked Sendable {
             directoryName = "assets/audio"
         case .document, .markdown:
             directoryName = "assets/documents"
+        case .source:
+            directoryName = "assets/sources"
+        case .raw:
+            directoryName = "assets/raw"
+        case .threeD:
+            directoryName = "assets/three_d"
+        case .texture:
+            directoryName = "assets/textures"
+        case .font:
+            directoryName = "assets/fonts"
+        case .web:
+            directoryName = "assets/web"
         case .json, .text, .data, .unknown:
             directoryName = "assets/data"
         }

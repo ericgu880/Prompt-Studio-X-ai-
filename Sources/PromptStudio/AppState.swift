@@ -131,7 +131,6 @@ final class AppState: ObservableObject {
 
     enum Modal: Identifiable, Equatable {
         case newPrompt
-        case editPrompt
         case importAssets
         case filters
         case tagManager
@@ -149,7 +148,6 @@ final class AppState: ObservableObject {
         var id: String {
             switch self {
             case .newPrompt: "newPrompt"
-            case .editPrompt: "editPrompt"
             case .importAssets: "importAssets"
             case .filters: "filters"
             case .tagManager: "tagManager"
@@ -316,11 +314,12 @@ final class AppState: ObservableObject {
 
     func setModel(_ modelId: String?) {
         let normalizedModelID = modelId == "all" ? nil : modelId
-        guard filter.modelId != normalizedModelID || filter.textFormat != nil || filter.requiredTag != nil else { return }
+        guard filter.modelId != normalizedModelID || filter.textFormat != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.modelId = normalizedModelID
             filter.textFormat = nil
+            filter.assetKindFilter = nil
             filter.requiredTag = nil
             if let normalizedModelID,
                let model = models.first(where: { $0.id == normalizedModelID }) {
@@ -330,11 +329,12 @@ final class AppState: ObservableObject {
     }
 
     func setPromptType(_ type: PromptType?) {
-        guard filter.type != type || filter.modelId != nil || filter.textFormat != nil || filter.requiredTag != nil else { return }
+        guard filter.type != type || filter.modelId != nil || filter.textFormat != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.type = type
             filter.requiredTag = nil
+            filter.assetKindFilter = nil
             if type == nil {
                 filter.modelId = nil
                 filter.textFormat = nil
@@ -355,12 +355,25 @@ final class AppState: ObservableObject {
     }
 
     func setTextFormat(_ textFormat: TextFormatFilter?) {
-        guard filter.textFormat != textFormat || filter.type != .text || filter.modelId != nil || filter.requiredTag != nil else { return }
+        guard filter.textFormat != textFormat || filter.type != .text || filter.modelId != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.type = .text
             filter.modelId = nil
             filter.textFormat = textFormat
+            filter.assetKindFilter = nil
+            filter.requiredTag = nil
+        }
+    }
+
+    func setAssetKindFilter(_ assetKindFilter: AssetKindFilter?) {
+        guard filter.assetKindFilter != assetKindFilter || filter.modelId != nil || filter.textFormat != nil || filter.requiredTag != nil else { return }
+        pushCurrentNavigationSnapshot()
+        updateFilterSelectingFirst {
+            filter.type = nil
+            filter.modelId = nil
+            filter.textFormat = nil
+            filter.assetKindFilter = assetKindFilter
             filter.requiredTag = nil
         }
     }
@@ -368,12 +381,13 @@ final class AppState: ObservableObject {
     func setRequiredTag(_ tag: String?) {
         let normalizedTag = tag?.trimmingCharacters(in: .whitespacesAndNewlines)
         let nextTag = normalizedTag?.isEmpty == false ? normalizedTag : nil
-        guard filter.requiredTag != nextTag || filter.type != nil || filter.modelId != nil || filter.textFormat != nil else { return }
+        guard filter.requiredTag != nextTag || filter.type != nil || filter.modelId != nil || filter.textFormat != nil || filter.assetKindFilter != nil else { return }
         pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.type = nil
             filter.modelId = nil
             filter.textFormat = nil
+            filter.assetKindFilter = nil
             filter.requiredTag = nextTag
         }
     }
@@ -557,9 +571,27 @@ final class AppState: ObservableObject {
         tags: [String],
         parameters: [String: String],
         note: String,
-        saveAsNewVersion: Bool
+        saveAsNewVersion: Bool,
+        referenceURLs: [URL] = []
     ) {
         guard var item = selectedItem else { return }
+        do {
+            let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
+                let copied = try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+                return (source, copied)
+            }
+            let newReferences = copiedReferences.map { pair in
+                ReferenceAsset(
+                    type: pair.original.pathExtension.uppercased(),
+                    path: pair.copied.path,
+                    label: pair.original.deletingPathExtension().lastPathComponent
+                )
+            }
+            item.referenceAssets.append(contentsOf: newReferences)
+        } catch {
+            modal = .error(error.localizedDescription)
+            return
+        }
         item.title = title
         item.type = type
         item.modelId = modelId
@@ -1491,16 +1523,18 @@ final class AppState: ObservableObject {
             ("seedance_2", "Seedance 2.0")
         case .image:
             ("nano_banana_2", "Nano Banana 2")
-        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+        case .audio, .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             ("local_asset", "Local Asset")
         }
     }
 
     private func parsedPromptMetadata(for fileURL: URL, assetKind: AssetKind) -> ParsedPromptMetadata {
-        guard [.markdown, .json, .text, .data].contains(assetKind),
-              let text = readTextFile(fileURL) else {
+        let support = AssetFormatCatalog.support(forFileExtension: fileURL.pathExtension)
+        guard assetKind.isTextDocumentLike || support.canExtractPrompt else {
             return ParsedPromptMetadata()
         }
+        let text = AppKitBridge.readDocumentText(from: fileURL) ?? readTextFile(fileURL)
+        guard let text else { return ParsedPromptMetadata() }
         return PromptImportParser.parse(text: text, assetKind: assetKind)
     }
 

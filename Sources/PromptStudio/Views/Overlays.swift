@@ -277,16 +277,37 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private func textSummary(for item: PromptItem) -> String {
-        guard [.markdown, .json, .text, .data].contains(item.assetKind),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: item.assetPath), options: [.mappedIfSafe]) else {
-            return "\(item.assetKind.displayName) 文件，可通过右键菜单用默认应用打开。"
+        guard item.canExtractPromptFromAsset else {
+            return fileFallbackSummary(for: item)
+        }
+        if let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
+            let trimmed = String(text.prefix(8_000)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? fileFallbackSummary(for: item) : trimmed
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: item.assetPath), options: [.mappedIfSafe]) else {
+            return fileFallbackSummary(for: item)
         }
         let previewData = Data(data.prefix(8_000))
         let text = String(data: previewData, encoding: .utf8)
             ?? String(data: previewData, encoding: .utf16)
             ?? String(data: previewData, encoding: .isoLatin1)
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "\(item.assetKind.displayName) 文件无可读取文本摘要。" : trimmed
+        return trimmed.isEmpty ? fileFallbackSummary(for: item) : trimmed
+    }
+
+    private func fileFallbackSummary(for item: PromptItem) -> String {
+        switch item.previewMode {
+        case .audio:
+            return "音频文件，可通过默认应用播放，也可以作为音色、旁白或音乐 Prompt 参考。"
+        case .document:
+            return "\(item.assetKind.displayName) 文件，可通过默认应用或系统预览打开。"
+        case .reference:
+            return "\(item.assetKind.displayName) 参考资产已入库，可管理标签、Prompt 和文件路径。"
+        case .generic:
+            return "通用文件已入库，可通过默认应用打开。"
+        case .image, .video, .textDocument:
+            return "\(item.assetKind.displayName) 文件无可读取文本摘要。"
+        }
     }
 }
 
@@ -320,7 +341,13 @@ private struct MarkdownDocumentPreviewContent: View {
 
     private var editorPane: some View {
         ZStack(alignment: .topLeading) {
-            MarkdownDocumentEditor(text: $text, isEditable: false, scrollResetID: item.id, contentFontSize: 13)
+            MarkdownDocumentEditor(
+                text: $text,
+                isEditable: false,
+                scrollResetID: item.id,
+                contentFontSize: 13,
+                syntaxMode: TextSyntaxMode.infer(for: item)
+            )
 
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("暂无文档信息")
@@ -497,7 +524,12 @@ struct MarkdownEditorOverlay: View {
 
     private var editorPane: some View {
         ZStack(alignment: .topLeading) {
-            MarkdownDocumentEditor(text: $draftText, isEditable: true, scrollResetID: item.id)
+            MarkdownDocumentEditor(
+                text: $draftText,
+                isEditable: true,
+                scrollResetID: item.id,
+                syntaxMode: TextSyntaxMode.infer(for: item)
+            )
 
             if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("开始编写文档内容")
@@ -672,13 +704,7 @@ struct PromptComposerOverlay: View {
     }
 
     var body: some View {
-        Group {
-            if isEditing {
-                legacyComposerBody
-            } else {
-                createComposerBody
-            }
-        }
+        createComposerBody
         .foregroundStyle(OPSColor.bodyText)
         .transition(.opacity)
         .onAppear(perform: loadDraft)
@@ -693,40 +719,6 @@ struct PromptComposerOverlay: View {
             EscapeKeyMonitor {
                 requestClose()
             }
-        }
-    }
-
-    private var legacyComposerBody: some View {
-        ZStack {
-            OPSColor.pageBackground
-                .ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                header
-                HStack(spacing: 0) {
-                    opsWorkspacePane
-                        .frame(width: 360)
-                        .frame(maxHeight: .infinity)
-                    opsParserPane
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(OPSColor.pageBackground)
-                }
-            }
-
-            Button {
-                requestClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(11, weight: .semibold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(OPSColor.buttonText)
-            .background(OPSColor.buttonBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-            .padding(.top, 28)
-            .padding(.trailing, 28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
     }
 
@@ -769,11 +761,11 @@ struct PromptComposerOverlay: View {
 
                 VStack(alignment: .leading, spacing: headerGap) {
                     HStack(alignment: .center) {
-                        Text("新建Prompt")
+                        Text(composerTitle)
                             .font(StudioFont.font(14, weight: .semibold))
                             .foregroundStyle(CreateComposerColor.primaryText)
                         Spacer()
-                        Button("创建") {
+                        Button(primaryActionTitle) {
                             save()
                         }
                         .buttonStyle(CreateComposerPrimaryButtonStyle())
@@ -842,16 +834,20 @@ struct PromptComposerOverlay: View {
 
     private var createTypeTabs: some View {
         HStack(spacing: 14) {
-            createTypeTab("图片", active: true, enabled: true)
-            createTypeTab("视频", active: false, enabled: false)
-            createTypeTab("文本", active: false, enabled: false)
+            ForEach(PromptType.allCases) { option in
+                createTypeTab(option)
+            }
         }
     }
 
-    private func createTypeTab(_ title: String, active: Bool, enabled: Bool) -> some View {
-        Button {
+    private func createTypeTab(_ option: PromptType) -> some View {
+        let enabled = isEditing || option == .image
+        let active = type == option
+        let title = option.displayName.replacingOccurrences(of: " Prompt", with: "")
+        return Button {
             if enabled {
-                type = .image
+                type = option
+                ensureModelMatchesType()
             }
         } label: {
             Text(title)
@@ -970,12 +966,16 @@ struct PromptComposerOverlay: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
-                        composerRemoveButton {
-                            self.previewImageURL = nil
+                        if !isEditing {
+                            composerRemoveButton {
+                                self.previewImageURL = nil
+                            }
+                            .padding(14)
                         }
-                        .padding(14)
                     }
                 }
+            } else if isEditing {
+                createUploadPlaceholder("当前素材无预览图")
             } else {
                 Button {
                     setPreviewImage(AppKitBridge.chooseReferenceImages())
@@ -995,7 +995,7 @@ struct PromptComposerOverlay: View {
                 .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
 
-            if referenceURLs.isEmpty {
+            if existingReferencePaths.isEmpty && referenceURLs.isEmpty {
                 Button {
                     appendReferenceImages(AppKitBridge.chooseReferenceImages())
                 } label: {
@@ -1004,6 +1004,9 @@ struct PromptComposerOverlay: View {
                 .buttonStyle(.plain)
             } else {
                 LazyVGrid(columns: createReferenceColumns, alignment: .leading, spacing: 12) {
+                    ForEach(existingReferencePaths, id: \.self) { path in
+                        ComposerUploadThumb(path: path, width: 132, height: 78, removable: false)
+                    }
                     ForEach(referenceURLs, id: \.path) { url in
                         ComposerUploadThumb(path: url.path, width: 132, height: 78) {
                             referenceURLs.removeAll { $0 == url }
@@ -1029,6 +1032,7 @@ struct PromptComposerOverlay: View {
             }
         }
         .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
     }
 
@@ -1123,8 +1127,8 @@ struct PromptComposerOverlay: View {
                 .tracking(1.2)
 
             LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                ForEach(referenceURLs, id: \.path) { url in
-                    ComposerPreviewImage(path: url.path)
+                ForEach(allReferencePreviewPaths, id: \.self) { path in
+                    ComposerPreviewImage(path: path)
                         .frame(width: 62, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
@@ -1141,7 +1145,7 @@ struct PromptComposerOverlay: View {
     }
 
     private var hasCreatePreviewContent: Bool {
-        hasTitle || hasPrompt || previewImageURL != nil || !referenceURLs.isEmpty || !previewMetadataChips.isEmpty
+        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewPaths.isEmpty || !previewMetadataChips.isEmpty
     }
 
     private var previewImageSize: CGSize {
@@ -1761,6 +1765,14 @@ struct PromptComposerOverlay: View {
         Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
     }
 
+    private var composerTitle: String {
+        isEditing ? "编辑Prompt" : "新建Prompt"
+    }
+
+    private var primaryActionTitle: String {
+        isEditing ? "保存" : "创建"
+    }
+
     private func composerPreviewChip(_ text: String) -> some View {
         Text(text)
             .font(StudioFont.font(12))
@@ -1772,7 +1784,7 @@ struct PromptComposerOverlay: View {
     }
 
     private var modelOptions: [ModelProfile] {
-        let matching = state.models.filter { $0.id != "all" && $0.type == .image }
+        let matching = state.models.filter { $0.id != "all" && $0.type == type }
         return matching.isEmpty ? state.models.filter { $0.id != "all" } : matching
     }
 
@@ -1870,6 +1882,10 @@ struct PromptComposerOverlay: View {
         editingItem?.referenceAssets.map(\.path) ?? []
     }
 
+    private var allReferencePreviewPaths: [String] {
+        existingReferencePaths + referenceURLs.map(\.path)
+    }
+
     private var referenceColumns: [GridItem] {
         [
             GridItem(.flexible(), spacing: 8),
@@ -1932,7 +1948,11 @@ struct PromptComposerOverlay: View {
             parameters = (item.currentVersion?.parameters ?? [:]).map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n")
             note = ""
             saveAsNewVersion = true
-            previewImageURL = nil
+            if item.assetKind == .image, !item.assetPath.isEmpty, FileManager.default.fileExists(atPath: item.assetPath) {
+                previewImageURL = URL(fileURLWithPath: item.assetPath)
+            } else {
+                previewImageURL = nil
+            }
             referenceURLs = []
         }
         if isEditing {
@@ -1965,7 +1985,8 @@ struct PromptComposerOverlay: View {
                 tags: tags,
                 parameters: parsedParameters,
                 note: note,
-                saveAsNewVersion: saveAsNewVersion
+                saveAsNewVersion: saveAsNewVersion,
+                referenceURLs: referenceURLs
             )
         }
         initialSignature = draftSignature
@@ -2030,11 +2051,13 @@ struct PromptComposerOverlay: View {
     }
 
     private func setPreviewImage(_ urls: [URL]) {
+        guard !isEditing else { return }
         let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
         previewImageURL = urls.first { imageExtensions.contains($0.pathExtension.lowercased()) }
     }
 
     private func handlePreviewImageDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !isEditing else { return false }
         var handled = false
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             handled = true
@@ -2382,23 +2405,36 @@ private struct ComposerUploadThumb: View {
     let path: String
     let width: CGFloat
     let height: CGFloat
+    let removable: Bool
     let onRemove: () -> Void
+
+    init(path: String, width: CGFloat, height: CGFloat, removable: Bool = true, onRemove: @escaping () -> Void = {}) {
+        self.path = path
+        self.width = width
+        self.height = height
+        self.removable = removable
+        self.onRemove = onRemove
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             ComposerPreviewImage(path: path)
                 .frame(width: width, height: height)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(9, weight: .semibold))
-                    .frame(width: 22, height: 22)
+            if removable {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(StudioFont.symbol(9, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StudioColor.text)
+                .background(Circle().fill(Color.black.opacity(0.76)))
+                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+                .offset(x: 8, y: -8)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(StudioColor.text)
-            .background(Circle().fill(Color.black.opacity(0.76)))
-            .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
-            .offset(x: 8, y: -8)
         }
     }
 }

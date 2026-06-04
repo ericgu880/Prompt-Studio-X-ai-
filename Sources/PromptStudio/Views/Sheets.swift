@@ -396,98 +396,6 @@ private struct NewPromptSecondaryButtonStyle: ButtonStyle {
     }
 }
 
-struct EditPromptSheet: View {
-    @EnvironmentObject private var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    let item: PromptItem
-    @State private var title: String
-    @State private var type: PromptType
-    @State private var modelId: String
-    @State private var prompt: String
-    @State private var negativePrompt: String
-    @State private var tags: String
-    @State private var parameters: String
-    @State private var note = ""
-    @State private var saveAsNewVersion = true
-
-    init(item: PromptItem) {
-        self.item = item
-        _title = State(initialValue: item.title)
-        _type = State(initialValue: item.type)
-        _modelId = State(initialValue: item.modelId)
-        _prompt = State(initialValue: item.currentVersion?.prompt ?? "")
-        _negativePrompt = State(initialValue: item.currentVersion?.negativePrompt ?? "")
-        _tags = State(initialValue: item.tags.joined(separator: ", "))
-        _parameters = State(initialValue: (item.currentVersion?.parameters ?? [:]).map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n"))
-    }
-
-    var body: some View {
-        PromptFormShell(title: "编辑 Prompt") {
-            VStack(alignment: .leading, spacing: 14) {
-                LabeledField("标题") { TextField("标题", text: $title) }
-                HStack(spacing: 12) {
-                    LabeledField("类型") {
-                        Picker("", selection: $type) {
-                            ForEach(PromptType.allCases) { type in
-                                Text(type.displayName).tag(type)
-                            }
-                        }
-                        .labelsHidden()
-                    }
-                    LabeledField("模型") {
-                        Picker("", selection: $modelId) {
-                            ForEach(state.models.filter { $0.id != "all" }) { model in
-                                Text(model.name).tag(model.id)
-                            }
-                        }
-                        .labelsHidden()
-                    }
-                }
-                LabeledEditor("Prompt", text: $prompt, minHeight: 140)
-                LabeledEditor("负面提示词", text: $negativePrompt, minHeight: 80)
-                LabeledEditor("参数（每行 key=value）", text: $parameters, minHeight: 72)
-                LabeledField("标签") { TextField("风景, 人物", text: $tags) }
-                LabeledField("版本备注") { TextField("例如：增强光影", text: $note) }
-                Toggle("保存为新版本", isOn: $saveAsNewVersion)
-            }
-        } footer: {
-            Button("取消") { dismiss() }
-                .buttonStyle(TextHoverButtonStyle())
-            Button("保存") {
-                state.savePrompt(
-                    title: title,
-                    type: type,
-                    modelId: modelId,
-                    prompt: prompt,
-                    negativePrompt: negativePrompt,
-                    tags: parsedTags,
-                    parameters: parsedParameters,
-                    note: note,
-                    saveAsNewVersion: saveAsNewVersion
-                )
-                dismiss()
-            }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
-        }
-        .frame(width: 760, height: 760)
-    }
-
-    private var parsedTags: [String] {
-        tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-    }
-
-    private var parsedParameters: [String: String] {
-        parameters
-            .split(separator: "\n")
-            .reduce(into: [String: String]()) { result, line in
-                let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-                if parts.count == 2 {
-                    result[parts[0].trimmingCharacters(in: .whitespaces)] = parts[1].trimmingCharacters(in: .whitespaces)
-                }
-            }
-    }
-}
-
 struct ImportSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -1810,7 +1718,9 @@ struct PreviewSheet: View {
 
     @ViewBuilder
     private func mediaPreview(_ item: PromptItem) -> some View {
-        if item.assetKind == .video {
+        if item.isTextDocumentLike {
+            TextDocumentSheetPreview(item: item)
+        } else if item.assetKind == .video {
             VideoPreviewPlayer(path: item.assetPath)
         } else if item.assetKind == .image {
             ImagePreview(path: item.assetPath)
@@ -1892,9 +1802,15 @@ struct PreviewSheet: View {
     }
 
     private func textSummary(for item: PromptItem) -> String {
-        guard [.markdown, .json, .text, .data].contains(item.assetKind),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: item.assetPath), options: [.mappedIfSafe]) else {
-            return "\(item.assetKind.displayName) 文件，可通过右键菜单用默认应用打开。"
+        guard item.canExtractPromptFromAsset else {
+            return fileFallbackSummary(for: item)
+        }
+        if let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
+            let trimmed = String(text.prefix(6_000)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? fileFallbackSummary(for: item) : trimmed
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: item.assetPath), options: [.mappedIfSafe]) else {
+            return fileFallbackSummary(for: item)
         }
         let previewData = Data(data.prefix(6000))
         let text = String(data: previewData, encoding: .utf8)
@@ -1903,7 +1819,49 @@ struct PreviewSheet: View {
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !trimmed.isEmpty
             ? trimmed
-            : "\(item.assetKind.displayName) 文件无可读取文本摘要。"
+            : fileFallbackSummary(for: item)
+    }
+
+    private func fileFallbackSummary(for item: PromptItem) -> String {
+        switch item.previewMode {
+        case .audio:
+            return "音频文件，可通过默认应用播放，也可以作为音色、旁白或音乐 Prompt 参考。"
+        case .document:
+            return "\(item.assetKind.displayName) 文件，可通过默认应用或系统预览打开。"
+        case .reference:
+            return "\(item.assetKind.displayName) 参考资产已入库，可管理标签、Prompt 和文件路径。"
+        case .generic:
+            return "通用文件已入库，可通过默认应用打开。"
+        case .image, .video, .textDocument:
+            return "\(item.assetKind.displayName) 文件无可读取文本摘要。"
+        }
+    }
+}
+
+private struct TextDocumentSheetPreview: View {
+    let item: PromptItem
+    @State private var text = ""
+
+    var body: some View {
+        MarkdownDocumentEditor(
+            text: $text,
+            isEditable: false,
+            scrollResetID: item.id,
+            contentFontSize: 13,
+            syntaxMode: TextSyntaxMode.infer(for: item)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear(perform: loadText)
+        .onChange(of: item.id) { _, _ in loadText() }
+    }
+
+    private func loadText() {
+        if !item.assetPath.isEmpty,
+           let documentText = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
+            text = documentText
+            return
+        }
+        text = item.currentVersion?.prompt ?? ""
     }
 }
 
@@ -1962,6 +1920,18 @@ private struct FileKindPlaceholderForPreview: View {
             "doc.richtext"
         case .text:
             "doc.text"
+        case .source:
+            "hammer"
+        case .raw:
+            "camera.aperture"
+        case .threeD:
+            "cube"
+        case .texture:
+            "square.grid.3x3"
+        case .font:
+            "textformat"
+        case .web:
+            "link"
         case .unknown:
             "doc"
         case .image:

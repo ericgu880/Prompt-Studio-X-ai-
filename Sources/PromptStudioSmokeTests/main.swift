@@ -166,14 +166,46 @@ func testTextFormatFiltering() throws {
     let json = sampleItem(title: "Json", assetKind: .json, prompt: "{}", assetPath: "/tmp/mock.json", format: "JSON")
     let text = sampleItem(title: "Text", assetKind: .text, prompt: "notes", assetPath: "/tmp/mock.txt", format: "TXT")
     let word = sampleItem(title: "Word", assetKind: .document, prompt: "doc", assetPath: "/tmp/mock.docx", format: "DOCX")
+    let staleWord = sampleItem(title: "Old Word", assetKind: .unknown, prompt: "doc", assetPath: "/tmp/old.docx", format: "FILE")
     let pdf = sampleItem(title: "PDF", assetKind: .document, prompt: "pdf", assetPath: "/tmp/mock.pdf", format: "PDF")
 
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .markdown)).map(\.id) == [markdown.id], "MD filter should isolate markdown assets")
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .json)).map(\.id) == [json.id], "Json filter should isolate JSON assets")
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .text)).map(\.id) == [text.id], "txt filter should isolate text assets")
-    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .word)).map(\.id) == [word.id], "Word filter should isolate doc/docx assets")
+    let wordMatches = Set(PromptFiltering.apply([markdown, json, text, word, staleWord], filter: PromptFilter(type: .text, textFormat: .word)).map(\.id))
+    try expect(wordMatches == Set([word.id, staleWord.id]), "Word filter should isolate doc/docx assets")
     try expect(word.isTextDocumentLike, "Word documents should use text document presentation")
+    try expect(staleWord.isTextDocumentLike, "Old docx items should use text document presentation by file extension")
     try expect(!pdf.isTextDocumentLike, "PDF documents should stay generic document assets")
+}
+
+func testTextSyntaxModeInference() throws {
+    let staleJson = sampleItem(title: "Old JSON", assetKind: .unknown, prompt: "{}", assetPath: "/tmp/handoff.json", format: "FILE")
+    try expect(staleJson.isTextDocumentLike, "Old JSON items should use text document presentation by file extension")
+    try expect(TextSyntaxMode.infer(for: staleJson) == .json, "JSON path should infer JSON syntax even when assetKind is stale")
+
+    let expectations: [(String, TextSyntaxMode)] = [
+        ("/tmp/mock.md", .markdown),
+        ("/tmp/mock.yaml", .yamlToml),
+        ("/tmp/mock.toml", .yamlToml),
+        ("/tmp/mock.xml", .xml),
+        ("/tmp/mock.log", .log),
+        ("/tmp/mock.txt", .plain),
+        ("/tmp/mock.swift", .source)
+    ]
+    for (path, mode) in expectations {
+        try expect(TextSyntaxMode.infer(assetPath: path, format: "", assetKind: .unknown) == mode, "\(path) should infer \(mode.rawValue) syntax")
+    }
+}
+
+func testTextSyntaxRulesDetectJSONTokens() throws {
+    let json = #"{"name":"Ada","count":3,"enabled":true,"missing":null}"#
+    let tokens = TextSyntaxRules.tokenKinds(in: json, mode: .json)
+    try expect(tokens.contains(.jsonKey), "JSON highlighter should detect object keys")
+    try expect(tokens.contains(.number), "JSON highlighter should detect numbers")
+    try expect(tokens.contains(.literal), "JSON highlighter should detect booleans and null")
+    try expect(tokens.contains(.punctuation), "JSON highlighter should detect punctuation")
+    try expect(!tokens.contains(.string), "JSON highlighter should keep string values as base text to avoid large color blocks")
 }
 
 func testFolderFilteringUsesStableFolderID() throws {
@@ -489,6 +521,8 @@ func testMCPToolsSmoke() throws {
 do {
     try testSearchFiltering()
     try testTextFormatFiltering()
+    try testTextSyntaxModeInference()
+    try testTextSyntaxRulesDetectJSONTokens()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testAssetKindInferenceAndPromptParsing()

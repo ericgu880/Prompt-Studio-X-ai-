@@ -6,6 +6,7 @@ enum FilterQuickEntry: Identifiable, Equatable {
     case type(PromptType, title: String)
     case model(ModelProfile, title: String?)
     case textFormat(TextFormatFilter, title: String?)
+    case assetKind(AssetKindFilter, title: String?)
     case tag(String)
 
     var id: String {
@@ -18,6 +19,8 @@ enum FilterQuickEntry: Identifiable, Equatable {
             "model-\(model.id)"
         case .textFormat(let textFormat, _):
             "format-\(textFormat.rawValue)"
+        case .assetKind(let assetKindFilter, _):
+            "asset-\(assetKindFilter.rawValue)"
         case .tag(let tag):
             "tag-\(tag)"
         }
@@ -33,6 +36,8 @@ enum FilterQuickEntry: Identifiable, Equatable {
             title ?? model.name
         case .textFormat(let textFormat, let title):
             title ?? textFormat.displayName
+        case .assetKind(let assetKindFilter, let title):
+            title ?? assetKindFilter.displayName
         case .tag(let tag):
             tag
         }
@@ -48,6 +53,8 @@ enum FilterQuickEntry: Identifiable, Equatable {
             "模型"
         case .textFormat:
             "格式"
+        case .assetKind:
+            "素材"
         case .tag:
             "标签"
         }
@@ -69,7 +76,13 @@ enum FilterBarConfiguration {
         "format-markdown",
         "format-json",
         "format-text",
-        "format-word"
+        "format-word",
+        "asset-audio",
+        "asset-document",
+        "asset-source",
+        "asset-raw",
+        "asset-threeD",
+        "asset-font"
     ]
 
     static func availableEntries(models: [ModelProfile], tags: [Tag]) -> [FilterQuickEntry] {
@@ -103,6 +116,21 @@ enum FilterBarConfiguration {
             .textFormat(.json, title: "JSON"),
             .textFormat(.text, title: "TXT"),
             .textFormat(.word, title: "WORD")
+        ])
+
+        entries.append(contentsOf: [
+            .assetKind(.image, title: "图片"),
+            .assetKind(.video, title: "视频"),
+            .assetKind(.audio, title: "音频"),
+            .assetKind(.promptDocument, title: "Prompt 文档"),
+            .assetKind(.document, title: "办公/PDF"),
+            .assetKind(.source, title: "源文件"),
+            .assetKind(.raw, title: "RAW"),
+            .assetKind(.threeD, title: "3D"),
+            .assetKind(.texture, title: "贴图"),
+            .assetKind(.font, title: "字体"),
+            .assetKind(.web, title: "网页"),
+            .assetKind(.other, title: "其他")
         ])
 
         let tagEntries = tags

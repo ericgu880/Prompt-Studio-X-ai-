@@ -344,7 +344,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         case .video:
             preferredID = "seedance_2"
             fallback = ModelProfile(id: preferredID, name: "Seedance 2.0", type: .video, parameters: [])
-        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+        case .audio, .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             preferredID = "local_asset"
             fallback = ModelProfile(id: preferredID, name: "Local Asset", type: .text, parameters: [])
         }
@@ -370,7 +370,8 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
     }
 
     private func parsedMetadata(for url: URL, assetKind: AssetKind) -> ParsedPromptMetadata {
-        guard [.markdown, .json, .text, .data].contains(assetKind),
+        let support = AssetFormatCatalog.support(forFileExtension: url.pathExtension)
+        guard assetKind.isTextDocumentLike || support.canExtractPrompt,
               let text = readTextFile(url) else {
             return ParsedPromptMetadata()
         }

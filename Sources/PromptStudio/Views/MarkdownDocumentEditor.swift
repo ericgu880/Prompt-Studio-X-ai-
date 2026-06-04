@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PromptStudioCore
 
 @MainActor
 struct MarkdownDocumentEditor: NSViewRepresentable {
@@ -7,12 +8,20 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     let isEditable: Bool
     let scrollResetID: String?
     let contentFontSize: CGFloat
+    let syntaxMode: TextSyntaxMode
 
-    init(text: Binding<String>, isEditable: Bool, scrollResetID: String? = nil, contentFontSize: CGFloat = 14) {
+    init(
+        text: Binding<String>,
+        isEditable: Bool,
+        scrollResetID: String? = nil,
+        contentFontSize: CGFloat = 14,
+        syntaxMode: TextSyntaxMode = .markdown
+    ) {
         self._text = text
         self.isEditable = isEditable
         self.scrollResetID = scrollResetID
         self.contentFontSize = contentFontSize
+        self.syntaxMode = syntaxMode
     }
 
     func makeCoordinator() -> Coordinator {
@@ -25,11 +34,12 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.string = text
         textView.isEditable = isEditable
-        MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
+        TextSyntaxHighlighter.apply(to: textView, mode: syntaxMode, contentFontSize: contentFontSize)
         if let scrollResetID {
             context.coordinator.lastScrollResetID = scrollResetID
             containerView.scrollToTop()
         }
+        context.coordinator.lastSyntaxMode = syntaxMode
         return containerView
     }
 
@@ -39,6 +49,8 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.isEditable = isEditable
         textView.insertionPointColor = MarkdownEditorPalette.strongText
         let fontSizeChanged = containerView.updateContentFontSize(contentFontSize)
+        let syntaxModeChanged = context.coordinator.lastSyntaxMode != syntaxMode
+        context.coordinator.lastSyntaxMode = syntaxMode
         var shouldResetScroll = false
 
         if let scrollResetID, context.coordinator.lastScrollResetID != scrollResetID {
@@ -49,11 +61,11 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         if textView.string != text {
             context.coordinator.isApplyingExternalChange = true
             textView.string = text
-            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
+            TextSyntaxHighlighter.apply(to: textView, mode: syntaxMode, contentFontSize: contentFontSize)
             context.coordinator.isApplyingExternalChange = false
             shouldResetScroll = scrollResetID != nil
-        } else if fontSizeChanged {
-            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: contentFontSize)
+        } else if fontSizeChanged || syntaxModeChanged {
+            TextSyntaxHighlighter.apply(to: textView, mode: syntaxMode, contentFontSize: contentFontSize)
         }
 
         containerView.gutterView.needsDisplay = true
@@ -67,6 +79,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         var parent: MarkdownDocumentEditor
         var isApplyingExternalChange = false
         var lastScrollResetID: String?
+        var lastSyntaxMode: TextSyntaxMode?
 
         init(_ parent: MarkdownDocumentEditor) {
             self.parent = parent
@@ -78,7 +91,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
                 parent.text = textView.string
             }
             let selectedRanges = textView.selectedRanges
-            MarkdownSyntaxHighlighter.apply(to: textView, contentFontSize: parent.contentFontSize)
+            TextSyntaxHighlighter.apply(to: textView, mode: parent.syntaxMode, contentFontSize: parent.contentFontSize)
             textView.selectedRanges = selectedRanges
             (textView.enclosingScrollView?.superview as? MarkdownEditorContainerView)?.gutterView.needsDisplay = true
         }
@@ -250,8 +263,8 @@ final class MarkdownLineNumberGutterView: NSView {
 }
 
 @MainActor
-private enum MarkdownSyntaxHighlighter {
-    static func apply(to textView: NSTextView, contentFontSize: CGFloat) {
+private enum TextSyntaxHighlighter {
+    static func apply(to textView: NSTextView, mode: TextSyntaxMode, contentFontSize: CGFloat) {
         guard let storage = textView.textStorage else { return }
         let string = storage.string as NSString
         let fullRange = NSRange(location: 0, length: string.length)
@@ -259,31 +272,43 @@ private enum MarkdownSyntaxHighlighter {
 
         storage.beginEditing()
         storage.setAttributes(MarkdownEditorPalette.baseAttributes(size: contentFontSize), range: fullRange)
-        apply(pattern: #"(?m)^\s{0,6}#{1,6}\s.*$"#, to: storage, attributes: MarkdownEditorPalette.headingAttributes(size: contentFontSize))
-        apply(pattern: #"(?m)^\s{0,3}(>)"#, to: storage, attributes: MarkdownEditorPalette.quoteMarkerAttributes(size: contentFontSize), captureGroup: 1)
-        apply(pattern: #"(?m)^\s*[-*_]{3,}\s*$"#, to: storage, attributes: MarkdownEditorPalette.mutedAttributes(size: contentFontSize))
-        apply(pattern: #"(?m)^\s*((?:\d+\.|[-*]))"#, to: storage, attributes: MarkdownEditorPalette.listMarkerAttributes(size: contentFontSize), captureGroup: 1)
-        apply(pattern: #"(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`)"#, to: storage, attributes: MarkdownEditorPalette.codeAttributes(size: contentFontSize))
-        apply(pattern: #"(?im)^.*(?:负面提示词|负面约束|反向提示词|Negative Prompt|不要|禁止|避免|不出现|不使用|无字幕|无文字|无水印|无logo|无Logo|无LOGO|无品牌|无现代|无多余|无夸张|无脸部崩坏|无身份不一致).*$"#, to: storage, attributes: MarkdownEditorPalette.negativeConstraintAttributes(size: contentFontSize))
-        apply(pattern: #"\*\*[^*\n]+?\*\*"#, to: storage, attributes: MarkdownEditorPalette.boldAttributes(size: contentFontSize))
+        for rule in TextSyntaxRules.rules(for: mode, text: storage.string) {
+            apply(rule: rule, to: storage, attributes: attributes(for: rule.token, size: contentFontSize))
+        }
         storage.endEditing()
     }
 
     private static func apply(
-        pattern: String,
+        rule: TextSyntaxRule,
         to storage: NSTextStorage,
-        attributes: [NSAttributedString.Key: Any],
-        captureGroup: Int = 0
+        attributes: [NSAttributedString.Key: Any]
     ) {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else { return }
         let range = NSRange(location: 0, length: (storage.string as NSString).length)
         regex.enumerateMatches(in: storage.string, range: range) { match, _, _ in
             guard let match else { return }
-            let targetRange = captureGroup > 0 && captureGroup < match.numberOfRanges
-                ? match.range(at: captureGroup)
+            let targetRange = rule.captureGroup > 0 && rule.captureGroup < match.numberOfRanges
+                ? match.range(at: rule.captureGroup)
                 : match.range
             guard targetRange.location != NSNotFound, targetRange.length > 0 else { return }
             storage.addAttributes(attributes, range: targetRange)
+        }
+    }
+
+    private static func attributes(for token: TextSyntaxToken, size: CGFloat) -> [NSAttributedString.Key: Any] {
+        switch token {
+        case .heading, .jsonKey, .yamlKey, .xmlTag, .timestamp, .infoLevel, .sourceKeyword:
+            return MarkdownEditorPalette.headingAttributes(size: size)
+        case .quoteMarker, .inlineCode, .string, .url, .path:
+            return MarkdownEditorPalette.codeAttributes(size: size)
+        case .listMarker, .number, .punctuation, .xmlAttribute, .warningLevel:
+            return MarkdownEditorPalette.listMarkerAttributes(size: size)
+        case .negativeConstraint, .literal, .errorLevel:
+            return MarkdownEditorPalette.negativeConstraintAttributes(size: size)
+        case .bold:
+            return MarkdownEditorPalette.boldAttributes(size: size)
+        case .comment, .muted:
+            return MarkdownEditorPalette.mutedAttributes(size: size)
         }
     }
 }

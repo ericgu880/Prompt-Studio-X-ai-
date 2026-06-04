@@ -191,10 +191,43 @@ enum AppKitBridge {
                 options: [.documentType: documentType],
                 documentAttributes: nil
            ) {
-            return attributed.string
+            let text = attributed.string
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+
+        if ["doc", "docx", "rtf"].contains(url.pathExtension.lowercased()),
+           let text = textutilText(from: url) {
+            return text
         }
 
         return nil
+    }
+
+    private static func textutilText(from url: URL) -> String? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
+        process.arguments = ["-convert", "txt", "-stdout", url.path]
+
+        let output = Pipe()
+        process.standardOutput = output
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(data: data, encoding: .isoLatin1)
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : text
     }
 
     static func openPreview(path: String) {
@@ -234,6 +267,10 @@ enum AppKitBridge {
 
     static func assetKind(for url: URL) -> AssetKind {
         let ext = url.pathExtension.lowercased()
+        let catalogKind = AssetFormatCatalog.support(forFileExtension: ext).assetKind
+        if catalogKind != .unknown {
+            return catalogKind
+        }
         if let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
             if contentType.conforms(to: .image) { return .image }
             if contentType.conforms(to: .movie) || contentType.conforms(to: .video) { return .video }
@@ -250,7 +287,7 @@ enum AppKitBridge {
     }
 
     private static func videoSize(for url: URL) -> (width: Int, height: Int)? {
-        guard ["mp4", "mov", "webm", "m4v"].contains(url.pathExtension.lowercased()) else { return nil }
+        guard AssetFormatCatalog.support(forFileExtension: url.pathExtension).assetKind == .video else { return nil }
         let asset = AVURLAsset(url: url)
         guard let track = asset.tracks(withMediaType: .video).first else { return nil }
         let transformedSize = track.naturalSize.applying(track.preferredTransform)

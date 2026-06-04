@@ -76,24 +76,7 @@ struct InspectorView: View {
         } else if item.assetKind == .image || item.assetKind == .video {
             mediaReadOnlyInspector(item)
         } else {
-            VStack(alignment: .leading, spacing: 18) {
-                header(item)
-                Divider().overlay(StudioColor.hairline)
-                if !item.referenceAssets.isEmpty {
-                    referenceSection(item)
-                }
-                MidjourneyPromptInfoPanel(
-                    item: item,
-                    copyAction: { state.copySelectedPrompt() },
-                    editAction: { state.openEditPromptComposer(for: item) },
-                    downloadAction: { state.modal = .export },
-                    historyAction: { state.modal = .versionHistory }
-                )
-                .frame(maxHeight: .infinity, alignment: .top)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-            .padding(.top, StudioLayout.contentTopPadding)
+            fileReadOnlyInspector(item)
         }
     }
 
@@ -137,6 +120,79 @@ struct InspectorView: View {
         .padding(.top, 24)
     }
 
+    private func fileReadOnlyInspector(_ item: PromptItem) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header(item)
+                Divider().overlay(StudioColor.hairline)
+
+                fileStatusSection(item)
+                fileActionSection(item)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 22)
+            .padding(.top, StudioLayout.contentTopPadding)
+        }
+    }
+
+    private func fileStatusSection(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("文件预览")
+            HStack(alignment: .top, spacing: 14) {
+                AssetMediaView(item: item, contentMode: .fit)
+                    .frame(width: 86, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    FlowLayout(spacing: 8) {
+                        mediaChip(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
+                        mediaChip(item.previewMode.displayName)
+                        mediaChip(item.supportTier.displayName)
+                    }
+
+                    Text(fileSummary(for: item))
+                        .font(StudioFont.font(12))
+                        .lineSpacing(3)
+                        .foregroundStyle(StudioColor.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            fileInfoSection(item)
+        }
+    }
+
+    private func fileActionSection(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Button {
+                    state.openSelectedInDefaultApplication()
+                } label: {
+                    Text("打开")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+
+                Button {
+                    state.copySelectedFilePath()
+                } label: {
+                    Text("复制路径")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CapsuleButtonStyle())
+            }
+
+            Button {
+                state.copySelectedFile()
+            } label: {
+                Text("复制文件")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(CapsuleButtonStyle())
+        }
+    }
+
     private func markdownInspector(for item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             markdownHeader(item)
@@ -149,7 +205,8 @@ struct InspectorView: View {
                     text: $markdownDocumentText,
                     isEditable: false,
                     scrollResetID: item.id,
-                    contentFontSize: 13
+                    contentFontSize: 13,
+                    syntaxMode: TextSyntaxMode.infer(for: item)
                 )
 
                 if activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -619,6 +676,21 @@ struct InspectorView: View {
 
     private func hasNegativePrompt(_ item: PromptItem) -> Bool {
         item.currentVersion?.negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func fileSummary(for item: PromptItem) -> String {
+        switch item.previewMode {
+        case .audio:
+            return "音频文件已入库，可通过默认应用播放，文件本体和路径会保留在素材库中。"
+        case .document:
+            return "当前格式使用系统预览或默认应用打开，PromptStudio 只展示文件基本信息。"
+        case .reference:
+            return "参考资产已入库，复杂格式不在应用内解析，仅展示文件基本信息。"
+        case .generic:
+            return "未知格式已作为通用文件入库，可复制路径或用默认应用打开。"
+        case .image, .video, .textDocument:
+            return "素材支持原生预览。"
+        }
     }
 
     private func fileSizeText(_ bytes: Int64) -> String {

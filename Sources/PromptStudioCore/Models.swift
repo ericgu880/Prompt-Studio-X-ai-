@@ -9,6 +9,12 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case document
     case text
     case data
+    case source
+    case raw
+    case threeD
+    case texture
+    case font
+    case web
     case unknown
 
     public var id: String { rawValue }
@@ -31,6 +37,18 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
             "文本"
         case .data:
             "数据"
+        case .source:
+            "源文件"
+        case .raw:
+            "RAW"
+        case .threeD:
+            "3D"
+        case .texture:
+            "贴图"
+        case .font:
+            "字体"
+        case .web:
+            "网页"
         case .unknown:
             "文件"
         }
@@ -42,7 +60,7 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
             .video
         case .image:
             .image
-        case .audio, .markdown, .json, .document, .text, .data, .unknown:
+        case .audio, .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             .text
         }
     }
@@ -51,7 +69,7 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .markdown, .json, .text, .data:
             true
-        case .image, .video, .audio, .document, .unknown:
+        case .image, .video, .audio, .document, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             false
         }
     }
@@ -61,35 +79,222 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     public static func infer(fileExtension: String, fallbackType: PromptType? = nil) -> AssetKind {
-        let ext = fileExtension.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if ["png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tif", "tiff", "bmp", "avif"].contains(ext) {
-            return .image
+        let support = AssetFormatCatalog.support(forFileExtension: fileExtension)
+        if support.assetKind != .unknown {
+            return support.assetKind
         }
-        if ["mp4", "mov", "m4v", "webm", "avi", "mkv", "hevc"].contains(ext) {
-            return .video
-        }
-        if ["mp3", "m4a", "wav", "aac", "aiff", "aif", "flac", "ogg", "opus"].contains(ext) {
-            return .audio
-        }
-        if ["md", "markdown", "mdown"].contains(ext) {
-            return .markdown
-        }
-        if ext == "json" {
-            return .json
-        }
-        if ["txt", "csv", "tsv", "rtf", "log"].contains(ext) {
-            return .text
-        }
-        if ["pdf", "doc", "docx", "pages", "xls", "xlsx", "numbers", "ppt", "pptx", "key"].contains(ext) {
-            return .document
-        }
-        if ["xml", "plist", "yaml", "yml", "toml"].contains(ext) {
-            return .data
-        }
-        if ext.isEmpty, let fallbackType {
+        if support.fileExtension.isEmpty, let fallbackType {
             return fallbackType == .video ? .video : fallbackType == .image ? .image : .text
         }
-        return .unknown
+        return support.assetKind
+    }
+}
+
+public enum AssetSupportTier: String, Codable, CaseIterable, Identifiable, Sendable {
+    case p0Native
+    case p1System
+    case p2Reference
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .p0Native:
+            "原生预览"
+        case .p1System:
+            "系统预览"
+        case .p2Reference:
+            "参考资产"
+        }
+    }
+}
+
+public enum AssetPreviewMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case image
+    case video
+    case textDocument
+    case audio
+    case document
+    case reference
+    case generic
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .image:
+            "图片预览"
+        case .video:
+            "视频预览"
+        case .textDocument:
+            "文档预览"
+        case .audio:
+            "音频预览"
+        case .document:
+            "文件预览"
+        case .reference:
+            "参考资产"
+        case .generic:
+            "通用文件"
+        }
+    }
+}
+
+public struct AssetFormatSupport: Equatable, Sendable {
+    public var fileExtension: String
+    public var assetKind: AssetKind
+    public var supportTier: AssetSupportTier
+    public var previewMode: AssetPreviewMode
+    public var displayName: String
+    public var canExtractPrompt: Bool
+
+    public init(
+        fileExtension: String,
+        assetKind: AssetKind,
+        supportTier: AssetSupportTier,
+        previewMode: AssetPreviewMode,
+        displayName: String,
+        canExtractPrompt: Bool = false
+    ) {
+        self.fileExtension = fileExtension.lowercased()
+        self.assetKind = assetKind
+        self.supportTier = supportTier
+        self.previewMode = previewMode
+        self.displayName = displayName
+        self.canExtractPrompt = canExtractPrompt
+    }
+}
+
+public enum AssetFormatCatalog {
+    public static let promptDocumentExtensions = [
+        "md", "markdown", "mdown", "json", "txt", "csv", "tsv", "rtf", "log", "xml", "plist", "yaml", "yml", "toml"
+    ]
+
+    public static let eagleMacOSExtensions = [
+        "bmp", "gif", "heic", "heif", "hif", "icns", "ico", "jpeg", "jpg", "png", "svg", "tif", "tiff", "ttf",
+        "webp", "avif", "base64", "jfif", "insp", "jxl", "jpe",
+        "fbx", "obj", "3ds", "3mf", "dae", "ifc", "ply", "stl", "glb",
+        "dds", "exr", "hdr", "tga",
+        "af", "afdesign", "afphoto", "afpub", "ai", "c4d", "cdr", "clip", "dwg", "graffle", "idml", "indd",
+        "indt", "mindnode", "psb", "psd", "psdt", "pxd", "principle", "sketch", "skt", "skp", "xd", "xmind",
+        "m4v", "mp4", "webm", "mov", "mkv", "flv", "f4v", "ts", "mts", "m2ts", "3gp",
+        "aac", "flac", "m4a", "mp3", "ogg", "wav",
+        "otf", "ttc", "woff",
+        "3fr", "arw", "cr2", "cr3", "crw", "dng", "erf", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw",
+        "rw2", "sr2", "srw", "x3f",
+        "txt", "key", "numbers", "pages", "pdf", "potx", "ppt", "pptx", "xls", "xlsx", "doc", "docx", "eddx", "emmx",
+        "html", "mhtml", "url"
+    ]
+
+    public static var allKnownExtensions: [String] {
+        Array(Set(supportsByExtension.keys)).sorted()
+    }
+
+    public static func support(forFileExtension fileExtension: String) -> AssetFormatSupport {
+        let ext = normalize(fileExtension)
+        guard !ext.isEmpty else {
+            return unknownSupport(fileExtension: "")
+        }
+        return supportsByExtension[ext] ?? unknownSupport(fileExtension: ext)
+    }
+
+    public static func support(for item: PromptItem) -> AssetFormatSupport {
+        let fileSupport = support(forFileExtension: (item.assetPath as NSString).pathExtension)
+        if fileSupport.assetKind != .unknown {
+            return fileSupport
+        }
+        return support(for: item.assetKind, format: item.format)
+    }
+
+    public static func support(for assetKind: AssetKind, format: String = "") -> AssetFormatSupport {
+        let ext = normalize(format)
+        let displayName = ext.isEmpty ? assetKind.displayName : ext.uppercased()
+        switch assetKind {
+        case .image:
+            return AssetFormatSupport(fileExtension: ext, assetKind: .image, supportTier: .p0Native, previewMode: .image, displayName: displayName)
+        case .video:
+            return AssetFormatSupport(fileExtension: ext, assetKind: .video, supportTier: .p0Native, previewMode: .video, displayName: displayName)
+        case .audio:
+            return AssetFormatSupport(fileExtension: ext, assetKind: .audio, supportTier: .p1System, previewMode: .audio, displayName: displayName)
+        case .markdown, .json, .text, .data:
+            return AssetFormatSupport(fileExtension: ext, assetKind: assetKind, supportTier: .p0Native, previewMode: .textDocument, displayName: displayName, canExtractPrompt: true)
+        case .document:
+            return AssetFormatSupport(fileExtension: ext, assetKind: .document, supportTier: .p1System, previewMode: .document, displayName: displayName)
+        case .source, .raw, .threeD, .texture, .font:
+            return AssetFormatSupport(fileExtension: ext, assetKind: assetKind, supportTier: .p2Reference, previewMode: .reference, displayName: displayName)
+        case .web:
+            return AssetFormatSupport(fileExtension: ext, assetKind: .web, supportTier: .p1System, previewMode: .document, displayName: displayName)
+        case .unknown:
+            return unknownSupport(fileExtension: ext)
+        }
+    }
+
+    private static let supportsByExtension: [String: AssetFormatSupport] = {
+        var result: [String: AssetFormatSupport] = [:]
+        func register(
+            _ extensions: [String],
+            assetKind: AssetKind,
+            tier: AssetSupportTier,
+            previewMode: AssetPreviewMode,
+            canExtractPrompt: Bool = false
+        ) {
+            for ext in extensions {
+                let normalized = normalize(ext)
+                result[normalized] = AssetFormatSupport(
+                    fileExtension: normalized,
+                    assetKind: assetKind,
+                    supportTier: tier,
+                    previewMode: previewMode,
+                    displayName: normalized.uppercased(),
+                    canExtractPrompt: canExtractPrompt
+                )
+            }
+        }
+
+        register(
+            ["png", "jpg", "jpeg", "jpe", "jfif", "webp", "gif", "heic", "heif", "hif", "tif", "tiff", "bmp", "avif", "svg", "ico", "icns", "jxl", "insp", "base64"],
+            assetKind: .image,
+            tier: .p0Native,
+            previewMode: .image
+        )
+        register(["mp4", "mov", "m4v", "webm", "mkv", "flv", "f4v", "ts", "mts", "m2ts", "3gp", "avi", "hevc"], assetKind: .video, tier: .p0Native, previewMode: .video)
+        register(["mp3", "m4a", "wav", "aac", "aiff", "aif", "flac", "ogg", "opus"], assetKind: .audio, tier: .p1System, previewMode: .audio)
+        register(["md", "markdown", "mdown"], assetKind: .markdown, tier: .p0Native, previewMode: .textDocument, canExtractPrompt: true)
+        register(["json"], assetKind: .json, tier: .p0Native, previewMode: .textDocument, canExtractPrompt: true)
+        register(["txt", "csv", "tsv", "rtf", "log"], assetKind: .text, tier: .p0Native, previewMode: .textDocument, canExtractPrompt: true)
+        register(["xml", "plist", "yaml", "yml", "toml"], assetKind: .data, tier: .p0Native, previewMode: .textDocument, canExtractPrompt: true)
+        register(["doc", "docx"], assetKind: .document, tier: .p0Native, previewMode: .textDocument, canExtractPrompt: true)
+        register(["pdf"], assetKind: .document, tier: .p0Native, previewMode: .document)
+        register(["key", "numbers", "pages", "potx", "ppt", "pptx", "xls", "xlsx", "eddx", "emmx"], assetKind: .document, tier: .p1System, previewMode: .document)
+        register(["html", "mhtml", "url"], assetKind: .web, tier: .p1System, previewMode: .document)
+        register(
+            ["af", "afdesign", "afphoto", "afpub", "ai", "eps", "c4d", "cdr", "clip", "dwg", "graffle", "idml", "indd", "indt", "mindnode", "psb", "psd", "psdt", "pxd", "principle", "sketch", "skt", "skp", "xd", "xmind"],
+            assetKind: .source,
+            tier: .p2Reference,
+            previewMode: .reference
+        )
+        register(["fbx", "obj", "3ds", "3mf", "dae", "ifc", "ply", "stl", "glb", "blend", "blender"], assetKind: .threeD, tier: .p2Reference, previewMode: .reference)
+        register(["dds", "exr", "hdr", "tga"], assetKind: .texture, tier: .p2Reference, previewMode: .reference)
+        register(["3fr", "arw", "cr2", "cr3", "crw", "dng", "erf", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "sr2", "srw", "x3f"], assetKind: .raw, tier: .p2Reference, previewMode: .reference)
+        register(["ttf", "otf", "ttc", "woff", "woff2"], assetKind: .font, tier: .p2Reference, previewMode: .reference)
+        return result
+    }()
+
+    private static func unknownSupport(fileExtension: String) -> AssetFormatSupport {
+        AssetFormatSupport(
+            fileExtension: fileExtension,
+            assetKind: .unknown,
+            supportTier: .p2Reference,
+            previewMode: .generic,
+            displayName: fileExtension.isEmpty ? "FILE" : fileExtension.uppercased()
+        )
+    }
+
+    private static func normalize(_ fileExtension: String) -> String {
+        fileExtension
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 }
 
@@ -243,15 +448,33 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     public var isTextDocumentLike: Bool {
-        assetKind.isTextDocumentLike || isWordDocument
+        assetKind.isTextDocumentLike || isWordDocument || formatSupport.previewMode == .textDocument
     }
 
     public var supportsGeneratedThumbnail: Bool {
         assetKind.supportsGeneratedThumbnail || isTextDocumentLike
     }
 
+    public var formatSupport: AssetFormatSupport {
+        AssetFormatCatalog.support(for: self)
+    }
+
+    public var previewMode: AssetPreviewMode {
+        if isTextDocumentLike {
+            return .textDocument
+        }
+        return formatSupport.previewMode
+    }
+
+    public var supportTier: AssetSupportTier {
+        formatSupport.supportTier
+    }
+
+    public var canExtractPromptFromAsset: Bool {
+        isTextDocumentLike || formatSupport.canExtractPrompt
+    }
+
     public var isWordDocument: Bool {
-        guard assetKind == .document else { return false }
         let normalizedFormat = format.lowercased()
         let pathExtension = (assetPath as NSString).pathExtension.lowercased()
         return ["doc", "docx", "word"].contains(normalizedFormat) || ["doc", "docx"].contains(pathExtension)
@@ -392,7 +615,82 @@ public enum TextFormatFilter: String, CaseIterable, Identifiable, Sendable {
         case .word:
             let format = item.format.lowercased()
             let pathExtension = (item.assetPath as NSString).pathExtension.lowercased()
-            return item.assetKind == .document && (["doc", "docx", "word"].contains(format) || ["doc", "docx"].contains(pathExtension))
+            return ["doc", "docx", "word"].contains(format) || ["doc", "docx"].contains(pathExtension)
+        }
+    }
+}
+
+public enum AssetKindFilter: String, CaseIterable, Identifiable, Sendable {
+    case image
+    case video
+    case audio
+    case promptDocument
+    case document
+    case source
+    case raw
+    case threeD
+    case texture
+    case font
+    case web
+    case other
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .image:
+            "图片"
+        case .video:
+            "视频"
+        case .audio:
+            "音频"
+        case .promptDocument:
+            "Prompt 文档"
+        case .document:
+            "办公/PDF"
+        case .source:
+            "源文件"
+        case .raw:
+            "RAW"
+        case .threeD:
+            "3D"
+        case .texture:
+            "贴图"
+        case .font:
+            "字体"
+        case .web:
+            "网页/链接"
+        case .other:
+            "其他"
+        }
+    }
+
+    public func matches(_ item: PromptItem) -> Bool {
+        switch self {
+        case .image:
+            return item.assetKind == .image
+        case .video:
+            return item.assetKind == .video
+        case .audio:
+            return item.assetKind == .audio
+        case .promptDocument:
+            return item.isTextDocumentLike
+        case .document:
+            return item.assetKind == .document && !item.isTextDocumentLike
+        case .source:
+            return item.assetKind == .source
+        case .raw:
+            return item.assetKind == .raw
+        case .threeD:
+            return item.assetKind == .threeD
+        case .texture:
+            return item.assetKind == .texture
+        case .font:
+            return item.assetKind == .font
+        case .web:
+            return item.assetKind == .web
+        case .other:
+            return item.assetKind == .unknown
         }
     }
 }
@@ -403,6 +701,7 @@ public struct PromptFilter: Equatable, Sendable {
     public var collection: LibraryCollection
     public var type: PromptType?
     public var textFormat: TextFormatFilter?
+    public var assetKindFilter: AssetKindFilter?
     public var requiredTag: String?
     public var favoriteOnly: Bool
     public var hasPromptOnly: Bool
@@ -414,6 +713,7 @@ public struct PromptFilter: Equatable, Sendable {
         collection: LibraryCollection = .all,
         type: PromptType? = nil,
         textFormat: TextFormatFilter? = nil,
+        assetKindFilter: AssetKindFilter? = nil,
         requiredTag: String? = nil,
         favoriteOnly: Bool = false,
         hasPromptOnly: Bool = false,
@@ -424,6 +724,7 @@ public struct PromptFilter: Equatable, Sendable {
         self.collection = collection
         self.type = type
         self.textFormat = textFormat
+        self.assetKindFilter = assetKindFilter
         self.requiredTag = requiredTag
         self.favoriteOnly = favoriteOnly
         self.hasPromptOnly = hasPromptOnly
@@ -462,6 +763,7 @@ public enum PromptFiltering {
             if let modelId = filter.modelId, item.modelId != modelId { return false }
             if let type = filter.type, item.type != type { return false }
             if let textFormat = filter.textFormat, !textFormat.matches(item) { return false }
+            if let assetKindFilter = filter.assetKindFilter, !assetKindFilter.matches(item) { return false }
             if let tag = filter.requiredTag, !item.tags.contains(tag) { return false }
             if filter.favoriteOnly, !item.favorite { return false }
             if filter.hasPromptOnly, item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {

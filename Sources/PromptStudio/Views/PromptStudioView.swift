@@ -193,11 +193,6 @@ struct PromptStudioView: View {
         case .newPrompt:
             NewPromptSheet()
                 .environmentObject(state)
-        case .editPrompt:
-            if let item = state.selectedItem {
-                EditPromptSheet(item: item)
-                    .environmentObject(state)
-            }
         case .importAssets:
             ImportSheet()
                 .environmentObject(state)
@@ -1528,13 +1523,15 @@ private struct ModelTabsView: View {
     private func isActive(_ filter: FilterQuickEntry) -> Bool {
         switch filter {
         case .all:
-            state.filter.type == nil && state.filter.modelId == nil && state.filter.textFormat == nil
+            state.filter.type == nil && state.filter.modelId == nil && state.filter.textFormat == nil && state.filter.assetKindFilter == nil
         case .type(let type, _):
-            state.filter.type == type && state.filter.modelId == nil && state.filter.textFormat == nil
+            state.filter.type == type && state.filter.modelId == nil && state.filter.textFormat == nil && state.filter.assetKindFilter == nil
         case .model(let model, _):
             state.filter.modelId == model.id
         case .textFormat(let textFormat, _):
             state.filter.textFormat == textFormat
+        case .assetKind(let assetKindFilter, _):
+            state.filter.assetKindFilter == assetKindFilter
         case .tag(let tag):
             state.filter.requiredTag == tag
         }
@@ -1766,6 +1763,8 @@ private struct CompactFilterChip: View {
                     state.setModel(model.id)
                 case .textFormat(let textFormat, _):
                     state.setTextFormat(textFormat)
+                case .assetKind(let assetKindFilter, _):
+                    state.setAssetKindFilter(assetKindFilter)
                 case .tag(let tag):
                     state.setRequiredTag(tag)
                 }
@@ -1862,24 +1861,39 @@ private struct MasonryGridView: View {
 
     private func makeMasonryLayout(_ items: [PromptItem], columnCount: Int, width: CGFloat) -> MasonryLayoutResult {
         var placements: [MasonryPlacement] = []
+        guard columnCount > 0 else {
+            return MasonryLayoutResult(placements: [], height: 0)
+        }
+
         var heights = Array(repeating: CGFloat.zero, count: columnCount)
         for item in items {
-            let index = heights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
+            let column = shortestColumnIndex(in: heights)
             let height = AssetCardMetrics.totalHeight(for: item, width: width)
             placements.append(
                 MasonryPlacement(
                     item: item,
-                    x: CGFloat(index) * (width + 12),
-                    y: heights[index],
+                    x: CGFloat(column) * (width + 12),
+                    y: heights[column],
                     height: height
                 )
             )
-            heights[index] += height + 12
+            heights[column] += height + 12
         }
         return MasonryLayoutResult(
             placements: placements,
             height: max(0, (heights.max() ?? 12) - 12)
         )
+    }
+
+    private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
+        heights.indices.min { lhs, rhs in
+            let leftHeight = heights[lhs]
+            let rightHeight = heights[rhs]
+            if leftHeight == rightHeight {
+                return lhs < rhs
+            }
+            return leftHeight < rightHeight
+        } ?? 0
     }
 
     private static let topAnchorID = "masonry-grid-top"
@@ -1911,6 +1925,12 @@ private enum AssetCardMetrics {
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
         if item.isTextDocumentLike {
             return width * 9 / 16
+        }
+        switch item.previewMode {
+        case .audio, .document, .reference, .generic:
+            return width * 0.82
+        case .image, .video, .textDocument:
+            break
         }
         if item.assetKind.supportsGeneratedThumbnail, item.width > 0, item.height > 0 {
             return width * CGFloat(item.height) / CGFloat(item.width)
@@ -2462,6 +2482,10 @@ private struct TextDocumentCardPreview: View {
 
     private static func loadText(for item: PromptItem) -> String {
         if !item.assetPath.isEmpty,
+           let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
+            return text
+        }
+        if !item.assetPath.isEmpty,
            let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
             return text
         }
@@ -2607,6 +2631,18 @@ private struct FileKindPlaceholder: View {
             "doc.richtext"
         case .text:
             "doc.text"
+        case .source:
+            "hammer"
+        case .raw:
+            "camera.aperture"
+        case .threeD:
+            "cube"
+        case .texture:
+            "square.grid.3x3"
+        case .font:
+            "textformat"
+        case .web:
+            "link"
         case .unknown:
             "doc"
         }

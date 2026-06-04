@@ -77,14 +77,46 @@ func testTextFormatFiltering() throws {
     let json = sampleItem(title: "Json", assetKind: .json, prompt: "{}", assetPath: "/tmp/mock.json", format: "JSON")
     let text = sampleItem(title: "Text", assetKind: .text, prompt: "notes", assetPath: "/tmp/mock.txt", format: "TXT")
     let word = sampleItem(title: "Word", assetKind: .document, prompt: "doc", assetPath: "/tmp/mock.docx", format: "DOCX")
+    let staleWord = sampleItem(title: "Old Word", assetKind: .unknown, prompt: "doc", assetPath: "/tmp/old.docx", format: "FILE")
     let pdf = sampleItem(title: "PDF", assetKind: .document, prompt: "pdf", assetPath: "/tmp/mock.pdf", format: "PDF")
 
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .markdown)).map(\.id) == [markdown.id], "MD filter should isolate markdown assets")
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .json)).map(\.id) == [json.id], "Json filter should isolate JSON assets")
     try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .text)).map(\.id) == [text.id], "txt filter should isolate text assets")
-    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .word)).map(\.id) == [word.id], "Word filter should isolate doc/docx assets")
+    let wordMatches = Set(PromptFiltering.apply([markdown, json, text, word, staleWord], filter: PromptFilter(type: .text, textFormat: .word)).map(\.id))
+    try expect(wordMatches == Set([word.id, staleWord.id]), "Word filter should isolate doc/docx assets")
     try expect(word.isTextDocumentLike, "Word documents should use text document presentation")
+    try expect(staleWord.isTextDocumentLike, "Old docx items should use text document presentation by file extension")
     try expect(!pdf.isTextDocumentLike, "PDF documents should stay generic document assets")
+}
+
+func testTextSyntaxModeInference() throws {
+    let staleJson = sampleItem(title: "Old JSON", assetKind: .unknown, prompt: "{}", assetPath: "/tmp/handoff.json", format: "FILE")
+    try expect(staleJson.isTextDocumentLike, "Old JSON items should use text document presentation by file extension")
+    try expect(TextSyntaxMode.infer(for: staleJson) == .json, "JSON path should infer JSON syntax even when assetKind is stale")
+
+    let expectations: [(String, TextSyntaxMode)] = [
+        ("/tmp/mock.md", .markdown),
+        ("/tmp/mock.yaml", .yamlToml),
+        ("/tmp/mock.toml", .yamlToml),
+        ("/tmp/mock.xml", .xml),
+        ("/tmp/mock.log", .log),
+        ("/tmp/mock.txt", .plain),
+        ("/tmp/mock.swift", .source)
+    ]
+    for (path, mode) in expectations {
+        try expect(TextSyntaxMode.infer(assetPath: path, format: "", assetKind: .unknown) == mode, "\(path) should infer \(mode.rawValue) syntax")
+    }
+}
+
+func testTextSyntaxRulesDetectJSONTokens() throws {
+    let json = #"{"name":"Ada","count":3,"enabled":true,"missing":null}"#
+    let tokens = TextSyntaxRules.tokenKinds(in: json, mode: .json)
+    try expect(tokens.contains(.jsonKey), "JSON highlighter should detect object keys")
+    try expect(tokens.contains(.number), "JSON highlighter should detect numbers")
+    try expect(tokens.contains(.literal), "JSON highlighter should detect booleans and null")
+    try expect(tokens.contains(.punctuation), "JSON highlighter should detect punctuation")
+    try expect(!tokens.contains(.string), "JSON highlighter should keep string values as base text to avoid large color blocks")
 }
 
 func testFolderFilteringUsesStableFolderID() throws {
@@ -129,6 +161,113 @@ func testAssetKindInferenceAndPromptParsing() throws {
     try expect(parsed.negativePrompt == "watermark", "parser should read --no as negative prompt")
     try expect(parsed.parameters["ar"] == "3:4", "parser should extract ar parameter")
     try expect(parsed.tags.contains("风景") && parsed.tags.contains("人物") && parsed.tags.contains("写实"), "parser should extract tags")
+}
+
+func testAssetFormatCatalogCoversEagleMacOSFormats() throws {
+    for ext in AssetFormatCatalog.eagleMacOSExtensions {
+        let support = AssetFormatCatalog.support(forFileExtension: ext)
+        try expect(support.assetKind != .unknown, "Eagle macOS extension \(ext) should have asset kind support")
+        try expect(support.previewMode != .generic, "Eagle macOS extension \(ext) should have a specific preview mode")
+    }
+}
+
+func testAssetFormatCatalogRepresentativeMappings() throws {
+    let expectations: [(String, AssetKind, AssetSupportTier, AssetPreviewMode)] = [
+        ("png", .image, .p0Native, .image),
+        ("mov", .video, .p0Native, .video),
+        ("mp3", .audio, .p1System, .audio),
+        ("md", .markdown, .p0Native, .textDocument),
+        ("json", .json, .p0Native, .textDocument),
+        ("yaml", .data, .p0Native, .textDocument),
+        ("docx", .document, .p0Native, .textDocument),
+        ("pdf", .document, .p0Native, .document),
+        ("key", .document, .p1System, .document),
+        ("html", .web, .p1System, .document),
+        ("psd", .source, .p2Reference, .reference),
+        ("raw", .raw, .p2Reference, .reference),
+        ("glb", .threeD, .p2Reference, .reference),
+        ("dds", .texture, .p2Reference, .reference),
+        ("ttf", .font, .p2Reference, .reference)
+    ]
+
+    for (ext, kind, tier, previewMode) in expectations {
+        let support = AssetFormatCatalog.support(forFileExtension: ext)
+        try expect(support.assetKind == kind, "\(ext) should map to \(kind.rawValue)")
+        try expect(support.supportTier == tier, "\(ext) should map to \(tier.rawValue)")
+        try expect(support.previewMode == previewMode, "\(ext) should map to \(previewMode.rawValue)")
+    }
+
+    let unknown = AssetFormatCatalog.support(forFileExtension: "madeup")
+    try expect(unknown.assetKind == .unknown, "unknown extension should keep unknown kind")
+    try expect(unknown.previewMode == .generic, "unknown extension should use generic preview")
+}
+
+func testPromptDocumentFormatsExtractMetadata() throws {
+    for ext in AssetFormatCatalog.promptDocumentExtensions {
+        let support = AssetFormatCatalog.support(forFileExtension: ext)
+        try expect(support.canExtractPrompt, "\(ext) should be marked for prompt extraction")
+        let parsed = PromptImportParser.parse(
+            text: "Prompt: product photo --no watermark --ar 1:1\nTags: 产品, 写实",
+            assetKind: support.assetKind
+        )
+        try expect(parsed.prompt == "product photo", "\(ext) should parse prompt")
+        try expect(parsed.negativePrompt == "watermark", "\(ext) should parse negative prompt")
+        try expect(parsed.parameters["ar"] == "1:1", "\(ext) should parse parameters")
+        try expect(parsed.tags.contains("产品") && parsed.tags.contains("写实"), "\(ext) should parse tags")
+    }
+}
+
+func testAutomationServiceImportsAllKnownFormatFixtures() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let fixtureRoot = try temporaryLibraryURL().appendingPathComponent("fixtures")
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+
+    var paths: [String] = []
+    for ext in AssetFormatCatalog.allKnownExtensions {
+        let url = fixtureRoot.appendingPathComponent(UUID().uuidString + ".\(ext)")
+        let support = AssetFormatCatalog.support(forFileExtension: ext)
+        let text = support.canExtractPrompt
+            ? "Prompt: fixture prompt --no bad\nTags: 测试\n"
+            : "fixture"
+        try Data(text.utf8).write(to: url)
+        paths.append(url.path)
+    }
+
+    let imported = try service.importFiles(paths: paths)
+    try expect(imported.count == paths.count, "all known fixture extensions should import")
+    for item in imported {
+        let support = AssetFormatCatalog.support(forFileExtension: (item.assetPath as NSString).pathExtension)
+        try expect(item.assetKind == support.assetKind, "\(item.format) should persist catalog asset kind")
+        if support.canExtractPrompt {
+            try expect(item.currentVersion?.prompt == "fixture prompt", "\(item.format) should parse fixture prompt")
+        }
+    }
+
+    let source = imported.first { $0.assetKind == .source }
+    let raw = imported.first { $0.assetKind == .raw }
+    let threeD = imported.first { $0.assetKind == .threeD }
+    let texture = imported.first { $0.assetKind == .texture }
+    let font = imported.first { $0.assetKind == .font }
+    let web = imported.first { $0.assetKind == .web }
+    try expect(source?.assetPath.contains("/assets/sources/") == true, "source files should archive under assets/sources")
+    try expect(raw?.assetPath.contains("/assets/raw/") == true, "RAW files should archive under assets/raw")
+    try expect(threeD?.assetPath.contains("/assets/three_d/") == true, "3D files should archive under assets/three_d")
+    try expect(texture?.assetPath.contains("/assets/textures/") == true, "texture files should archive under assets/textures")
+    try expect(font?.assetPath.contains("/assets/fonts/") == true, "font files should archive under assets/fonts")
+    try expect(web?.assetPath.contains("/assets/web/") == true, "web files should archive under assets/web")
+}
+
+func testUnknownFormatImportsAsGenericFile() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".madeup")
+    try Data("fixture".utf8).write(to: file)
+
+    let imported = try service.importFiles(paths: [file.path])
+    try expect(imported.count == 1, "unknown extension should still import")
+    try expect(imported[0].assetKind == .unknown, "unknown extension should keep unknown asset kind")
+    try expect(imported[0].previewMode == .generic, "unknown extension should use generic preview mode")
 }
 
 func testTagRefreshDeletesUnusedTags() throws {
@@ -290,9 +429,16 @@ func testAutomationServiceImportsImageMetadata() throws {
 do {
     try testSearchFiltering()
     try testTextFormatFiltering()
+    try testTextSyntaxModeInference()
+    try testTextSyntaxRulesDetectJSONTokens()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testAssetKindInferenceAndPromptParsing()
+    try testAssetFormatCatalogCoversEagleMacOSFormats()
+    try testAssetFormatCatalogRepresentativeMappings()
+    try testPromptDocumentFormatsExtractMetadata()
+    try testAutomationServiceImportsAllKnownFormatFixtures()
+    try testUnknownFormatImportsAsGenericFile()
     try testTagRefreshDeletesUnusedTags()
     try testTrashAndRestore()
     try testAspectRatioDisplayNormalizesImportedSizes()
