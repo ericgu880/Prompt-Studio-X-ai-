@@ -109,6 +109,10 @@ struct InspectorView: View {
                 mediaTopChips(item)
             }
 
+            if !item.referenceAssets.isEmpty {
+                mediaReferenceSection(item)
+            }
+
             HStack(alignment: .center, spacing: 10) {
                 Text("Prompt")
                     .font(StudioFont.caption(12))
@@ -448,6 +452,28 @@ struct InspectorView: View {
                 }
             }
         }
+    }
+
+    private func mediaReferenceSection(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("参考图")
+                .font(StudioFont.caption(12))
+                .foregroundStyle(StudioColor.secondaryText)
+                .tracking(1.2)
+
+            LazyVGrid(columns: mediaReferenceColumns, alignment: .leading, spacing: 8) {
+                ForEach(item.referenceAssets.prefix(8)) { reference in
+                    ThumbnailImage(path: reference.path)
+                        .frame(width: 62, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
+                }
+            }
+        }
+    }
+
+    private var mediaReferenceColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
     }
 
     private func actionSection(_ item: PromptItem) -> some View {

@@ -95,6 +95,10 @@ struct ImmersivePreviewOverlay: View {
 
             previewTopChips
 
+            if !item.referenceAssets.isEmpty {
+                previewReferenceSection
+            }
+
             HStack(alignment: .center, spacing: 10) {
                 Text("Prompt")
                     .font(StudioFont.caption(12))
@@ -186,12 +190,34 @@ struct ImmersivePreviewOverlay: View {
         }
     }
 
+    private var previewReferenceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("参考图")
+                .font(StudioFont.caption(12))
+                .foregroundStyle(StudioColor.secondaryText)
+                .tracking(1.2)
+
+            LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
+                ForEach(item.referenceAssets.prefix(8)) { reference in
+                    ThumbnailImage(path: reference.path)
+                        .frame(width: 62, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
+                }
+            }
+        }
+    }
+
     private var previewBottomChips: some View {
         FlowLayout(spacing: 10) {
             ForEach(previewBottomChipTexts, id: \.self) { text in
                 chip(text)
             }
         }
+    }
+
+    private var previewReferenceColumns: [GridItem] {
+        Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
     }
 
     private var previewTopChipTexts: [String] {
@@ -722,19 +748,26 @@ struct PromptComposerOverlay: View {
 
     private var createWorkspacePane: some View {
         GeometryReader { geometry in
-            let horizontalPadding: CGFloat = geometry.size.width >= 1_250 ? 48 : 36
+            let horizontalPadding: CGFloat = 42
+            let verticalPadding: CGFloat = 42
+            let headerHeight: CGFloat = 34
+            let headerGap: CGFloat = 18
+            let panelPadding: CGFloat = 24
             let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 40 : 28
-            let availableWidth = max(0, geometry.size.width - horizontalPadding * 2 - columnSpacing)
-            let uploadWidth = min(430, max(300, availableWidth * 0.36))
-            let leftWidth = max(420, availableWidth - uploadWidth)
-            let promptHeight = max(320, min(520, geometry.size.height - 372))
-            let uploadBoxHeight = max(160, min(220, (geometry.size.height - 300) / 2))
+            let panelWidth = max(0, geometry.size.width - horizontalPadding * 2)
+            let panelHeight = max(0, geometry.size.height - verticalPadding * 2 - headerHeight - headerGap)
+            let contentWidth = max(0, panelWidth - panelPadding * 2)
+            let contentHeight = max(0, panelHeight - panelPadding * 2)
+            let uploadWidth = min(360, max(300, contentWidth * 0.34))
+            let leftWidth = max(0, contentWidth - columnSpacing - uploadWidth)
+            let promptHeight = max(260, contentHeight - 174)
+            let uploadBoxHeight = max(150, (contentHeight - 76) / 2)
 
             ZStack {
                 CreateComposerColor.workspace
                     .ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: headerGap) {
                     HStack(alignment: .center) {
                         Text("新建Prompt")
                             .font(StudioFont.font(14, weight: .semibold))
@@ -745,19 +778,17 @@ struct PromptComposerOverlay: View {
                         }
                         .buttonStyle(CreateComposerPrimaryButtonStyle())
                     }
-                    .padding(.top, 40)
-                    .padding(.horizontal, horizontalPadding)
-                    .padding(.bottom, 34)
+                    .frame(width: panelWidth, height: headerHeight, alignment: .center)
 
-                    ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .top, spacing: columnSpacing) {
                             VStack(alignment: .leading, spacing: 28) {
                                 HStack(alignment: .center, spacing: 0) {
                                     createTypeTabs
-                                        .frame(width: 300, alignment: .leading)
+                                        .frame(minWidth: 230, alignment: .leading)
                                     Spacer(minLength: 24)
                                     createModelMenu
-                                        .frame(width: 300)
+                                        .frame(width: min(300, max(220, leftWidth - 260)))
                                 }
                                 .frame(width: leftWidth, alignment: .leading)
 
@@ -768,12 +799,19 @@ struct PromptComposerOverlay: View {
                             createUploadColumn(boxHeight: uploadBoxHeight)
                                 .frame(width: uploadWidth, alignment: .topLeading)
                         }
-                        .padding(.horizontal, horizontalPadding)
-                        .padding(.bottom, 40)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
                     }
-                    .scrollIndicators(.hidden)
+                    .padding(panelPadding)
+                    .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
+                    .background(CreateComposerColor.documentBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(CreateComposerColor.documentBorder, lineWidth: 1)
+                    )
                 }
+                .frame(width: panelWidth, height: headerHeight + headerGap + panelHeight, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
     }
@@ -922,10 +960,22 @@ struct PromptComposerOverlay: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
 
             if let previewImageURL {
-                ComposerUploadThumb(path: previewImageURL.path, width: 138, height: 82) {
-                    self.previewImageURL = nil
+                GeometryReader { proxy in
+                    ZStack(alignment: .topTrailing) {
+                        ComposerPreviewImage(path: previewImageURL.path, contentMode: .fit)
+                            .frame(
+                                width: max(0, proxy.size.width - 36),
+                                height: max(0, proxy.size.height - 36)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+
+                        composerRemoveButton {
+                            self.previewImageURL = nil
+                        }
+                        .padding(14)
+                    }
                 }
-                .padding(18)
             } else {
                 Button {
                     setPreviewImage(AppKitBridge.chooseReferenceImages())
@@ -1040,13 +1090,7 @@ struct PromptComposerOverlay: View {
                 }
 
                 if !referenceURLs.isEmpty {
-                    LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                        ForEach(referenceURLs, id: \.path) { url in
-                            ComposerPreviewImage(path: url.path)
-                                .frame(width: 62, height: 40)
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-                    }
+                    createPreviewReferenceSection
                 }
 
                 if hasPrompt {
@@ -1069,6 +1113,23 @@ struct PromptComposerOverlay: View {
         .padding(.horizontal, 24)
         .padding(.bottom, 28)
         .background(StudioColor.panel)
+    }
+
+    private var createPreviewReferenceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("参考图")
+                .font(StudioFont.caption(12))
+                .foregroundStyle(StudioColor.secondaryText)
+                .tracking(1.2)
+
+            LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
+                ForEach(referenceURLs, id: \.path) { url in
+                    ComposerPreviewImage(path: url.path)
+                        .frame(width: 62, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+            }
+        }
     }
 
     private var hasTitle: Bool {
@@ -2292,7 +2353,9 @@ private struct OPSReferenceThumb: View {
 }
 
 private enum CreateComposerColor {
-    static let workspace = StudioColor.previewBackground
+    static let workspace = StudioColor.appBackground
+    static let documentBackground = Color(hex: 0x141414)
+    static let documentBorder = Color(hex: 0x363A3F)
     static let inputBackground = StudioColor.control
     static let fieldBackground = Color(hex: 0x2D2D2D)
     static let dropActive = StudioColor.panelRaised
@@ -2338,6 +2401,19 @@ private struct ComposerUploadThumb: View {
             .offset(x: 8, y: -8)
         }
     }
+}
+
+@MainActor
+private func composerRemoveButton(action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: "xmark")
+            .font(StudioFont.symbol(9, weight: .semibold))
+            .frame(width: 22, height: 22)
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(StudioColor.text)
+    .background(Circle().fill(Color.black.opacity(0.76)))
+    .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
 }
 
 private struct ComposerPreviewImage: View {

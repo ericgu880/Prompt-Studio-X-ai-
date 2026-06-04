@@ -1473,7 +1473,7 @@ struct ModelFilterManagerSheet: View {
                             .foregroundStyle(StudioColor.tertiaryText)
                     }
 
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    ScrollView(.horizontal, showsIndicators: true) {
                         HStack(spacing: 8) {
                             ForEach(selectedEntries) { entry in
                                 FilterPreviewChip(entry: entry)
@@ -1492,8 +1492,9 @@ struct ModelFilterManagerSheet: View {
                             }
                         }
                         .padding(12)
+                        .fixedSize(horizontal: true, vertical: false)
                     }
-                    .frame(height: 62)
+                    .frame(height: 72)
                     .background(StudioColor.control.opacity(0.42))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioColor.hairline, lineWidth: 1))
