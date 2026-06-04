@@ -179,6 +179,31 @@ func testTextFormatFiltering() throws {
     try expect(!pdf.isTextDocumentLike, "PDF documents should stay generic document assets")
 }
 
+func testPrimaryPromptAssetsAndAttachments() throws {
+    let image = sampleItem(title: "Image", assetKind: .image, prompt: "image", assetPath: "/tmp/mock.png", format: "PNG")
+    let video = sampleItem(title: "Video", assetKind: .video, prompt: "video", assetPath: "/tmp/mock.mp4", format: "MP4")
+    let audio = sampleItem(title: "Audio", assetKind: .audio, prompt: "audio", assetPath: "/tmp/mock.mp3", format: "MP3")
+    let markdown = sampleItem(title: "Markdown", assetKind: .markdown, prompt: "# doc", assetPath: "/tmp/mock.md", format: "MD")
+    let word = sampleItem(title: "Word", assetKind: .document, prompt: "doc", assetPath: "/tmp/mock.docx", format: "DOCX")
+    let source = sampleItem(title: "PSD", assetKind: .source, prompt: "", assetPath: "/tmp/mock.psd", format: "PSD")
+    let web = sampleItem(title: "HTML", assetKind: .web, prompt: "", assetPath: "/tmp/mock.html", format: "HTML")
+    let pdf = sampleItem(title: "PDF", assetKind: .document, prompt: "", assetPath: "/tmp/mock.pdf", format: "PDF")
+    let raw = sampleItem(title: "RAW", assetKind: .raw, prompt: "", assetPath: "/tmp/mock.dng", format: "DNG")
+    let font = sampleItem(title: "Font", assetKind: .font, prompt: "", assetPath: "/tmp/mock.otf", format: "OTF")
+    let unknown = sampleItem(title: "Unknown", assetKind: .unknown, prompt: "", assetPath: "/tmp/mock.custom", format: "CUSTOM")
+
+    try expect([image, video, audio, markdown, word].allSatisfy(\.isPromptPrimaryAsset), "image, video, audio, and text documents should be primary prompt assets")
+    try expect([source, web, pdf, raw, font, unknown].allSatisfy(\.isAttachmentAsset), "non-primary formats should be attachments")
+
+    let items = [image, video, audio, markdown, word, source, web, pdf, raw, font, unknown]
+    let audioMatches = PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .audio)).map(\.id)
+    try expect(audioMatches == [audio.id], "audio filter should isolate audio prompt assets")
+    let documentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .promptDocument)).map(\.id))
+    try expect(documentMatches == Set([markdown.id, word.id]), "text filter should isolate text prompt documents")
+    let attachmentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .other)).map(\.id))
+    try expect(attachmentMatches == Set([source.id, web.id, pdf.id, raw.id, font.id, unknown.id]), "attachment filter should include non-primary formats")
+}
+
 func testTextSyntaxModeInference() throws {
     let staleJson = sampleItem(title: "Old JSON", assetKind: .unknown, prompt: "{}", assetPath: "/tmp/handoff.json", format: "FILE")
     try expect(staleJson.isTextDocumentLike, "Old JSON items should use text document presentation by file extension")
@@ -521,6 +546,7 @@ func testMCPToolsSmoke() throws {
 do {
     try testSearchFiltering()
     try testTextFormatFiltering()
+    try testPrimaryPromptAssetsAndAttachments()
     try testTextSyntaxModeInference()
     try testTextSyntaxRulesDetectJSONTokens()
     try testFolderFilteringUsesStableFolderID()

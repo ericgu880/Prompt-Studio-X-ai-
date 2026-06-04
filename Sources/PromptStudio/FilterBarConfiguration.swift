@@ -68,7 +68,8 @@ enum FilterBarConfiguration {
         "all",
         "type-image",
         "type-video",
-        "type-text",
+        "asset-promptDocument",
+        "asset-audio",
         "model-image_2",
         "model-nano_banana_2",
         "model-seedance_2",
@@ -76,13 +77,7 @@ enum FilterBarConfiguration {
         "format-markdown",
         "format-json",
         "format-text",
-        "format-word",
-        "asset-audio",
-        "asset-document",
-        "asset-source",
-        "asset-raw",
-        "asset-threeD",
-        "asset-font"
+        "format-word"
     ]
 
     static func availableEntries(models: [ModelProfile], tags: [Tag]) -> [FilterQuickEntry] {
@@ -90,7 +85,8 @@ enum FilterBarConfiguration {
             .all,
             .type(.image, title: "picture"),
             .type(.video, title: "video"),
-            .type(.text, title: "text")
+            .assetKind(.promptDocument, title: "text"),
+            .assetKind(.audio, title: "audio")
         ]
 
         let preferredModelTitles = [
@@ -119,18 +115,7 @@ enum FilterBarConfiguration {
         ])
 
         entries.append(contentsOf: [
-            .assetKind(.image, title: "图片"),
-            .assetKind(.video, title: "视频"),
-            .assetKind(.audio, title: "音频"),
-            .assetKind(.promptDocument, title: "Prompt 文档"),
-            .assetKind(.document, title: "办公/PDF"),
-            .assetKind(.source, title: "源文件"),
-            .assetKind(.raw, title: "RAW"),
-            .assetKind(.threeD, title: "3D"),
-            .assetKind(.texture, title: "贴图"),
-            .assetKind(.font, title: "字体"),
-            .assetKind(.web, title: "网页"),
-            .assetKind(.other, title: "其他")
+            .assetKind(.other, title: "附件/其他")
         ])
 
         let tagEntries = tags

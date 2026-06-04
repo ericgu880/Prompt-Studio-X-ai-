@@ -451,6 +451,14 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         assetKind.isTextDocumentLike || isWordDocument || formatSupport.previewMode == .textDocument
     }
 
+    public var isPromptPrimaryAsset: Bool {
+        assetKind == .image || assetKind == .video || assetKind == .audio || isTextDocumentLike
+    }
+
+    public var isAttachmentAsset: Bool {
+        !isPromptPrimaryAsset
+    }
+
     public var supportsGeneratedThumbnail: Bool {
         assetKind.supportsGeneratedThumbnail || isTextDocumentLike
     }
@@ -661,7 +669,7 @@ public enum AssetKindFilter: String, CaseIterable, Identifiable, Sendable {
         case .web:
             "网页/链接"
         case .other:
-            "其他"
+            "附件/其他"
         }
     }
 
@@ -690,7 +698,7 @@ public enum AssetKindFilter: String, CaseIterable, Identifiable, Sendable {
         case .web:
             return item.assetKind == .web
         case .other:
-            return item.assetKind == .unknown
+            return item.isAttachmentAsset
         }
     }
 }

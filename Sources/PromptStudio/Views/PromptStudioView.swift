@@ -2032,11 +2032,16 @@ private struct AssetCardView: View {
                 Spacer(minLength: 8)
 
                 HStack(spacing: 8) {
-                    cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
-                    cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
-                        state.copyItemContent(item)
+                    if item.isPromptPrimaryAsset {
+                        cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
+                        cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
+                            state.copyItemContent(item)
+                        }
+                        cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
+                    } else {
+                        cardAction("doc", help: "复制文件") { state.copySelectedFile() }
+                        cardAction("text.badge.checkmark", help: "复制文件路径") { state.copySelectedFilePath() }
                     }
-                    cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
                 }
                 .allowsHitTesting(true)
             }
@@ -2115,32 +2120,36 @@ private struct AssetCardView: View {
             }
         }
 
-        Button {
-            runContextAction {
-                state.modal = .export
+        if item.isPromptPrimaryAsset {
+            Button {
+                runContextAction {
+                    state.modal = .export
+                }
+            } label: {
+                Label("导出...", systemImage: "square.and.arrow.up")
             }
-        } label: {
-            Label("导出...", systemImage: "square.and.arrow.up")
         }
 
         Divider()
 
-        Button {
-            runContextAction {
-                state.requestInlineEdit(item)
+        if item.isPromptPrimaryAsset {
+            Button {
+                runContextAction {
+                    state.requestInlineEdit(item)
+                }
+            } label: {
+                Label("编辑 Prompt", systemImage: "pencil")
             }
-        } label: {
-            Label("编辑 Prompt", systemImage: "pencil")
-        }
 
-        Button {
-            runContextAction {
-                state.copyItemContent(item)
+            Button {
+                runContextAction {
+                    state.copyItemContent(item)
+                }
+            } label: {
+                Label(item.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
             }
-        } label: {
-            Label(item.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
+            .disabled(!hasPrompt)
         }
-        .disabled(!hasPrompt)
 
         Button {
             runContextAction {
@@ -2158,22 +2167,24 @@ private struct AssetCardView: View {
             Label("复制文件路径", systemImage: "text.badge.checkmark")
         }
 
-        Divider()
+        if item.isPromptPrimaryAsset {
+            Divider()
 
-        Button {
-            runContextAction {
-                state.modal = .versionHistory
+            Button {
+                runContextAction {
+                    state.modal = .versionHistory
+                }
+            } label: {
+                Label("历史版本", systemImage: "clock")
             }
-        } label: {
-            Label("历史版本", systemImage: "clock")
-        }
 
-        Button {
-            runContextAction {
-                state.modal = .references
+            Button {
+                runContextAction {
+                    state.modal = .references
+                }
+            } label: {
+                Label("参考图管理", systemImage: "photo.on.rectangle")
             }
-        } label: {
-            Label("参考图管理", systemImage: "photo.on.rectangle")
         }
 
         Divider()

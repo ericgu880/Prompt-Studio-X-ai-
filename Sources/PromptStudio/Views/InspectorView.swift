@@ -73,7 +73,7 @@ struct InspectorView: View {
                 .padding(.bottom, 20)
                 .padding(.top, StudioLayout.contentTopPadding)
             }
-        } else if item.assetKind == .image || item.assetKind == .video {
+        } else if item.isPromptPrimaryAsset {
             mediaReadOnlyInspector(item)
         } else {
             fileReadOnlyInspector(item)
@@ -105,7 +105,7 @@ struct InspectorView: View {
                 Spacer(minLength: 12)
 
                 HStack(spacing: 10) {
-                    mediaActionButton("pencil", help: "编辑") { state.openEditPromptComposer(for: item) }
+                    mediaActionButton("pencil", help: "编辑") { state.requestInlineEdit(item) }
                     mediaActionButton("doc.on.doc", help: "复制提示词") { state.copySelectedPrompt() }
                     mediaActionButton("arrow.down.circle", help: "下载") { state.modal = .export }
                     mediaActionButton("clock", help: "历史版本") { state.modal = .versionHistory }
@@ -123,10 +123,8 @@ struct InspectorView: View {
     private func fileReadOnlyInspector(_ item: PromptItem) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                header(item)
+                fileBasicInfoSection(item)
                 Divider().overlay(StudioColor.hairline)
-
-                fileStatusSection(item)
                 fileActionSection(item)
             }
             .padding(.horizontal, 20)
@@ -135,31 +133,30 @@ struct InspectorView: View {
         }
     }
 
-    private func fileStatusSection(_ item: PromptItem) -> some View {
+    private func fileBasicInfoSection(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("文件预览")
+            sectionTitle("文件信息")
             HStack(alignment: .top, spacing: 14) {
                 AssetMediaView(item: item, contentMode: .fit)
                     .frame(width: 86, height: 72)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
 
-                VStack(alignment: .leading, spacing: 8) {
-                    FlowLayout(spacing: 8) {
-                        mediaChip(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
-                        mediaChip(item.previewMode.displayName)
-                        mediaChip(item.supportTier.displayName)
-                    }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title)
+                        .font(StudioFont.font(14, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(2)
 
-                    Text(fileSummary(for: item))
-                        .font(StudioFont.font(12))
-                        .lineSpacing(3)
-                        .foregroundStyle(StudioColor.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                    infoLine("格式", item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
+                    if item.width > 0, item.height > 0 {
+                        infoLine("尺寸", item.displaySize)
+                    }
+                    infoLine("大小", fileSizeText(item.fileSize))
+                    infoLine("路径", URL(fileURLWithPath: item.assetPath).lastPathComponent)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            fileInfoSection(item)
         }
     }
 
@@ -383,7 +380,7 @@ struct InspectorView: View {
     private func mediaTopChipTexts(_ item: PromptItem) -> [String] {
         [
             item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased(),
-            item.displaySize,
+            item.width > 0 && item.height > 0 ? item.displaySize : fileSizeText(item.fileSize),
             item.currentVersion?.version ?? "V1.0",
             item.tags.first ?? item.category
         ]
@@ -398,6 +395,8 @@ struct InspectorView: View {
         chips.append(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
         if item.width > 0, item.height > 0 {
             chips.append(item.displayAspectRatio)
+        } else {
+            chips.append(fileSizeText(item.fileSize))
         }
         chips.append(item.tags.first ?? item.category)
         return chips.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -606,27 +605,6 @@ struct InspectorView: View {
         }
     }
 
-    private func fileInfoSection(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("文件信息")
-            VStack(spacing: 10) {
-                infoGrid("文件尺寸", fileSizeText(item.fileSize), "素材类型", item.assetKind.displayName)
-                if item.width > 0, item.height > 0 {
-                    infoGrid("格式", item.format, "分辨率", item.displaySize)
-                } else {
-                    infoGrid("格式", item.format.isEmpty ? "FILE" : item.format, "路径", URL(fileURLWithPath: item.assetPath).lastPathComponent)
-                }
-            }
-            Button {
-                state.modal = .export
-            } label: {
-                Label("导出", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(CapsuleButtonStyle())
-        }
-    }
-
     private func infoLine(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 2) {
             Text("\(title)：")
@@ -638,27 +616,6 @@ struct InspectorView: View {
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(1)
                 .truncationMode(.middle)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func infoGrid(_ a: String, _ b: String, _ c: String, _ d: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            infoPair(a, b)
-            infoPair(c, d)
-        }
-    }
-
-    private func infoPair(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(StudioFont.font(11))
-                .foregroundStyle(StudioColor.secondaryText)
-            Text(value)
-                .font(StudioFont.font(14))
-                .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -676,21 +633,6 @@ struct InspectorView: View {
 
     private func hasNegativePrompt(_ item: PromptItem) -> Bool {
         item.currentVersion?.negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
-    private func fileSummary(for item: PromptItem) -> String {
-        switch item.previewMode {
-        case .audio:
-            return "音频文件已入库，可通过默认应用播放，文件本体和路径会保留在素材库中。"
-        case .document:
-            return "当前格式使用系统预览或默认应用打开，PromptStudio 只展示文件基本信息。"
-        case .reference:
-            return "参考资产已入库，复杂格式不在应用内解析，仅展示文件基本信息。"
-        case .generic:
-            return "未知格式已作为通用文件入库，可复制路径或用默认应用打开。"
-        case .image, .video, .textDocument:
-            return "素材支持原生预览。"
-        }
     }
 
     private func fileSizeText(_ bytes: Int64) -> String {

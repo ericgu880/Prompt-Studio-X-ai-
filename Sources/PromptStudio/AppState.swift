@@ -451,12 +451,26 @@ final class AppState: ObservableObject {
     }
 
     func requestInlineEdit(_ item: PromptItem) {
-        guard item.isTextDocumentLike else {
-            openEditPromptComposer(for: item)
+        if item.isTextDocumentLike {
+            openMarkdownEditor(for: item)
             return
         }
 
-        openMarkdownEditor(for: item)
+        if item.assetKind == .audio {
+            if selectedID != item.id {
+                select(item)
+            }
+            modal = nil
+            isPreviewPresented = false
+            markdownEditorItemID = nil
+            promptComposerMode = nil
+            inspectorEditRequest = InspectorEditRequest(itemID: item.id)
+            return
+        }
+
+        if item.assetKind == .image || item.assetKind == .video {
+            openEditPromptComposer(for: item)
+        }
     }
 
     func openSelectedInDefaultApplication() {
