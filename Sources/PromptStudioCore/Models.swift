@@ -242,6 +242,21 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         versions.sorted { $0.createdAt < $1.createdAt }.last
     }
 
+    public var isTextDocumentLike: Bool {
+        assetKind.isTextDocumentLike || isWordDocument
+    }
+
+    public var supportsGeneratedThumbnail: Bool {
+        assetKind.supportsGeneratedThumbnail || isTextDocumentLike
+    }
+
+    public var isWordDocument: Bool {
+        guard assetKind == .document else { return false }
+        let normalizedFormat = format.lowercased()
+        let pathExtension = (assetPath as NSString).pathExtension.lowercased()
+        return ["doc", "docx", "word"].contains(normalizedFormat) || ["doc", "docx"].contains(pathExtension)
+    }
+
     public var isDeleted: Bool {
         deletedAt != nil
     }
@@ -345,11 +360,49 @@ public enum LibraryCollection: Equatable, Sendable {
     case tag(String)
 }
 
+public enum TextFormatFilter: String, CaseIterable, Identifiable, Sendable {
+    case markdown
+    case json
+    case text
+    case word
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .markdown:
+            "MD"
+        case .json:
+            "Json"
+        case .text:
+            "txt"
+        case .word:
+            "Word"
+        }
+    }
+
+    public func matches(_ item: PromptItem) -> Bool {
+        switch self {
+        case .markdown:
+            return item.assetKind == .markdown
+        case .json:
+            return item.assetKind == .json
+        case .text:
+            return item.assetKind == .text
+        case .word:
+            let format = item.format.lowercased()
+            let pathExtension = (item.assetPath as NSString).pathExtension.lowercased()
+            return item.assetKind == .document && (["doc", "docx", "word"].contains(format) || ["doc", "docx"].contains(pathExtension))
+        }
+    }
+}
+
 public struct PromptFilter: Equatable, Sendable {
     public var query: String
     public var modelId: String?
     public var collection: LibraryCollection
     public var type: PromptType?
+    public var textFormat: TextFormatFilter?
     public var requiredTag: String?
     public var favoriteOnly: Bool
     public var hasPromptOnly: Bool
@@ -360,6 +413,7 @@ public struct PromptFilter: Equatable, Sendable {
         modelId: String? = nil,
         collection: LibraryCollection = .all,
         type: PromptType? = nil,
+        textFormat: TextFormatFilter? = nil,
         requiredTag: String? = nil,
         favoriteOnly: Bool = false,
         hasPromptOnly: Bool = false,
@@ -369,6 +423,7 @@ public struct PromptFilter: Equatable, Sendable {
         self.modelId = modelId
         self.collection = collection
         self.type = type
+        self.textFormat = textFormat
         self.requiredTag = requiredTag
         self.favoriteOnly = favoriteOnly
         self.hasPromptOnly = hasPromptOnly
@@ -406,6 +461,7 @@ public enum PromptFiltering {
 
             if let modelId = filter.modelId, item.modelId != modelId { return false }
             if let type = filter.type, item.type != type { return false }
+            if let textFormat = filter.textFormat, !textFormat.matches(item) { return false }
             if let tag = filter.requiredTag, !item.tags.contains(tag) { return false }
             if filter.favoriteOnly, !item.favorite { return false }
             if filter.hasPromptOnly, item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {

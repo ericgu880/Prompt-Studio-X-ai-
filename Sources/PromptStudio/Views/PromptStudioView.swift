@@ -314,7 +314,7 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
         context.coordinator.onSpace = onSpace
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         var onSpace: () -> Void
         private var monitor: Any?
 
@@ -1398,8 +1398,6 @@ private struct SearchInputField: NSViewRepresentable {
 
 private struct ThumbnailScaleControl: View {
     @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1415,16 +1413,8 @@ private struct ThumbnailScaleControl: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 28)
-        .background(isHovered ? StudioColor.panelRaised : StudioColor.panel)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isHovered ? StudioColor.primaryAction.opacity(0.32) : StudioColor.hairline, lineWidth: 1)
-        )
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help("调整缩略图大小")
-        .onHover { isHovered = $0 }
-        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
     }
 }
 
@@ -1448,56 +1438,316 @@ private struct SidebarGlassBackground: NSViewRepresentable {
 
 private struct ModelTabsView: View {
     @EnvironmentObject private var state: AppState
+    @AppStorage(FilterBarConfiguration.storageKey) private var filterBarSelection = ""
+    @State private var contentWidth: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
+    @State private var pageIndex = 0
+    @State private var wheelAccumulator: CGFloat = 0
 
     var body: some View {
-        GeometryReader { proxy in
-            HStack(spacing: 8) {
-                ForEach(quickModels(for: proxy.size.width)) { model in
-                    CompactModelChip(model: model, active: activeModelID == model.id)
-                }
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ZStack {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(quickFilters) { filter in
+                                CompactFilterChip(filter: filter, active: isActive(filter))
+                                    .id(filter.id)
+                            }
 
-                Button {
-                    clearTextFocus()
-                    state.modal = .modelFilterManager
-                } label: {
-                    Image(systemName: "plus")
-                        .font(StudioFont.symbol(15))
+                            Button {
+                                clearTextFocus()
+                                state.modal = .modelFilterManager
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(StudioFont.symbol(15))
+                            }
+                            .id("filter-manage")
+                            .buttonStyle(IconCircleButtonStyle())
+                            .foregroundStyle(StudioColor.text)
+                            .help("管理筛选标签")
+                            .accessibilityLabel("管理筛选标签")
+                        }
+                        .background(
+                            GeometryReader { contentProxy in
+                                Color.clear.preference(key: FilterBarContentWidthKey.self, value: contentProxy.size.width)
+                            }
+                        )
+                    }
+
+                    if canPageLeft {
+                        filterPagerButton(direction: .left, proxy: proxy)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if canPageRight {
+                        filterPagerButton(direction: .right, proxy: proxy)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                 }
-                .buttonStyle(IconCircleButtonStyle())
-                .foregroundStyle(StudioColor.text)
-                .help("管理筛选标签")
-                .accessibilityLabel("管理筛选标签")
+                .background(
+                    FilterBarWheelMonitor { delta in
+                        handleWheel(delta, proxy: proxy)
+                    }
+                )
+                .clipped()
+                .onAppear {
+                    viewportWidth = geometry.size.width
+                }
+                .onChange(of: geometry.size.width) { _, width in
+                    viewportWidth = width
+                    clampFilterPage()
+                }
+                .onChange(of: filterBarSelection) { _, _ in
+                    pageIndex = 0
+                    proxy.scrollTo(quickFilters.first?.id, anchor: .leading)
+                }
+                .onPreferenceChange(FilterBarContentWidthKey.self) { width in
+                    contentWidth = width
+                    clampFilterPage()
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 32)
     }
 
-    private var activeModelID: String {
-        state.filter.modelId ?? "all"
+    private var availableFilters: [FilterQuickEntry] {
+        FilterBarConfiguration.availableEntries(models: state.models, tags: state.tags)
     }
 
-    private func quickModels(for width: CGFloat) -> [ModelProfile] {
-        let limit: Int
-        if width >= 1120 {
-            limit = 8
-        } else if width >= 980 {
-            limit = 7
-        } else if width >= 840 {
-            limit = 6
-        } else if width >= 700 {
-            limit = 5
-        } else {
-            limit = 4
+    private var selectedFilterIDs: [String] {
+        FilterBarConfiguration.selectedIDs(from: filterBarSelection, availableEntries: availableFilters)
+    }
+
+    private var quickFilters: [FilterQuickEntry] {
+        let entriesByID = Dictionary(uniqueKeysWithValues: availableFilters.map { ($0.id, $0) })
+        return selectedFilterIDs.compactMap { entriesByID[$0] }
+    }
+
+    private func isActive(_ filter: FilterQuickEntry) -> Bool {
+        switch filter {
+        case .all:
+            state.filter.type == nil && state.filter.modelId == nil && state.filter.textFormat == nil
+        case .type(let type, _):
+            state.filter.type == type && state.filter.modelId == nil && state.filter.textFormat == nil
+        case .model(let model, _):
+            state.filter.modelId == model.id
+        case .textFormat(let textFormat, _):
+            state.filter.textFormat == textFormat
+        case .tag(let tag):
+            state.filter.requiredTag == tag
         }
-        return Array(state.models.prefix(limit))
+    }
+
+    private var showsPager: Bool {
+        contentWidth > viewportWidth + 4
+    }
+
+    private var canPageLeft: Bool {
+        showsPager && pageIndex > 0
+    }
+
+    private var canPageRight: Bool {
+        showsPager && pageIndex < maxPageIndex
+    }
+
+    private var maxPageIndex: Int {
+        guard viewportWidth > 0 else { return 0 }
+        return max(0, Int(ceil(contentWidth / viewportWidth)) - 1)
+    }
+
+    private var itemsPerPage: Int {
+        max(1, Int(max(1, viewportWidth - 48) / 112))
+    }
+
+    private func filterPagerButton(direction: FilterBarPagerDirection, proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 0) {
+            if direction == .right {
+                LinearGradient(
+                    colors: [StudioColor.appBackground.opacity(0), StudioColor.appBackground.opacity(0.92)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 54)
+            }
+
+            Button {
+                pageFilters(proxy: proxy, direction: direction)
+            } label: {
+                Image(systemName: direction == .right ? "chevron.right" : "chevron.left")
+                    .font(StudioFont.symbol(12, weight: .semibold))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(StudioColor.control.opacity(0.86)))
+                    .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(StudioColor.text)
+
+            if direction == .left {
+                LinearGradient(
+                    colors: [StudioColor.appBackground.opacity(0.92), StudioColor.appBackground.opacity(0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 54)
+            }
+        }
+        .allowsHitTesting(true)
+    }
+
+    private func pageFilters(proxy: ScrollViewProxy, direction: FilterBarPagerDirection) {
+        let maxPage = maxPageIndex
+        guard maxPage > 0 else { return }
+
+        if direction == .right {
+            pageIndex = min(maxPage, pageIndex + 1)
+        } else {
+            pageIndex = max(0, pageIndex - 1)
+        }
+
+        let targetID = scrollTargetID(for: pageIndex)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            proxy.scrollTo(targetID, anchor: .leading)
+        }
+    }
+
+    private func handleWheel(_ delta: CGFloat, proxy: ScrollViewProxy) {
+        guard showsPager, abs(delta) > 1 else { return }
+
+        wheelAccumulator += delta
+        let threshold: CGFloat = 36
+        if wheelAccumulator >= threshold {
+            wheelAccumulator = 0
+            if canPageRight {
+                pageFilters(proxy: proxy, direction: .right)
+            }
+        } else if wheelAccumulator <= -threshold {
+            wheelAccumulator = 0
+            if canPageLeft {
+                pageFilters(proxy: proxy, direction: .left)
+            }
+        }
+    }
+
+    private func scrollTargetID(for page: Int) -> String {
+        let ids = quickFilters.map(\.id) + ["filter-manage"]
+        guard !ids.isEmpty else { return "filter-manage" }
+        let index = min(ids.count - 1, max(0, page * itemsPerPage))
+        return ids[index]
+    }
+
+    private func clampFilterPage() {
+        let maxPage = maxPageIndex
+        if !showsPager {
+            pageIndex = 0
+        } else if pageIndex > maxPage {
+            pageIndex = maxPage
+        }
     }
 }
 
-private struct CompactModelChip: View {
+private enum FilterBarPagerDirection {
+    case left
+    case right
+}
+
+private struct FilterBarContentWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct FilterBarWheelMonitor: NSViewRepresentable {
+    let onScroll: @MainActor @Sendable (CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScroll: onScroll)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.view = view
+        DispatchQueue.main.async {
+            context.coordinator.captureFrame(from: view)
+        }
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.view = nsView
+        context.coordinator.onScroll = onScroll
+        DispatchQueue.main.async {
+            context.coordinator.captureFrame(from: nsView)
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        var onScroll: @MainActor @Sendable (CGFloat) -> Void
+        private var windowNumber: Int?
+        private var screenFrame: CGRect = .zero
+        private var monitor: Any?
+
+        init(onScroll: @escaping @MainActor @Sendable (CGFloat) -> Void) {
+            self.onScroll = onScroll
+        }
+
+        @MainActor
+        func captureFrame(from view: NSView) {
+            guard let window = view.window else {
+                windowNumber = nil
+                screenFrame = .zero
+                return
+            }
+            windowNumber = window.windowNumber
+            screenFrame = window.convertToScreen(view.convert(view.bounds, to: nil))
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self,
+                      event.windowNumber == self.windowNumber,
+                      self.screenFrame.contains(NSEvent.mouseLocation) else {
+                    return event
+                }
+
+                let horizontal = event.scrollingDeltaX
+                let vertical = event.scrollingDeltaY == 0 ? event.deltaY : event.scrollingDeltaY
+                let delta = abs(horizontal) > abs(vertical) ? horizontal : -vertical
+                let onScroll = self.onScroll
+                Task { @MainActor in
+                    onScroll(delta)
+                }
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        deinit {
+            removeMonitor()
+        }
+    }
+}
+
+private struct CompactFilterChip: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let model: ModelProfile
+    let filter: FilterQuickEntry
     let active: Bool
     @State private var isHovered = false
 
@@ -1507,26 +1757,40 @@ private struct CompactModelChip: View {
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                state.setModel(model.id)
+                switch filter {
+                case .all:
+                    state.setPromptType(nil)
+                case .type(let type, _):
+                    state.setPromptType(type)
+                case .model(let model, _):
+                    state.setModel(model.id)
+                case .textFormat(let textFormat, _):
+                    state.setTextFormat(textFormat)
+                case .tag(let tag):
+                    state.setRequiredTag(tag)
+                }
             }
         } label: {
-            Text(model.name)
-                .font(StudioFont.font(12))
-                .foregroundStyle(active || isHovered ? StudioColor.text : StudioColor.secondaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(Capsule().fill(active || isHovered ? StudioColor.selection : Color.clear))
-                .overlay(
-                    Capsule()
-                        .strokeBorder(active ? StudioColor.primaryAction.opacity(0.72) : (isHovered ? StudioColor.hairline : Color.clear), lineWidth: 1)
-                )
-                .contentShape(Capsule())
+            HStack(spacing: 6) {
+                Text(filter.title)
+                    .font(StudioFont.font(12))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            .foregroundStyle(active || isHovered ? StudioColor.text : StudioColor.secondaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(Capsule().fill(active || isHovered ? StudioColor.selection : Color.clear))
+            .overlay(
+                Capsule()
+                    .strokeBorder(active ? StudioColor.primaryAction.opacity(0.72) : (isHovered ? StudioColor.hairline : Color.clear), lineWidth: 1)
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .accessibilityLabel("筛选：\(filter.title)")
     }
 }
 
@@ -1645,7 +1909,7 @@ private enum AssetCardMetrics {
     }
 
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             return width * 9 / 16
         }
         if item.assetKind.supportsGeneratedThumbnail, item.width > 0, item.height > 0 {
@@ -1728,7 +1992,7 @@ private struct AssetCardView: View {
 
     @ViewBuilder
     private var cardContent: some View {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             TextDocumentCardPreview(item: item)
         } else {
             AssetMediaView(item: item)
@@ -1749,7 +2013,7 @@ private struct AssetCardView: View {
 
                 HStack(spacing: 8) {
                     cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
-                    cardAction("doc.on.doc", help: item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
+                    cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
                         state.copyItemContent(item)
                     }
                     cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
@@ -1854,7 +2118,7 @@ private struct AssetCardView: View {
                 state.copyItemContent(item)
             }
         } label: {
-            Label(item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
+            Label(item.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
         }
         .disabled(!hasPrompt)
 
@@ -1914,7 +2178,7 @@ private struct AssetCardView: View {
     }
 
     private var hasPrompt: Bool {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             return !state.markdownDocumentText(for: item).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -2290,7 +2554,7 @@ struct AssetMediaView: View {
     var contentMode: ContentMode = .fill
 
     var body: some View {
-        if item.assetKind.supportsGeneratedThumbnail, let thumbnailPath {
+        if item.supportsGeneratedThumbnail, let thumbnailPath {
             ThumbnailImage(path: thumbnailPath, contentMode: contentMode)
         } else {
             FileKindPlaceholder(assetKind: item.assetKind, format: item.format)

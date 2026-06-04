@@ -72,6 +72,12 @@ struct PromptStudioApp: App {
                     .keyboardShortcut("2", modifiers: .command)
                 Button("预览") { appState.togglePreview() }
                     .keyboardShortcut(.space, modifiers: [])
+                Button("移到回收站") {
+                    guard !AppKitBridge.isTextInputActive() else { return }
+                    appState.moveSelectedToTrash()
+                }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(appState.selectedItem == nil || appState.selectedItem?.isDeleted == true || AppKitBridge.isTextInputActive())
             }
 
             CommandGroup(after: .appSettings) {

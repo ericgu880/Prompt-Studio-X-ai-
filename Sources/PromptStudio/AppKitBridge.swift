@@ -49,7 +49,15 @@ enum AppKitBridge {
         case .video:
             panel.allowedContentTypes = [.movie, .video]
         case .text:
-            panel.allowedContentTypes = [.text, .json, .commaSeparatedText, .plainText, .utf8PlainText]
+            panel.allowedContentTypes = [
+                .text,
+                .json,
+                .commaSeparatedText,
+                .plainText,
+                .utf8PlainText,
+                UTType(filenameExtension: "doc") ?? .data,
+                UTType(filenameExtension: "docx") ?? .data
+            ]
         case nil:
             panel.allowedContentTypes = [.item]
         }
@@ -155,6 +163,38 @@ enum AppKitBridge {
             documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]
         )
         try data.write(to: target, options: .atomic)
+    }
+
+    static func readDocumentText(from url: URL) -> String? {
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            return text
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf16) {
+            return text
+        }
+
+        let documentType: NSAttributedString.DocumentType?
+        switch url.pathExtension.lowercased() {
+        case "docx":
+            documentType = .officeOpenXML
+        case "doc":
+            documentType = .docFormat
+        case "rtf":
+            documentType = .rtf
+        default:
+            documentType = nil
+        }
+
+        if let documentType,
+           let attributed = try? NSAttributedString(
+                url: url,
+                options: [.documentType: documentType],
+                documentAttributes: nil
+           ) {
+            return attributed.string
+        }
+
+        return nil
     }
 
     static func openPreview(path: String) {

@@ -1417,69 +1417,202 @@ private struct LegacySettingsSheetPlaceholder: View {
 struct ModelFilterManagerSheet: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
-    @State private var newName = ""
-    @State private var newType: PromptType = .image
+    @AppStorage(FilterBarConfiguration.storageKey) private var storedSelection = ""
+    @State private var selectedIDs: [String] = []
+    @State private var draggedPreviewID: String?
 
-    private var editableModels: [ModelProfile] {
-        state.models.filter { $0.id != "all" }
+    private var availableEntries: [FilterQuickEntry] {
+        FilterBarConfiguration.availableEntries(models: state.models, tags: state.tags)
+    }
+
+    private var selectedEntries: [FilterQuickEntry] {
+        let entriesByID = Dictionary(uniqueKeysWithValues: availableEntries.map { ($0.id, $0) })
+        return selectedIDs.compactMap { entriesByID[$0] }
     }
 
     var body: some View {
         PromptFormShell(title: "筛选标签管理") {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("管理首页模型筛选栏中显示的标签。已有标签可修改名称和类型，新标签会保存到本地资料库。")
+            VStack(alignment: .leading, spacing: 18) {
+                Text("勾选首页筛选栏要显示的维度，下方预览区可拖拽调整顺序。未勾选的标签维度来自已有素材标签。")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("现有筛选标签")
-                        .font(StudioFont.caption(12))
-                        .tracking(1.2)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("可选维度")
+                        .font(StudioFont.font(12, weight: .semibold))
                         .foregroundStyle(StudioColor.secondaryText)
 
-                    ForEach(editableModels) { model in
-                        ModelFilterEditorRow(model: model)
-                            .environmentObject(state)
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 10) {
+                            ForEach(availableEntries) { entry in
+                                FilterDimensionToggle(
+                                    entry: entry,
+                                    isSelected: selectedIDs.contains(entry.id)
+                                ) {
+                                    toggle(entry)
+                                }
+                            }
+                        }
+                        .padding(12)
                     }
+                    .frame(height: 230)
+                    .background(StudioColor.control.opacity(0.42))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioColor.hairline, lineWidth: 1))
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("新增筛选标签")
-                        .font(StudioFont.caption(12))
-                        .tracking(1.2)
-                        .foregroundStyle(StudioColor.secondaryText)
-
-                    HStack(spacing: 10) {
-                        TextField("例如：Flux 1.1 Pro", text: $newName)
-                            .textFieldStyle(.plain)
-                            .font(StudioFont.font(13))
-                            .foregroundStyle(StudioColor.text)
-                            .padding(.horizontal, 12)
-                            .frame(height: 38)
-                            .background(StudioColor.control)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
-
-                        PromptTypeSegment(type: $newType)
-
-                        Button {
-                            state.createModelFilterLabel(name: newName, type: newType)
-                            newName = ""
-                        } label: {
-                            Label("新增", systemImage: "plus")
-                                .frame(minWidth: 76)
-                        }
-                        .buttonStyle(CapsuleButtonStyle(filled: true))
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("筛选栏预览")
+                            .font(StudioFont.font(12, weight: .semibold))
+                            .foregroundStyle(StudioColor.secondaryText)
+                        Spacer()
+                        Text("拖拽排序")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.tertiaryText)
                     }
-                    .padding(12)
-                    .studioPanel(radius: 8)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(selectedEntries) { entry in
+                                FilterPreviewChip(entry: entry)
+                                    .onDrag {
+                                        draggedPreviewID = entry.id
+                                        return NSItemProvider(object: entry.id as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [UTType.plainText],
+                                        delegate: FilterPreviewDropDelegate(
+                                            targetID: entry.id,
+                                            selectedIDs: $selectedIDs,
+                                            draggedID: $draggedPreviewID
+                                        )
+                                    )
+                            }
+                        }
+                        .padding(12)
+                    }
+                    .frame(height: 62)
+                    .background(StudioColor.control.opacity(0.42))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioColor.hairline, lineWidth: 1))
                 }
             }
         } footer: {
-            Button("关闭") { dismiss() }
+            Button("恢复默认") {
+                selectedIDs = FilterBarConfiguration.defaultSelectedIDs.filter { id in
+                    availableEntries.contains { $0.id == id }
+                }
+            }
+            .buttonStyle(TextHoverButtonStyle())
+
+            Button("保存并关闭") {
+                save()
+                dismiss()
+            }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
         }
+        .onAppear(perform: loadSelection)
         .frame(width: 760, height: 620)
+    }
+
+    private func loadSelection() {
+        selectedIDs = FilterBarConfiguration.selectedIDs(from: storedSelection, availableEntries: availableEntries)
+    }
+
+    private func toggle(_ entry: FilterQuickEntry) {
+        if selectedIDs.contains(entry.id) {
+            selectedIDs.removeAll { $0 == entry.id }
+        } else {
+            selectedIDs.append(entry.id)
+        }
+    }
+
+    private func save() {
+        let validIDs = Set(availableEntries.map(\.id))
+        let ids = selectedIDs.filter { validIDs.contains($0) }
+        storedSelection = FilterBarConfiguration.encode(ids.isEmpty ? FilterBarConfiguration.defaultSelectedIDs : ids)
+    }
+}
+
+private struct FilterDimensionToggle: View {
+    let entry: FilterQuickEntry
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(StudioFont.symbol(13, weight: .semibold))
+                    .foregroundStyle(isSelected ? StudioColor.primaryAction : StudioColor.secondaryText)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title)
+                        .font(StudioFont.font(12, weight: .medium))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(1)
+                    Text(entry.categoryTitle)
+                        .font(StudioFont.font(11))
+                        .foregroundStyle(StudioColor.tertiaryText)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 44)
+            .background(StudioColor.panel.opacity(isSelected ? 0.86 : 0.38))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FilterPreviewChip: View {
+    let entry: FilterQuickEntry
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .font(StudioFont.symbol(10, weight: .semibold))
+                .foregroundStyle(StudioColor.tertiaryText)
+            Text(entry.title)
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(Capsule().fill(StudioColor.selection))
+        .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    }
+}
+
+private struct FilterPreviewDropDelegate: DropDelegate {
+    let targetID: String
+    @Binding var selectedIDs: [String]
+    @Binding var draggedID: String?
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID, draggedID != targetID,
+              let fromIndex = selectedIDs.firstIndex(of: draggedID),
+              let toIndex = selectedIDs.firstIndex(of: targetID) else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            selectedIDs.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedID = nil
+        return true
     }
 }
 
@@ -1615,6 +1748,7 @@ private struct PromptTypeSegment: View {
         HStack(spacing: 6) {
             typeButton("图片", .image)
             typeButton("视频", .video)
+            typeButton("文本", .text)
         }
         .padding(4)
         .background(StudioColor.control)

@@ -35,7 +35,7 @@ struct InspectorView: View {
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, selectedID in
             stopEditing()
-            if let item = state.items.first(where: { $0.id == selectedID }), item.assetKind.isTextDocumentLike {
+            if let item = state.items.first(where: { $0.id == selectedID }), item.isTextDocumentLike {
                 loadMarkdownDocument(item)
             } else {
                 markdownDocumentText = ""
@@ -54,7 +54,7 @@ struct InspectorView: View {
 
     @ViewBuilder
     private func inspector(for item: PromptItem) -> some View {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             markdownInspector(for: item)
         } else if isEditing {
             ScrollView {
@@ -489,13 +489,13 @@ struct InspectorView: View {
                 .help("导出")
 
                 Button {
-                    if item.assetKind.isTextDocumentLike {
+                    if item.isTextDocumentLike {
                         state.copyMarkdownDocumentText(activeMarkdownText)
                     } else {
                         state.copySelectedPrompt()
                     }
                 } label: {
-                    Text(item.assetKind.isTextDocumentLike ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
+                    Text(item.isTextDocumentLike ? "复制文档信息" : "复制提示词").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
             }
@@ -601,7 +601,7 @@ struct InspectorView: View {
     }
 
     private func startEditing(_ item: PromptItem) {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             state.openMarkdownEditor(for: item)
             return
         } else {
@@ -622,7 +622,7 @@ struct InspectorView: View {
     }
 
     private func saveInlineEdit(_ item: PromptItem) {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             markdownDocumentText = draftPrompt
             markdownDocumentItemID = item.id
             state.saveMarkdownDocument(draftPrompt, for: item)
@@ -649,7 +649,7 @@ struct InspectorView: View {
     }
 
     private func loadMarkdownDocument(_ item: PromptItem) {
-        guard item.assetKind.isTextDocumentLike, markdownDocumentItemID != item.id else { return }
+        guard item.isTextDocumentLike, markdownDocumentItemID != item.id else { return }
         markdownDocumentText = state.markdownDocumentText(for: item)
         markdownDocumentItemID = item.id
     }

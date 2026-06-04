@@ -20,7 +20,7 @@ enum ThumbnailService {
         if FileManager.default.fileExists(atPath: thumbnailURL.path) {
             return thumbnailURL.path
         }
-        guard !item.assetKind.isTextDocumentLike else { return nil }
+        guard !item.isTextDocumentLike else { return nil }
         if !item.thumbnailPath.isEmpty,
            item.thumbnailPath != item.assetPath,
            FileManager.default.fileExists(atPath: item.thumbnailPath) {
@@ -32,7 +32,7 @@ enum ThumbnailService {
     @discardableResult
     static func generateThumbnail(for item: PromptItem, libraryURL: URL) throws -> String? {
         guard FileManager.default.fileExists(atPath: item.assetPath) else { return nil }
-        guard item.assetKind.supportsGeneratedThumbnail else { return nil }
+        guard item.supportsGeneratedThumbnail else { return nil }
 
         let sourceURL = URL(fileURLWithPath: item.assetPath)
         let destinationURL = generatedThumbnailURL(for: item, libraryURL: libraryURL)
@@ -45,7 +45,7 @@ enum ThumbnailService {
             return destinationURL.path
         }
 
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             return try generateMarkdownThumbnail(from: sourceURL, to: destinationURL)
         }
 
@@ -86,7 +86,7 @@ enum ThumbnailService {
     }
 
     private static func generatedThumbnailURL(for item: PromptItem, libraryURL: URL) -> URL {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             return libraryURL
                 .appendingPathComponent("thumbnails")
                 .appendingPathComponent("\(item.id)-doc-v\(documentThumbnailVersion).jpg")
@@ -95,9 +95,7 @@ enum ThumbnailService {
     }
 
     private static func generateMarkdownThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
-        let text = (try? String(contentsOf: sourceURL, encoding: .utf8))
-            ?? (try? String(contentsOf: sourceURL, encoding: .utf16))
-            ?? ""
+        let text = AppKitBridge.readDocumentText(from: sourceURL) ?? ""
         let lines = Array(text.components(separatedBy: .newlines).prefix(18))
         let size = NSSize(width: 1280, height: 720)
         let jpeg = Thread.isMainThread

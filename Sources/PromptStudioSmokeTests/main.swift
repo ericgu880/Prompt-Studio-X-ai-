@@ -28,7 +28,8 @@ func sampleItem(
     aspectRatio: String = "16:9",
     width: Int = 1920,
     height: Int = 1080,
-    assetPath: String = "/tmp/mock.png"
+    assetPath: String = "/tmp/mock.png",
+    format: String = "PNG"
 ) -> PromptItem {
     let id = UUID().uuidString
     return PromptItem(
@@ -45,7 +46,7 @@ func sampleItem(
         aspectRatio: aspectRatio,
         width: width,
         height: height,
-        format: "PNG",
+        format: format,
         fileSize: 1024,
         tags: tags,
         versions: [
@@ -158,6 +159,21 @@ func testSearchFiltering() throws {
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(query: "camper")).map(\.id) == [item.id], "query should match prompt body")
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(modelId: "seedream_7")).map(\.id) == [other.id], "model filter should isolate Seedream item")
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(collection: .tag("插画"))).map(\.id) == [item.id], "tag collection should isolate illustration item")
+}
+
+func testTextFormatFiltering() throws {
+    let markdown = sampleItem(title: "Markdown", assetKind: .markdown, prompt: "# doc", assetPath: "/tmp/mock.md", format: "MD")
+    let json = sampleItem(title: "Json", assetKind: .json, prompt: "{}", assetPath: "/tmp/mock.json", format: "JSON")
+    let text = sampleItem(title: "Text", assetKind: .text, prompt: "notes", assetPath: "/tmp/mock.txt", format: "TXT")
+    let word = sampleItem(title: "Word", assetKind: .document, prompt: "doc", assetPath: "/tmp/mock.docx", format: "DOCX")
+    let pdf = sampleItem(title: "PDF", assetKind: .document, prompt: "pdf", assetPath: "/tmp/mock.pdf", format: "PDF")
+
+    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .markdown)).map(\.id) == [markdown.id], "MD filter should isolate markdown assets")
+    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .json)).map(\.id) == [json.id], "Json filter should isolate JSON assets")
+    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .text)).map(\.id) == [text.id], "txt filter should isolate text assets")
+    try expect(PromptFiltering.apply([markdown, json, text, word], filter: PromptFilter(type: .text, textFormat: .word)).map(\.id) == [word.id], "Word filter should isolate doc/docx assets")
+    try expect(word.isTextDocumentLike, "Word documents should use text document presentation")
+    try expect(!pdf.isTextDocumentLike, "PDF documents should stay generic document assets")
 }
 
 func testFolderFilteringUsesStableFolderID() throws {
@@ -472,6 +488,7 @@ func testMCPToolsSmoke() throws {
 
 do {
     try testSearchFiltering()
+    try testTextFormatFiltering()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testAssetKindInferenceAndPromptParsing()

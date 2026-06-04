@@ -273,7 +273,7 @@ final class AppState: ObservableObject {
 
     func openEditPromptComposer(for item: PromptItem? = nil) {
         let target = item ?? selectedItem
-        guard let target, !target.assetKind.isTextDocumentLike else { return }
+        guard let target, !target.isTextDocumentLike else { return }
         if selectedID != target.id {
             select(target)
         }
@@ -289,7 +289,7 @@ final class AppState: ObservableObject {
 
     func openMarkdownEditor(for item: PromptItem? = nil) {
         let target = item ?? selectedItem
-        guard let target, target.assetKind.isTextDocumentLike else { return }
+        guard let target, target.isTextDocumentLike else { return }
         if selectedID != target.id {
             select(target)
         }
@@ -316,10 +316,65 @@ final class AppState: ObservableObject {
 
     func setModel(_ modelId: String?) {
         let normalizedModelID = modelId == "all" ? nil : modelId
-        guard filter.modelId != normalizedModelID else { return }
+        guard filter.modelId != normalizedModelID || filter.textFormat != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
         updateFilterSelectingFirst {
             filter.modelId = normalizedModelID
+            filter.textFormat = nil
+            filter.requiredTag = nil
+            if let normalizedModelID,
+               let model = models.first(where: { $0.id == normalizedModelID }) {
+                filter.type = model.type
+            }
+        }
+    }
+
+    func setPromptType(_ type: PromptType?) {
+        guard filter.type != type || filter.modelId != nil || filter.textFormat != nil || filter.requiredTag != nil else { return }
+        pushCurrentNavigationSnapshot()
+        updateFilterSelectingFirst {
+            filter.type = type
+            filter.requiredTag = nil
+            if type == nil {
+                filter.modelId = nil
+                filter.textFormat = nil
+                return
+            }
+            if type != .text {
+                filter.textFormat = nil
+            }
+            if type == .text {
+                filter.modelId = nil
+            } else if let modelId = filter.modelId,
+                      let model = models.first(where: { $0.id == modelId }),
+                      let type,
+                      model.type != type {
+                filter.modelId = nil
+            }
+        }
+    }
+
+    func setTextFormat(_ textFormat: TextFormatFilter?) {
+        guard filter.textFormat != textFormat || filter.type != .text || filter.modelId != nil || filter.requiredTag != nil else { return }
+        pushCurrentNavigationSnapshot()
+        updateFilterSelectingFirst {
+            filter.type = .text
+            filter.modelId = nil
+            filter.textFormat = textFormat
+            filter.requiredTag = nil
+        }
+    }
+
+    func setRequiredTag(_ tag: String?) {
+        let normalizedTag = tag?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextTag = normalizedTag?.isEmpty == false ? normalizedTag : nil
+        guard filter.requiredTag != nextTag || filter.type != nil || filter.modelId != nil || filter.textFormat != nil else { return }
+        pushCurrentNavigationSnapshot()
+        updateFilterSelectingFirst {
+            filter.type = nil
+            filter.modelId = nil
+            filter.textFormat = nil
+            filter.requiredTag = nextTag
         }
     }
 
@@ -351,7 +406,7 @@ final class AppState: ObservableObject {
 
     func markdownDocumentText(for item: PromptItem) -> String {
         if !item.assetPath.isEmpty,
-           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
+           let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
             return text
         }
         return item.currentVersion?.prompt ?? ""
@@ -371,7 +426,7 @@ final class AppState: ObservableObject {
     }
 
     func copyItemContent(_ item: PromptItem) {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             copyMarkdownDocumentText(markdownDocumentText(for: item))
         } else {
             if selectedID != item.id {
@@ -382,7 +437,7 @@ final class AppState: ObservableObject {
     }
 
     func requestInlineEdit(_ item: PromptItem) {
-        guard item.assetKind.isTextDocumentLike else {
+        guard item.isTextDocumentLike else {
             openEditPromptComposer(for: item)
             return
         }
@@ -542,7 +597,11 @@ final class AppState: ObservableObject {
         do {
             if !current.assetPath.isEmpty {
                 let url = URL(fileURLWithPath: current.assetPath)
-                try text.write(to: url, atomically: true, encoding: .utf8)
+                if current.isWordDocument {
+                    try AppKitBridge.writeDocx(text: text, to: url)
+                } else {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                }
                 if let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber {
                     current.fileSize = size.int64Value
                 }
@@ -1220,7 +1279,7 @@ final class AppState: ObservableObject {
             id: uniqueModelID(for: trimmedName),
             name: trimmedName,
             type: type,
-            parameters: type == .video ? ["duration", "camera", "motion"] : ["aspectRatio", "style", "seed"]
+            parameters: defaultParameters(for: type)
         )
         persist(model: model, replacingItemModelName: nil)
     }
@@ -1363,6 +1422,17 @@ final class AppState: ObservableObject {
             index += 1
         }
         return candidate
+    }
+
+    private func defaultParameters(for type: PromptType) -> [String] {
+        switch type {
+        case .image:
+            ["aspectRatio", "style", "seed"]
+        case .video:
+            ["duration", "camera", "motion"]
+        case .text:
+            ["format", "tone", "length"]
+        }
     }
 
     private func uniqueFolderID(name: String) -> String {
@@ -1594,7 +1664,7 @@ final class AppState: ObservableObject {
         var candidates: [PromptItem] = []
         var existingGenerated: [(String, String)] = []
         for item in items {
-            guard item.assetKind.supportsGeneratedThumbnail else { continue }
+            guard item.supportsGeneratedThumbnail else { continue }
             if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
                 if existingPath != item.thumbnailPath {
                     existingGenerated.append((item.id, existingPath))
@@ -1666,7 +1736,7 @@ final class AppState: ObservableObject {
     }
 
     private func plainPrompt(for item: PromptItem) -> String {
-        if item.assetKind.isTextDocumentLike {
+        if item.isTextDocumentLike {
             return markdownDocumentText(for: item)
         }
         return """
@@ -1684,7 +1754,7 @@ final class AppState: ObservableObject {
     }
 
     private func exportMarkdownText(for item: PromptItem) -> String {
-        item.assetKind.isTextDocumentLike ? markdownDocumentText(for: item) : markdownPrompt(for: item)
+        item.isTextDocumentLike ? markdownDocumentText(for: item) : markdownPrompt(for: item)
     }
 
     private func overwriteText(_ text: String, to url: URL) throws {
