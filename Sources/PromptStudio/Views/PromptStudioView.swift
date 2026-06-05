@@ -508,7 +508,6 @@ private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var settingsHovered = false
-    @State private var sidebarScrollHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -524,7 +523,7 @@ private struct SidebarView: View {
             .padding(.horizontal, 14)
             .padding(.top, 24)
 
-            SidebarHoverScrollView(isHovering: sidebarScrollHovered) {
+            SidebarHoverScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     sidebarSection(nil) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -549,15 +548,6 @@ private struct SidebarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
             .contentShape(Rectangle())
-            .onHover { sidebarScrollHovered = $0 }
-            .onContinuousHover { phase in
-                switch phase {
-                case .active:
-                    sidebarScrollHovered = true
-                case .ended:
-                    sidebarScrollHovered = false
-                }
-            }
 
             Button {
                 state.modal = .settings
@@ -625,151 +615,84 @@ private struct SidebarView: View {
 }
 
 private struct SidebarHoverScrollView<Content: View>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let isHovering: Bool
     @ViewBuilder let content: () -> Content
-    @State private var internalHovering = false
-    @State private var scrollOffset: CGFloat = 0
-    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        GeometryReader { outerProxy in
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
-                    GeometryReader { offsetProxy in
-                        Color.clear.preference(
-                            key: SidebarScrollOffsetPreferenceKey.self,
-                            value: offsetProxy.frame(in: .named("sidebarFolderScroll")).minY
-                        )
-                    }
-                    .frame(height: 0)
-
-                    content()
-                        .background(
-                            GeometryReader { contentProxy in
-                                Color.clear.preference(
-                                    key: SidebarContentHeightPreferenceKey.self,
-                                    value: contentProxy.size.height
-                                )
-                            }
-                        )
-                }
-            }
-            .coordinateSpace(name: "sidebarFolderScroll")
-            .onPreferenceChange(SidebarScrollOffsetPreferenceKey.self) { scrollOffset = $0 }
-            .onPreferenceChange(SidebarContentHeightPreferenceKey.self) { contentHeight = $0 }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .top) {
-                if shouldShowTopFade(viewportHeight: outerProxy.size.height) {
-                    sidebarScrollFade(edge: .top)
-                        .frame(height: 38)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if shouldShowBottomFade(viewportHeight: outerProxy.size.height) {
-                    sidebarScrollFade(edge: .bottom)
-                        .frame(height: 48)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if shouldShowScrollbar(viewportHeight: outerProxy.size.height) {
-                    Capsule()
-                        .fill(Color.white.opacity(scrollbarOpacity))
-                        .frame(width: 4, height: scrollbarHeight(viewportHeight: outerProxy.size.height))
-                        .offset(y: scrollbarOffset(viewportHeight: outerProxy.size.height))
-                        .padding(.trailing, 5)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovering || internalHovering)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.clear)
-            .contentShape(Rectangle())
-            .onHover { internalHovering = $0 }
-            .onContinuousHover { phase in
-                switch phase {
-                case .active:
-                    internalHovering = true
-                case .ended:
-                    internalHovering = false
-                }
-            }
-        }
+        SidebarOverlayScrollContainer(content: content)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .contentShape(Rectangle())
-        .onHover { internalHovering = $0 }
-        .onContinuousHover { phase in
-            switch phase {
-            case .active:
-                internalHovering = true
-            case .ended:
-                internalHovering = false
-            }
-        }
-    }
-
-    private func isScrollable(viewportHeight: CGFloat) -> Bool {
-        contentHeight > viewportHeight + 1
-    }
-
-    private func shouldShowScrollbar(viewportHeight: CGFloat) -> Bool {
-        isScrollable(viewportHeight: viewportHeight)
-    }
-
-    private var scrollbarOpacity: Double {
-        isHovering || internalHovering ? 0.82 : 0.58
-    }
-
-    private func shouldShowTopFade(viewportHeight: CGFloat) -> Bool {
-        isScrollable(viewportHeight: viewportHeight) && -scrollOffset > 2
-    }
-
-    private func shouldShowBottomFade(viewportHeight: CGFloat) -> Bool {
-        guard isScrollable(viewportHeight: viewportHeight) else { return false }
-        let maxScroll = max(1, contentHeight - viewportHeight)
-        return -scrollOffset < maxScroll - 2
-    }
-
-    private func scrollbarHeight(viewportHeight: CGFloat) -> CGFloat {
-        guard contentHeight > 0 else { return 0 }
-        return max(34, viewportHeight * min(1, viewportHeight / contentHeight))
-    }
-
-    private func scrollbarOffset(viewportHeight: CGFloat) -> CGFloat {
-        let maxScroll = max(1, contentHeight - viewportHeight)
-        let progress = min(max(-scrollOffset / maxScroll, 0), 1)
-        return progress * max(0, viewportHeight - scrollbarHeight(viewportHeight: viewportHeight))
-    }
-
-    private func sidebarScrollFade(edge: Edge) -> some View {
-        let solid = Color.black.opacity(0.42)
-        return LinearGradient(
-            colors: edge == .top ? [solid, solid.opacity(0)] : [solid.opacity(0), solid],
-            startPoint: .top,
-            endPoint: .bottom
-        )
     }
 }
 
-private struct SidebarScrollOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable {
+    let content: Content
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
     }
-}
 
-private struct SidebarContentHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsetsZero
+        configureTransparentScrollView(scrollView)
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        hostingView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        hostingView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hostingView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.wantsLayer = true
+        documentView.layer?.backgroundColor = NSColor.clear.cgColor
+        documentView.addSubview(hostingView)
+        scrollView.documentView = documentView
+
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: documentView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
+            hostingView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
+        ])
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        configureTransparentScrollView(scrollView)
+        (scrollView.documentView?.subviews.first as? NSHostingView<Content>)?.rootView = content
+        scrollView.documentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        (scrollView.documentView?.subviews.first as? NSView)?.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    private func configureTransparentScrollView(_ scrollView: NSScrollView) {
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
+        scrollView.wantsLayer = true
+        scrollView.layer?.backgroundColor = NSColor.clear.cgColor
+        scrollView.contentView.drawsBackground = false
+        scrollView.contentView.backgroundColor = .clear
+        scrollView.contentView.wantsLayer = true
+        scrollView.contentView.layer?.backgroundColor = NSColor.clear.cgColor
+        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
+        scrollView.autohidesScrollers = true
     }
 }
 
