@@ -1208,12 +1208,17 @@ private struct MainContentView: View {
                 .padding(.bottom, 12)
 
             Group {
-                if state.filteredItems.isEmpty {
+                let childFolders = state.childFolderRowsForCurrentCollection()
+                if state.filteredItems.isEmpty && childFolders.isEmpty {
                     EmptyStateView()
-                } else if state.isListView {
+                } else if state.isListView && childFolders.isEmpty {
                     PromptListView(items: state.filteredItems)
                 } else {
-                    MasonryGridView(items: state.filteredItems, isSplitResizing: isSplitResizing)
+                    MasonryGridView(
+                        folders: childFolders,
+                        items: state.filteredItems,
+                        isSplitResizing: isSplitResizing
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1803,9 +1808,11 @@ private struct CompactFilterChip: View {
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
     @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
+    let folders: [AppState.FolderRow]
     let items: [PromptItem]
     let isSplitResizing: Bool
     @State private var draggedItemID: String?
+    @State private var selectedFolderID: String?
     @State private var lockedColumnCount: Int?
 
     var body: some View {
@@ -1813,18 +1820,35 @@ private struct MasonryGridView: View {
             let computedColumnCount = computedColumnCount(for: proxy.size.width)
             let columnCount = lockedColumnCount ?? computedColumnCount
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
-            let layout = makeMasonryLayout(items, columnCount: columnCount, width: width)
+            let layout = makeMasonryLayout(folders: folders, items: items, columnCount: columnCount, width: width)
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
                         ForEach(layout.placements) { placement in
-                            AssetCardView(
-                                item: placement.item,
-                                width: width,
-                                draggedItemID: $draggedItemID
-                            )
-                            .offset(x: placement.x, y: placement.y)
-                            .zIndex(state.selectedID == placement.item.id ? 1 : 0)
+                            switch placement.entry {
+                            case .folder(let folder):
+                                SubfolderCardView(
+                                    row: folder,
+                                    width: width,
+                                    isSelected: selectedFolderID == folder.id,
+                                    onSelect: {
+                                        selectedFolderID = folder.id
+                                    }
+                                )
+                                    .offset(x: placement.x, y: placement.y)
+                                    .zIndex(selectedFolderID == folder.id ? 1 : 0)
+                            case .item(let item):
+                                AssetCardView(
+                                    item: item,
+                                    width: width,
+                                    draggedItemID: $draggedItemID
+                                )
+                                .offset(x: placement.x, y: placement.y)
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    selectedFolderID = nil
+                                })
+                                .zIndex(state.selectedID == item.id ? 1 : 0)
+                            }
                         }
                     }
                     .id(Self.topAnchorID)
@@ -1843,6 +1867,7 @@ private struct MasonryGridView: View {
                     withTransaction(transaction) {
                         scrollProxy.scrollTo(Self.topAnchorID, anchor: .top)
                     }
+                    selectedFolderID = nil
                 }
             }
             .onChange(of: isSplitResizing) { _, resizing in
@@ -1866,19 +1891,25 @@ private struct MasonryGridView: View {
         return max(2, min(6, proposed))
     }
 
-    private func makeMasonryLayout(_ items: [PromptItem], columnCount: Int, width: CGFloat) -> MasonryLayoutResult {
+    private func makeMasonryLayout(
+        folders: [AppState.FolderRow],
+        items: [PromptItem],
+        columnCount: Int,
+        width: CGFloat
+    ) -> MasonryLayoutResult {
         var placements: [MasonryPlacement] = []
         guard columnCount > 0 else {
             return MasonryLayoutResult(placements: [], height: 0)
         }
 
         var heights = Array(repeating: CGFloat.zero, count: columnCount)
-        for item in items {
+        let entries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
+        for entry in entries {
             let column = shortestColumnIndex(in: heights)
-            let height = AssetCardMetrics.totalHeight(for: item, width: width)
+            let height = entry.totalHeight(width: width)
             placements.append(
                 MasonryPlacement(
-                    item: item,
+                    entry: entry,
                     x: CGFloat(column) * (width + 12),
                     y: heights[column],
                     height: height
@@ -1912,12 +1943,193 @@ private struct MasonryLayoutResult {
 }
 
 private struct MasonryPlacement: Identifiable {
-    let item: PromptItem
+    let entry: MasonryGridEntry
     let x: CGFloat
     let y: CGFloat
     let height: CGFloat
 
-    var id: String { item.id }
+    var id: String { entry.id }
+}
+
+private enum MasonryGridEntry {
+    case folder(AppState.FolderRow)
+    case item(PromptItem)
+
+    var id: String {
+        switch self {
+        case .folder(let folder):
+            "folder-\(folder.id)"
+        case .item(let item):
+            item.id
+        }
+    }
+
+    func totalHeight(width: CGFloat) -> CGFloat {
+        switch self {
+        case .folder:
+            SubfolderCardMetrics.totalHeight(for: width)
+        case .item(let item):
+            AssetCardMetrics.totalHeight(for: item, width: width)
+        }
+    }
+}
+
+private enum SubfolderCardMetrics {
+    static let cornerRadius: CGFloat = 12
+    static let selectionCornerRadius: CGFloat = 15
+
+    static func contentWidth(for width: CGFloat) -> CGFloat {
+        max(120, width - AssetCardMetrics.selectionOutset * 2)
+    }
+
+    static func contentHeight(for width: CGFloat) -> CGFloat {
+        max(112, min(150, width * 0.46))
+    }
+
+    static func totalHeight(for width: CGFloat) -> CGFloat {
+        contentHeight(for: contentWidth(for: width)) + AssetCardMetrics.selectionOutset * 2
+    }
+}
+
+private struct SubfolderCardView: View {
+    @EnvironmentObject private var state: AppState
+    let row: AppState.FolderRow
+    let width: CGFloat
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        let contentWidth = SubfolderCardMetrics.contentWidth(for: width)
+        let height = SubfolderCardMetrics.contentHeight(for: contentWidth)
+        ZStack(alignment: .bottomTrailing) {
+            HStack(spacing: 16) {
+                folderCover(height: height)
+                    .frame(width: max(92, contentWidth * 0.40), height: height - 16)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(row.folder.name)
+                        .font(StudioFont.font(15, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.75)
+
+                    Text("\(row.count) 个文件")
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(StudioColor.mutedText)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 16)
+                .padding(.trailing, 38)
+            }
+            .padding(.leading, 8)
+            .padding(.trailing, 14)
+            .frame(width: contentWidth, height: height)
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous)
+                    .stroke(
+                        isSelected ? StudioColor.primaryAction.opacity(0.72) : StudioColor.hairline,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
+            )
+            .overlay(alignment: .bottom) {
+                if isSelected {
+                    LinearGradient(
+                        colors: [.black.opacity(0), .black.opacity(0.28)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: height * 0.44)
+                    .allowsHitTesting(false)
+                }
+            }
+
+            Button {
+                onSelect()
+                state.selectFolder(row.folder)
+            } label: {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(StudioColor.control))
+                    .overlay(
+                        Circle()
+                            .stroke(isSelected ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 14)
+            .padding(.bottom, 12)
+        }
+        .padding(AssetCardMetrics.selectionOutset)
+        .frame(width: width, height: height + AssetCardMetrics.selectionOutset * 2)
+        .overlay(
+            RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous)
+                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous))
+        .onTapGesture {
+            onSelect()
+        }
+        .onTapGesture(count: 2) {
+            onSelect()
+            state.selectFolder(row.folder)
+        }
+        .accessibilityLabel("进入文件夹 \(row.folder.name)，\(row.count) 个文件")
+    }
+
+    private func folderCover(height: CGFloat) -> some View {
+        GeometryReader { proxy in
+            let coverWidth = proxy.size.width
+            let coverHeight = proxy.size.height
+            ZStack(alignment: .center) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(StudioColor.controlPressed.opacity(0.92))
+                    .frame(width: coverWidth * 0.88, height: coverHeight * 0.84)
+                    .rotationEffect(.degrees(-3))
+                    .offset(x: coverWidth * 0.12, y: coverHeight * 0.08)
+
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(StudioColor.control)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(StudioColor.hairline, lineWidth: 1)
+                    )
+                    .overlay(coverTexture.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)))
+
+                Text(coverLabel)
+                    .font(StudioFont.font(18, weight: .semibold))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+                    .padding(.horizontal, 10)
+            }
+        }
+    }
+
+    private var coverTexture: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(0..<5, id: \.self) { _ in
+                Text(coverLabel)
+                    .font(StudioFont.font(20, weight: .semibold))
+                    .foregroundStyle(StudioColor.text.opacity(0.035))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(.leading, 9)
+    }
+
+    private var coverLabel: String {
+        let trimmed = row.folder.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "PS" }
+        return String(trimmed.prefix(8))
+    }
 }
 
 private enum AssetCardMetrics {

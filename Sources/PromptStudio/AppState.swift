@@ -1016,6 +1016,11 @@ final class AppState: ObservableObject {
             }
     }
 
+    func childFolderRowsForCurrentCollection() -> [FolderRow] {
+        guard case .folder(let folderID) = filter.collection else { return [] }
+        return childFolderRows(parentID: folderID)
+    }
+
     func folderTreeRows() -> [FolderTreeRow] {
         let children = Dictionary(grouping: folders, by: { $0.parentId })
         func sorted(_ folders: [LibraryFolder]) -> [LibraryFolder] {
@@ -1048,6 +1053,23 @@ final class AppState: ObservableObject {
         }
         append(parentID: nil, level: 0)
         return rows
+    }
+
+    private func childFolderRows(parentID: String) -> [FolderRow] {
+        folders
+            .filter { $0.parentId == parentID }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            .map { folder in
+                FolderRow(
+                    folder: folder,
+                    count: itemCount(in: folder, includingDescendants: true)
+                )
+            }
     }
 
     func toggleFolderExpansion(_ folderID: String) {
