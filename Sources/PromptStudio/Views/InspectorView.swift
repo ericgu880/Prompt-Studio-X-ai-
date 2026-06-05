@@ -86,7 +86,7 @@ struct InspectorView: View {
     private func mediaReadOnlyInspector(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(item.title)
-                .font(StudioFont.font(15, weight: .semibold))
+                .font(StudioFont.font(14, weight: .bold))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(3)
 
@@ -232,20 +232,9 @@ struct InspectorView: View {
     private func markdownHeader(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(item.title)
-                .font(StudioFont.font(15, weight: .semibold))
+                .font(StudioFont.font(14, weight: .bold))
                 .foregroundStyle(StudioColor.text)
                 .lineLimit(3)
-
-            HStack(alignment: .center, spacing: 10) {
-                Text(markdownInfoText(for: item))
-                    .font(StudioFont.caption(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .tracking(1.2)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer(minLength: 10)
-            }
 
             markdownHeaderChips(item)
 
@@ -277,14 +266,6 @@ struct InspectorView: View {
                 state.modal = .versionHistory
             }
         }
-    }
-
-    private func markdownInfoText(for item: PromptItem) -> String {
-        [
-            item.format.isEmpty ? "MD" : item.format.uppercased(),
-            "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行",
-            fileSizeText(item.fileSize)
-        ].joined(separator: " · ")
     }
 
     private func markdownHeaderChips(_ item: PromptItem) -> some View {

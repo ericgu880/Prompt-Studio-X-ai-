@@ -625,6 +625,7 @@ private struct SidebarView: View {
 }
 
 private struct SidebarHoverScrollView<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isHovering: Bool
     @ViewBuilder let content: () -> Content
     @State private var internalHovering = false
@@ -633,42 +634,57 @@ private struct SidebarHoverScrollView<Content: View>: View {
 
     var body: some View {
         GeometryReader { outerProxy in
-            ZStack(alignment: .topTrailing) {
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        GeometryReader { offsetProxy in
-                            Color.clear.preference(
-                                key: SidebarScrollOffsetPreferenceKey.self,
-                                value: offsetProxy.frame(in: .named("sidebarFolderScroll")).minY
-                            )
-                        }
-                        .frame(height: 0)
-
-                        content()
-                            .background(
-                                GeometryReader { contentProxy in
-                                    Color.clear.preference(
-                                        key: SidebarContentHeightPreferenceKey.self,
-                                        value: contentProxy.size.height
-                                    )
-                                }
-                            )
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    GeometryReader { offsetProxy in
+                        Color.clear.preference(
+                            key: SidebarScrollOffsetPreferenceKey.self,
+                            value: offsetProxy.frame(in: .named("sidebarFolderScroll")).minY
+                        )
                     }
-                }
-                .coordinateSpace(name: "sidebarFolderScroll")
-                .onPreferenceChange(SidebarScrollOffsetPreferenceKey.self) { scrollOffset = $0 }
-                .onPreferenceChange(SidebarContentHeightPreferenceKey.self) { contentHeight = $0 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: 0)
 
-                if shouldShowScrollbar(viewportHeight: outerProxy.size.height) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.40))
-                        .frame(width: 2, height: scrollbarHeight(viewportHeight: outerProxy.size.height))
-                        .offset(y: scrollbarOffset(viewportHeight: outerProxy.size.height))
-                        .padding(.trailing, 12)
-                        .zIndex(10)
+                    content()
+                        .background(
+                            GeometryReader { contentProxy in
+                                Color.clear.preference(
+                                    key: SidebarContentHeightPreferenceKey.self,
+                                    value: contentProxy.size.height
+                                )
+                            }
+                        )
+                }
+            }
+            .coordinateSpace(name: "sidebarFolderScroll")
+            .onPreferenceChange(SidebarScrollOffsetPreferenceKey.self) { scrollOffset = $0 }
+            .onPreferenceChange(SidebarContentHeightPreferenceKey.self) { contentHeight = $0 }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                if shouldShowTopFade(viewportHeight: outerProxy.size.height) {
+                    sidebarScrollFade(edge: .top)
+                        .frame(height: 38)
                         .transition(.opacity)
                         .allowsHitTesting(false)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if shouldShowBottomFade(viewportHeight: outerProxy.size.height) {
+                    sidebarScrollFade(edge: .bottom)
+                        .frame(height: 48)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if shouldShowScrollbar(viewportHeight: outerProxy.size.height) {
+                    Capsule()
+                        .fill(Color.white.opacity(scrollbarOpacity))
+                        .frame(width: 4, height: scrollbarHeight(viewportHeight: outerProxy.size.height))
+                        .offset(y: scrollbarOffset(viewportHeight: outerProxy.size.height))
+                        .padding(.trailing, 5)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovering || internalHovering)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -699,11 +715,25 @@ private struct SidebarHoverScrollView<Content: View>: View {
     }
 
     private func isScrollable(viewportHeight: CGFloat) -> Bool {
-        contentHeight > viewportHeight * 0.98
+        contentHeight > viewportHeight + 1
     }
 
     private func shouldShowScrollbar(viewportHeight: CGFloat) -> Bool {
         isScrollable(viewportHeight: viewportHeight)
+    }
+
+    private var scrollbarOpacity: Double {
+        isHovering || internalHovering ? 0.82 : 0.58
+    }
+
+    private func shouldShowTopFade(viewportHeight: CGFloat) -> Bool {
+        isScrollable(viewportHeight: viewportHeight) && -scrollOffset > 2
+    }
+
+    private func shouldShowBottomFade(viewportHeight: CGFloat) -> Bool {
+        guard isScrollable(viewportHeight: viewportHeight) else { return false }
+        let maxScroll = max(1, contentHeight - viewportHeight)
+        return -scrollOffset < maxScroll - 2
     }
 
     private func scrollbarHeight(viewportHeight: CGFloat) -> CGFloat {
@@ -715,6 +745,15 @@ private struct SidebarHoverScrollView<Content: View>: View {
         let maxScroll = max(1, contentHeight - viewportHeight)
         let progress = min(max(-scrollOffset / maxScroll, 0), 1)
         return progress * max(0, viewportHeight - scrollbarHeight(viewportHeight: viewportHeight))
+    }
+
+    private func sidebarScrollFade(edge: Edge) -> some View {
+        let solid = Color.black.opacity(0.42)
+        return LinearGradient(
+            colors: edge == .top ? [solid, solid.opacity(0)] : [solid.opacity(0), solid],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 }
 
@@ -2081,10 +2120,9 @@ private struct AssetCardView: View {
                         cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
                             state.copyItemContent(item)
                         }
-                        cardAction("clock", help: "历史版本") { state.modal = .versionHistory }
                     } else {
-                        cardAction("doc", help: "复制文件") { state.copySelectedFile() }
-                        cardAction("text.badge.checkmark", help: "复制文件路径") { state.copySelectedFilePath() }
+                        cardAction("pencil", help: "编辑") { state.openSelectedInDefaultApplication() }
+                        cardAction("doc.on.doc", help: "复制文件") { state.copySelectedFile() }
                     }
                 }
                 .allowsHitTesting(true)
