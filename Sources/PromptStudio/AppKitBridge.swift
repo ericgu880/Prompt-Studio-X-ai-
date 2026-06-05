@@ -48,6 +48,8 @@ enum AppKitBridge {
             panel.allowedContentTypes = [.image]
         case .video:
             panel.allowedContentTypes = [.movie, .video]
+        case .audio:
+            panel.allowedContentTypes = [.audio]
         case .text:
             panel.allowedContentTypes = [
                 .text,
@@ -166,68 +168,7 @@ enum AppKitBridge {
     }
 
     static func readDocumentText(from url: URL) -> String? {
-        if let text = try? String(contentsOf: url, encoding: .utf8) {
-            return text
-        }
-        if let text = try? String(contentsOf: url, encoding: .utf16) {
-            return text
-        }
-
-        let documentType: NSAttributedString.DocumentType?
-        switch url.pathExtension.lowercased() {
-        case "docx":
-            documentType = .officeOpenXML
-        case "doc":
-            documentType = .docFormat
-        case "rtf":
-            documentType = .rtf
-        default:
-            documentType = nil
-        }
-
-        if let documentType,
-           let attributed = try? NSAttributedString(
-                url: url,
-                options: [.documentType: documentType],
-                documentAttributes: nil
-           ) {
-            let text = attributed.string
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return text
-            }
-        }
-
-        if ["doc", "docx", "rtf"].contains(url.pathExtension.lowercased()),
-           let text = textutilText(from: url) {
-            return text
-        }
-
-        return nil
-    }
-
-    private static func textutilText(from url: URL) -> String? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
-        process.arguments = ["-convert", "txt", "-stdout", url.path]
-
-        let output = Pipe()
-        process.standardOutput = output
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(data: data, encoding: .isoLatin1)
-        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : text
+        DocumentTextExtractor.readText(from: url)
     }
 
     static func openPreview(path: String) {

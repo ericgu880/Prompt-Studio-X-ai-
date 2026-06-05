@@ -60,7 +60,9 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
             .video
         case .image:
             .image
-        case .audio, .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
+        case .audio:
+            .audio
+        case .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             .text
         }
     }
@@ -75,7 +77,7 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     public var supportsGeneratedThumbnail: Bool {
-        self == .image || self == .video || isTextDocumentLike
+        self == .image || self == .video || self == .audio || isTextDocumentLike
     }
 
     public static func infer(fileExtension: String, fallbackType: PromptType? = nil) -> AssetKind {
@@ -84,7 +86,16 @@ public enum AssetKind: String, Codable, CaseIterable, Identifiable, Sendable {
             return support.assetKind
         }
         if support.fileExtension.isEmpty, let fallbackType {
-            return fallbackType == .video ? .video : fallbackType == .image ? .image : .text
+            switch fallbackType {
+            case .image:
+                return .image
+            case .video:
+                return .video
+            case .audio:
+                return .audio
+            case .text:
+                return .text
+            }
         }
         return support.assetKind
     }
@@ -302,6 +313,7 @@ public enum PromptType: String, Codable, CaseIterable, Identifiable, Sendable {
     case image
     case video
     case text
+    case audio
 
     public var id: String { rawValue }
 
@@ -310,6 +322,7 @@ public enum PromptType: String, Codable, CaseIterable, Identifiable, Sendable {
         case .image: "图片 Prompt"
         case .video: "视频 Prompt"
         case .text: "文本 Prompt"
+        case .audio: "音频 Prompt"
         }
     }
 }
@@ -418,7 +431,20 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.id = id
         self.title = title
         self.type = type
-        self.assetKind = assetKind ?? (type == .video ? .video : .image)
+        if let assetKind {
+            self.assetKind = assetKind
+        } else {
+            switch type {
+            case .image:
+                self.assetKind = .image
+            case .video:
+                self.assetKind = .video
+            case .audio:
+                self.assetKind = .audio
+            case .text:
+                self.assetKind = .text
+            }
+        }
         self.modelId = modelId
         self.modelName = modelName
         self.folderId = folderId

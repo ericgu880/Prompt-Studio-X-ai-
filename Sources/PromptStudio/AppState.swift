@@ -460,11 +460,7 @@ final class AppState: ObservableObject {
             if selectedID != item.id {
                 select(item)
             }
-            modal = nil
-            isPreviewPresented = false
-            markdownEditorItemID = nil
-            promptComposerMode = nil
-            inspectorEditRequest = InspectorEditRequest(itemID: item.id)
+            previewSelected()
             return
         }
 
@@ -680,17 +676,19 @@ final class AppState: ObservableObject {
         prompt: String,
         negativePrompt: String,
         tags: [String],
+        parameters: [String: String] = ["比例": "16:9", "质量": "high"],
         previewImageURL: URL? = nil,
         referenceURLs: [URL] = []
     ) {
-        let model = models.first(where: { $0.id == modelId }) ?? SeedData.models[1]
+        let model = models.first(where: { $0.id == modelId })
+            ?? ModelProfile(id: "local_asset", name: "Local Asset", type: type, parameters: [])
         let id = UUID().uuidString
         let version = PromptVersion(
             promptItemId: id,
             version: "V1.0",
             prompt: prompt,
             negativePrompt: negativePrompt,
-            parameters: ["比例": "16:9", "质量": "high"],
+            parameters: parameters,
             note: "新建 Prompt"
         )
 
@@ -1478,6 +1476,8 @@ final class AppState: ObservableObject {
             ["duration", "camera", "motion"]
         case .text:
             ["format", "tone", "length"]
+        case .audio:
+            ["voice", "mood", "duration"]
         }
     }
 
@@ -1526,8 +1526,10 @@ final class AppState: ObservableObject {
             assetKind == .image
         case .video:
             assetKind == .video
+        case .audio:
+            assetKind == .audio
         case .text:
-            assetKind != .image && assetKind != .video
+            assetKind.isTextDocumentLike || assetKind == .document
         }
     }
 

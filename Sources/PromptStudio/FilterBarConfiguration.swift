@@ -83,10 +83,10 @@ enum FilterBarConfiguration {
     static func availableEntries(models: [ModelProfile], tags: [Tag]) -> [FilterQuickEntry] {
         var entries: [FilterQuickEntry] = [
             .all,
-            .type(.image, title: "picture"),
-            .type(.video, title: "video"),
-            .assetKind(.promptDocument, title: "text"),
-            .assetKind(.audio, title: "audio")
+            .type(.image, title: "图片"),
+            .type(.video, title: "视频"),
+            .assetKind(.promptDocument, title: "文本"),
+            .assetKind(.audio, title: "音频")
         ]
 
         let preferredModelTitles = [
@@ -132,7 +132,9 @@ enum FilterBarConfiguration {
     static func selectedIDs(from rawValue: String, availableEntries: [FilterQuickEntry]) -> [String] {
         let availableIDs = Set(availableEntries.map(\.id))
         let decoded = decode(rawValue).filter { availableIDs.contains($0) }
-        let base = decoded.isEmpty ? defaultSelectedIDs.filter { availableIDs.contains($0) } : decoded
+        let base = decoded.isEmpty
+            ? defaultSelectedIDs.filter { availableIDs.contains($0) }
+            : migratedSelectedIDs(decoded, availableIDs: availableIDs)
         return base.isEmpty ? availableEntries.prefix(1).map(\.id) : base
     }
 
@@ -150,6 +152,19 @@ enum FilterBarConfiguration {
             return []
         }
         return ids
+    }
+
+    private static func migratedSelectedIDs(_ ids: [String], availableIDs: Set<String>) -> [String] {
+        let mainIDs = ["all", "type-image", "type-video", "asset-promptDocument", "asset-audio"]
+            .filter { availableIDs.contains($0) }
+        guard mainIDs.contains(where: { ids.contains($0) }),
+              !mainIDs.allSatisfy({ ids.contains($0) }) else {
+            return ids
+        }
+
+        var result = mainIDs
+        result.append(contentsOf: ids.filter { !result.contains($0) })
+        return result
     }
 }
 

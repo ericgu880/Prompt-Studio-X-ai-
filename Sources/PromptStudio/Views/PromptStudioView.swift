@@ -2237,7 +2237,6 @@ private struct AssetCardView: View {
             )
             .shadow(color: .black.opacity(0.36), radius: 14, x: 0, y: 10)
             .opacity(0.86)
-            .offset(x: 0, y: previewHeight * 0.64)
     }
 
     private func cardAction(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {

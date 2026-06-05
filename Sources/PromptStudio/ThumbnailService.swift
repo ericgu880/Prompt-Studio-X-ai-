@@ -49,6 +49,10 @@ enum ThumbnailService {
             return try generateMarkdownThumbnail(from: sourceURL, to: destinationURL)
         }
 
+        if item.assetKind == .audio {
+            return try generateAudioArtworkThumbnail(from: sourceURL, to: destinationURL)
+        }
+
         if item.assetKind == .video {
             return try generateVideoThumbnail(from: sourceURL, to: destinationURL)
         }
@@ -261,6 +265,61 @@ enum ThumbnailService {
             return nil
         }
         return destinationURL.path
+    }
+
+    private static func generateAudioArtworkThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {
+        let asset = AVURLAsset(url: sourceURL)
+        guard let artworkData = asset.commonMetadata.compactMap(audioArtworkData(from:)).first,
+              let source = CGImageSourceCreateWithData(artworkData as CFData, nil) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let destination = CGImageDestinationCreateWithURL(
+                destinationURL as CFURL,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+              ) else {
+            return nil
+        }
+
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.82
+        ]
+        CGImageDestinationAddImage(destination, thumbnail, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return destinationURL.path
+    }
+
+    private static func audioArtworkData(from item: AVMetadataItem) -> Data? {
+        let key = item.commonKey?.rawValue.lowercased() ?? ""
+        let identifier = item.identifier?.rawValue.lowercased() ?? ""
+        guard key == "artwork" || identifier.contains("artwork") || identifier.contains("apic") else {
+            return nil
+        }
+        if let data = item.dataValue {
+            return data
+        }
+        if let data = item.value as? Data {
+            return data
+        }
+        if let dictionary = item.value as? [String: Any] {
+            return dictionary["data"] as? Data
+        }
+        if let dictionary = item.value as? NSDictionary {
+            return dictionary["data"] as? Data
+        }
+        return nil
     }
 
     static func generateThumbnailsSynchronously(for candidates: [PromptItem], libraryURL: URL) -> [(String, String)] {

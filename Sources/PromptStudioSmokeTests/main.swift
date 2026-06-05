@@ -198,6 +198,8 @@ func testPrimaryPromptAssetsAndAttachments() throws {
     let items = [image, video, audio, markdown, word, source, web, pdf, raw, font, unknown]
     let audioMatches = PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .audio)).map(\.id)
     try expect(audioMatches == [audio.id], "audio filter should isolate audio prompt assets")
+    let audioTypeMatches = PromptFiltering.apply(items, filter: PromptFilter(type: .audio)).map(\.id)
+    try expect(audioTypeMatches == [audio.id], "audio prompt type should isolate imported audio assets")
     let documentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .promptDocument)).map(\.id))
     try expect(documentMatches == Set([markdown.id, word.id]), "text filter should isolate text prompt documents")
     let attachmentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .other)).map(\.id))

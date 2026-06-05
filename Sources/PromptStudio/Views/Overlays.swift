@@ -78,6 +78,8 @@ struct ImmersivePreviewOverlay: View {
     private var previewMedia: some View {
         if item.assetKind == .video {
             OverlayVideoPlayer(path: item.assetPath)
+        } else if item.assetKind == .audio {
+            AudioPreviewPlayer(item: item)
         } else if item.assetKind == .image {
             OverlayImagePreview(path: item.assetPath, scale: imageScale)
         } else {
@@ -109,7 +111,7 @@ struct ImmersivePreviewOverlay: View {
 
                 HStack(spacing: 10) {
                     previewActionButton("pencil", help: "编辑") {
-                        state.openEditPromptComposer(for: item)
+                        state.requestInlineEdit(item)
                     }
                     previewActionButton("doc.on.doc", help: "复制提示词") {
                         state.copySelectedPrompt()
@@ -670,12 +672,55 @@ private enum CreateComposerInputField: Hashable {
     case prompt
 }
 
+private struct PromptFormatOption: Identifiable, Equatable {
+    let id: String
+    let title: String
+
+    static func options(for type: PromptType) -> [PromptFormatOption] {
+        switch type {
+        case .image:
+            return [
+                PromptFormatOption(id: "image_general", title: "通用图片"),
+                PromptFormatOption(id: "image_character", title: "角色设定"),
+                PromptFormatOption(id: "image_product", title: "产品图"),
+                PromptFormatOption(id: "image_midjourney", title: "Midjourney 参数"),
+                PromptFormatOption(id: "image_nano_banana", title: "Nano Banana 格式")
+            ]
+        case .video:
+            return [
+                PromptFormatOption(id: "video_general", title: "通用视频"),
+                PromptFormatOption(id: "video_storyboard", title: "分镜脚本"),
+                PromptFormatOption(id: "video_seedance_api_block", title: "Seedance API block"),
+                PromptFormatOption(id: "video_kling_shot", title: "Kling 镜头"),
+                PromptFormatOption(id: "video_shot_table", title: "镜头表")
+            ]
+        case .text:
+            return [
+                PromptFormatOption(id: "text_markdown", title: "Markdown"),
+                PromptFormatOption(id: "text_json", title: "JSON"),
+                PromptFormatOption(id: "text_yaml", title: "YAML"),
+                PromptFormatOption(id: "text_txt", title: "TXT"),
+                PromptFormatOption(id: "text_agent_handoff", title: "Agent handoff")
+            ]
+        case .audio:
+            return [
+                PromptFormatOption(id: "audio_voiceover", title: "旁白"),
+                PromptFormatOption(id: "audio_voice_reference", title: "音色参考"),
+                PromptFormatOption(id: "audio_music_mood", title: "音乐氛围"),
+                PromptFormatOption(id: "audio_sound_effect", title: "音效"),
+                PromptFormatOption(id: "audio_spoken_script", title: "口播稿")
+            ]
+        }
+    }
+}
+
 struct PromptComposerOverlay: View {
     @EnvironmentObject private var state: AppState
     let mode: AppState.PromptComposerMode
     @State private var title = ""
     @State private var type: PromptType = .image
     @State private var modelId = "nano_banana_2"
+    @State private var promptFormatID = ""
     @State private var prompt = ""
     @State private var negativePrompt = ""
     @State private var tags: [String] = []
@@ -752,7 +797,7 @@ struct PromptComposerOverlay: View {
             let contentHeight = max(0, panelHeight - panelPadding * 2)
             let uploadWidth = min(360, max(300, contentWidth * 0.34))
             let leftWidth = max(0, contentWidth - columnSpacing - uploadWidth)
-            let promptHeight = max(260, contentHeight - 174)
+            let promptHeight = max(220, contentHeight - 226)
             let uploadBoxHeight = max(150, (contentHeight - 76) / 2)
 
             ZStack {
@@ -775,13 +820,7 @@ struct PromptComposerOverlay: View {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .top, spacing: columnSpacing) {
                             VStack(alignment: .leading, spacing: 28) {
-                                HStack(alignment: .center, spacing: 0) {
-                                    createTypeTabs
-                                        .frame(minWidth: 230, alignment: .leading)
-                                    Spacer(minLength: 24)
-                                    createModelMenu
-                                        .frame(width: min(300, max(220, leftWidth - 260)))
-                                }
+                                createHeaderControls(width: leftWidth)
                                 .frame(width: leftWidth, alignment: .leading)
 
                                 createPromptColumn(promptHeight: promptHeight)
@@ -805,6 +844,21 @@ struct PromptComposerOverlay: View {
                 .frame(width: panelWidth, height: headerHeight + headerGap + panelHeight, alignment: .topLeading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
+        }
+    }
+
+    private func createHeaderControls(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            createTypeTabs
+                .frame(width: width, alignment: .leading)
+
+            HStack(alignment: .center, spacing: 14) {
+                createModelMenu
+                    .frame(maxWidth: .infinity)
+                createFormatMenu
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(width: width)
         }
     }
 
@@ -841,29 +895,26 @@ struct PromptComposerOverlay: View {
     }
 
     private func createTypeTab(_ option: PromptType) -> some View {
-        let enabled = isEditing || option == .image
         let active = type == option
         let title = option.displayName.replacingOccurrences(of: " Prompt", with: "")
         return Button {
-            if enabled {
-                type = option
-                ensureModelMatchesType()
-            }
+            type = option
+            ensureModelMatchesType()
+            ensurePromptFormatMatchesType()
         } label: {
             Text(title)
                 .font(StudioFont.font(12, weight: .medium))
-                .foregroundStyle(active ? CreateComposerColor.activeTabText : CreateComposerColor.secondaryText.opacity(enabled ? 1 : 0.38))
+                .foregroundStyle(active ? CreateComposerColor.activeTabText : CreateComposerColor.secondaryText)
                 .frame(width: 70, height: 34)
                 .background(active ? StudioColor.primaryAction : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(active ? Color.clear : CreateComposerColor.border.opacity(enabled ? 1 : 0), lineWidth: 1)
+                        .stroke(active ? Color.clear : CreateComposerColor.border, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
-        .help(enabled ? title : "\(title)新建稍后接入")
+        .help(title)
     }
 
     private var createModelMenu: some View {
@@ -892,6 +943,34 @@ struct PromptComposerOverlay: View {
         }
         .buttonStyle(.plain)
     }
+
+    private var createFormatMenu: some View {
+        Menu {
+            ForEach(promptFormatOptions) { option in
+                Button(option.title) {
+                    promptFormatID = option.id
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Text(activePromptFormatTitle)
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(StudioFont.symbol(11, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(CreateComposerColor.inputBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
 
     private func createField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1699,6 +1778,18 @@ struct PromptComposerOverlay: View {
         modelOptions.first(where: { $0.id == modelId })?.name ?? ""
     }
 
+    private var activePromptFormat: PromptFormatOption {
+        promptFormatOptions.first(where: { $0.id == promptFormatID }) ?? promptFormatOptions[0]
+    }
+
+    private var activePromptFormatTitle: String {
+        activePromptFormat.title
+    }
+
+    private var promptFormatOptions: [PromptFormatOption] {
+        PromptFormatOption.options(for: type)
+    }
+
     private var previewTitle: String {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle
@@ -1714,6 +1805,7 @@ struct PromptComposerOverlay: View {
         if !activeModelName.isEmpty {
             chips.append(activeModelName)
         }
+        chips.append(activePromptFormatTitle)
         if let resolution = previewResolutionText {
             chips.append(resolution)
         }
@@ -1785,7 +1877,10 @@ struct PromptComposerOverlay: View {
 
     private var modelOptions: [ModelProfile] {
         let matching = state.models.filter { $0.id != "all" && $0.type == type }
-        return matching.isEmpty ? state.models.filter { $0.id != "all" } : matching
+        if !matching.isEmpty {
+            return matching
+        }
+        return [ModelProfile(id: "local_asset", name: "Local Asset", type: type, parameters: [])]
     }
 
     private var estimatedTokenCount: Int {
@@ -1923,12 +2018,20 @@ struct PromptComposerOverlay: View {
         }
     }
 
+    private func ensurePromptFormatMatchesType() {
+        let options = promptFormatOptions
+        if !options.contains(where: { $0.id == promptFormatID }), let first = options.first {
+            promptFormatID = first.id
+        }
+    }
+
     private func loadDraft() {
         switch mode {
         case .create:
             title = ""
             type = .image
-            modelId = ""
+            modelId = defaultModelID(for: .image)
+            promptFormatID = PromptFormatOption.options(for: .image)[0].id
             prompt = ""
             negativePrompt = ""
             tags = []
@@ -1942,10 +2045,14 @@ struct PromptComposerOverlay: View {
             title = item.title
             type = item.type
             modelId = item.modelId
+            promptFormatID = existingPromptFormatID(for: item)
             prompt = item.currentVersion?.prompt ?? ""
             negativePrompt = item.currentVersion?.negativePrompt ?? ""
             tags = item.tags
-            parameters = (item.currentVersion?.parameters ?? [:]).map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "\n")
+            parameters = visibleParameters(from: item.currentVersion?.parameters ?? [:])
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: "\n")
             note = ""
             saveAsNewVersion = true
             if item.assetKind == .image, !item.assetPath.isEmpty, FileManager.default.fileExists(atPath: item.assetPath) {
@@ -1955,9 +2062,8 @@ struct PromptComposerOverlay: View {
             }
             referenceURLs = []
         }
-        if isEditing {
-            ensureModelMatchesType()
-        }
+        ensureModelMatchesType()
+        ensurePromptFormatMatchesType()
         initialSignature = draftSignature
     }
 
@@ -1972,6 +2078,7 @@ struct PromptComposerOverlay: View {
                 prompt: prompt,
                 negativePrompt: negativePrompt,
                 tags: tags,
+                parameters: savedParameters,
                 previewImageURL: previewImageURL,
                 referenceURLs: referenceURLs
             )
@@ -1983,7 +2090,7 @@ struct PromptComposerOverlay: View {
                 prompt: prompt,
                 negativePrompt: negativePrompt,
                 tags: tags,
-                parameters: parsedParameters,
+                parameters: savedParameters,
                 note: note,
                 saveAsNewVersion: saveAsNewVersion,
                 referenceURLs: referenceURLs
@@ -2006,6 +2113,7 @@ struct PromptComposerOverlay: View {
             title,
             type.rawValue,
             modelId,
+            promptFormatID,
             prompt,
             negativePrompt,
             tags.joined(separator: "\u{1f}"),
@@ -2028,8 +2136,33 @@ struct PromptComposerOverlay: View {
             }
     }
 
+    private var savedParameters: [String: String] {
+        var result = parsedParameters
+        result["prompt_format_id"] = activePromptFormat.id
+        result["prompt_format"] = activePromptFormat.title
+        return result
+    }
+
     private func defaultModelID(for type: PromptType) -> String {
-        state.models.first(where: { $0.id != "all" && $0.type == type })?.id ?? "nano_banana_2"
+        state.models.first(where: { $0.id != "all" && $0.type == type })?.id ?? "local_asset"
+    }
+
+    private func existingPromptFormatID(for item: PromptItem) -> String {
+        let options = PromptFormatOption.options(for: item.type)
+        let parameters = item.currentVersion?.parameters ?? [:]
+        if let id = parameters["prompt_format_id"], options.contains(where: { $0.id == id }) {
+            return id
+        }
+        if let title = parameters["prompt_format"], let match = options.first(where: { $0.title == title }) {
+            return match.id
+        }
+        return options[0].id
+    }
+
+    private func visibleParameters(from parameters: [String: String]) -> [String: String] {
+        parameters.filter { key, _ in
+            key != "prompt_format_id" && key != "prompt_format"
+        }
     }
 
     private func addTag() {

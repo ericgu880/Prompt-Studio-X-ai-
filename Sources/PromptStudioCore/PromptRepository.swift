@@ -293,7 +293,18 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func copyAssetIntoLibrary(from sourceURL: URL, type: PromptType) throws -> URL {
-        try copyAssetIntoLibrary(from: sourceURL, assetKind: type == .video ? .video : .image)
+        let assetKind: AssetKind
+        switch type {
+        case .image:
+            assetKind = .image
+        case .video:
+            assetKind = .video
+        case .text:
+            assetKind = .text
+        case .audio:
+            assetKind = .audio
+        }
+        return try copyAssetIntoLibrary(from: sourceURL, assetKind: assetKind)
     }
 
     public func copyAssetIntoLibrary(from sourceURL: URL, assetKind: AssetKind) throws -> URL {

@@ -63,6 +63,24 @@ func temporaryLibraryURL() throws -> URL {
     return url
 }
 
+func makeDocxFixture(text: String) throws -> URL {
+    let directory = try temporaryLibraryURL()
+    let textURL = directory.appendingPathComponent("fixture.txt")
+    let docxURL = directory.appendingPathComponent("fixture.docx")
+    try text.write(to: textURL, atomically: true, encoding: .utf8)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
+    process.arguments = ["-convert", "docx", "-output", docxURL.path, textURL.path]
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+    let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    try expect(process.terminationStatus == 0, "textutil should create docx fixture: \(stderr)")
+    return docxURL
+}
+
 func testSearchFiltering() throws {
     let item = sampleItem(title: "森林露营车", modelId: "midjourney", tags: ["风景", "插画"], prompt: "green camper in a lush forest")
     let other = sampleItem(title: "人物肖像", modelId: "seedream_7", tags: ["人物"], prompt: "editorial portrait")
@@ -109,6 +127,8 @@ func testPrimaryPromptAssetsAndAttachments() throws {
     let items = [image, video, audio, markdown, word, source, web, pdf, raw, font, unknown]
     let audioMatches = PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .audio)).map(\.id)
     try expect(audioMatches == [audio.id], "audio filter should isolate audio prompt assets")
+    let audioTypeMatches = PromptFiltering.apply(items, filter: PromptFilter(type: .audio)).map(\.id)
+    try expect(audioTypeMatches == [audio.id], "audio prompt type should isolate imported audio assets")
     let documentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .promptDocument)).map(\.id))
     try expect(documentMatches == Set([markdown.id, word.id]), "text filter should isolate text prompt documents")
     let attachmentMatches = Set(PromptFiltering.apply(items, filter: PromptFilter(assetKindFilter: .other)).map(\.id))
@@ -177,6 +197,7 @@ func testSQLiteRoundTrip() throws {
 
 func testAssetKindInferenceAndPromptParsing() throws {
     try expect(AssetKind.infer(fileExtension: "mp3") == .audio, "mp3 should import as audio")
+    try expect(AssetKind.infer(fileExtension: "mp3").promptType == .audio, "mp3 should import as audio prompt type")
     try expect(AssetKind.infer(fileExtension: "pdf") == .document, "pdf should import as document")
     let parsed = PromptImportParser.parse(
         text: "Prompt: forest portrait --no watermark --ar 3:4\nTags: 风景, 人物\n#写实",
@@ -437,6 +458,32 @@ func testAutomationServiceImportsTextMetadata() throws {
     try expect(imported[0].tags.contains("风景") && imported[0].tags.contains("人物"), "markdown import should parse tags")
 }
 
+func testDocumentTextExtractorReadsRealDocx() throws {
+    let docx = try makeDocxFixture(text: "Prompt: real docx forest --no logo\nTags: 文档, 测试\n")
+    guard let text = DocumentTextExtractor.readText(from: docx) else {
+        throw CoreUnitTestError.failure("docx text should be readable")
+    }
+    try expect(text.contains("real docx forest"), "real docx text should include source prompt")
+    let parsed = PromptImportParser.parse(text: text, assetKind: .document)
+    try expect(parsed.prompt == "real docx forest", "real docx text should parse prompt")
+    try expect(parsed.negativePrompt == "logo", "real docx text should parse negative prompt")
+    try expect(parsed.tags.contains("文档") && parsed.tags.contains("测试"), "real docx text should parse tags")
+}
+
+func testAutomationServiceImportsRealDocxMetadata() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let docx = try makeDocxFixture(text: "Prompt: agent docx prompt --no watermark\nTags: Agent, DOCX\n")
+
+    let imported = try service.importFiles(paths: [docx.path])
+    try expect(imported.count == 1, "agent docx import should create one item")
+    try expect(imported[0].assetKind == .document, "agent docx import should keep document asset kind")
+    try expect(imported[0].type == .text, "agent docx import should stay in text prompt flow")
+    try expect(imported[0].currentVersion?.prompt == "agent docx prompt", "agent docx import should parse prompt")
+    try expect(imported[0].currentVersion?.negativePrompt == "watermark", "agent docx import should parse negative prompt")
+    try expect(imported[0].tags.contains("Agent") && imported[0].tags.contains("DOCX"), "agent docx import should parse tags")
+}
+
 func testAutomationServiceImportsImageMetadata() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let service = PromptStudioAutomationService(repository: repository)
@@ -475,6 +522,8 @@ do {
     try testFolderCRUDRoundTrip()
     try testAutomationServiceCreatesAndUpdatesPrompts()
     try testAutomationServiceImportsTextMetadata()
+    try testDocumentTextExtractorReadsRealDocx()
+    try testAutomationServiceImportsRealDocxMetadata()
     try testAutomationServiceImportsImageMetadata()
     print("PromptStudioCoreUnitTests passed")
 } catch {
