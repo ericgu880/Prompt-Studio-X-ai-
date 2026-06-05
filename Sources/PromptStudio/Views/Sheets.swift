@@ -25,6 +25,7 @@ struct NewPromptSheet: View {
                     .padding(.horizontal, 28)
                     .padding(.vertical, 22)
             }
+            .transparentScrollArea()
 
             footer
         }
@@ -113,7 +114,7 @@ struct NewPromptSheet: View {
                 tagInput
             }
 
-            NewPromptField(title: "参考图（可选）", help: "上传参考图可帮助模型更好地理解你的意图") {
+            NewPromptField(title: "参考资产（可选）", help: "上传图片、音频或视频参考，帮助 Prompt 保持上下文。") {
                 referenceUpload
             }
         }
@@ -183,7 +184,7 @@ struct NewPromptSheet: View {
 
     private var referenceUpload: some View {
         Button {
-            appendReferenceImages(AppKitBridge.chooseReferenceImages())
+            appendReferenceImages(AppKitBridge.chooseReferenceAssets())
         } label: {
             VStack(spacing: 12) {
                 Image(systemName: "square.and.arrow.up")
@@ -193,9 +194,9 @@ struct NewPromptSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
 
                 VStack(spacing: 5) {
-                    Text(referenceURLs.isEmpty ? "将图片拖拽到此处，或点击上传" : "已选择 \(referenceURLs.count) 张参考图")
+                    Text(referenceURLs.isEmpty ? "将参考资产拖拽到此处，或点击上传" : "已选择 \(referenceURLs.count) 个参考资产")
                         .font(StudioFont.font(14, weight: .medium))
-                    Text(referenceURLs.isEmpty ? "支持 JPG、PNG、WEBP，单张不超过 20MB" : referenceURLs.map(\.lastPathComponent).joined(separator: "、"))
+                    Text(referenceURLs.isEmpty ? "支持图片、音频、视频" : referenceURLs.map(\.lastPathComponent).joined(separator: "、"))
                         .font(StudioFont.font(14))
                         .foregroundStyle(StudioColor.tertiaryText)
                         .lineLimit(2)
@@ -239,8 +240,14 @@ struct NewPromptSheet: View {
     }
 
     private func appendReferenceImages(_ urls: [URL]) {
-        let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
-        let next = urls.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+        let next = urls.filter { url in
+            switch AppKitBridge.assetKind(for: url) {
+            case .image, .audio, .video:
+                true
+            default:
+                false
+            }
+        }
         for url in next where !referenceURLs.contains(url) {
             referenceURLs.append(url)
         }
@@ -443,7 +450,7 @@ struct FilterSheet: View {
                     FilterToggle(title: "视频 Prompt", active: type == .video) { type = type == .video ? nil : .video }
                 }
                 Toggle("仅有 Prompt", isOn: $hasPromptOnly)
-                Toggle("仅有参考图", isOn: $hasReferenceOnly)
+                Toggle("仅有参考资产", isOn: $hasReferenceOnly)
                 Text("模型、标签和文件夹筛选可通过顶部 Tab 与左侧导航组合使用。")
                     .foregroundStyle(StudioColor.secondaryText)
             }
@@ -549,11 +556,11 @@ struct ReferencesSheet: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        PromptFormShell(title: "参考图管理") {
+        PromptFormShell(title: "参考资产管理") {
             if let item = state.selectedItem {
                 VStack(alignment: .leading, spacing: 18) {
                     if item.referenceAssets.isEmpty {
-                        Text("当前素材还没有参考图。")
+                        Text("当前素材还没有参考资产。")
                             .font(StudioFont.font(13))
                             .foregroundStyle(StudioColor.secondaryText)
                     }
@@ -589,7 +596,7 @@ private struct ReferenceAssetCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ThumbnailImage(path: reference.path)
+            ReferenceAssetPreview(reference: reference)
                 .frame(maxWidth: .infinity)
                 .frame(height: 108)
                 .clipped()
@@ -603,7 +610,7 @@ private struct ReferenceAssetCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 36, alignment: .topLeading)
 
-                Text(reference.type.isEmpty ? "参考图" : reference.type)
+                Text(reference.type.isEmpty ? "参考资产" : reference.type)
                     .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.secondaryText)
                     .lineLimit(1)
@@ -624,7 +631,7 @@ private struct AddReferenceCard: View {
             VStack(spacing: 10) {
                 Image(systemName: "plus")
                     .font(StudioFont.symbol(24, weight: .regular))
-                Text("添加参考图")
+                Text("添加参考资产")
                     .font(StudioFont.font(13, weight: .medium))
             }
             .foregroundStyle(StudioColor.text)
@@ -762,6 +769,7 @@ struct SettingsSheet: View {
                     .padding(.horizontal, 28)
                     .padding(.vertical, 24)
                 }
+                .transparentScrollArea()
                 .background(StudioColor.appBackground)
             }
         }
@@ -870,6 +878,7 @@ struct SettingsSheet: View {
                     state.modal = .modelFilterManager
                 }
             }
+            .transparentScrollArea()
         case .shortcutsPrivacy:
             settingsGroup("快捷键", detail: "当前快捷键由 App 提供，设置页只展示已可用的操作。") {
                 shortcutRow("新建 Prompt", value: "⌘N")
@@ -2004,6 +2013,7 @@ private struct PromptFormShell<Content: View, Footer: View>: View {
                 content
                     .padding(22)
             }
+            .transparentScrollArea()
 
             HStack {
                 Spacer()

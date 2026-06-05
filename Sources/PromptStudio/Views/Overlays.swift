@@ -160,6 +160,7 @@ struct ImmersivePreviewOverlay: View {
                 previewPromptTextView
             }
             .frame(height: max(72, maxHeight))
+            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
@@ -194,14 +195,14 @@ struct ImmersivePreviewOverlay: View {
 
     private var previewReferenceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("参考图")
+            Text("参考资产")
                 .font(StudioFont.caption(12))
                 .foregroundStyle(StudioColor.secondaryText)
                 .tracking(1.2)
 
             LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
                 ForEach(item.referenceAssets.prefix(8)) { reference in
-                    ThumbnailImage(path: reference.path)
+                    ReferenceAssetPreview(reference: reference)
                         .frame(width: 62, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
@@ -421,6 +422,7 @@ private struct MarkdownDocumentPreviewContent: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 28)
         }
+        .transparentScrollArea()
     }
 
     private var metadataChips: some View {
@@ -601,6 +603,7 @@ struct MarkdownEditorOverlay: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 28)
         }
+        .transparentScrollArea()
     }
 
     private var metadataChips: some View {
@@ -883,7 +886,7 @@ struct PromptComposerOverlay: View {
                 previewImageDropZone(height: boxHeight)
             }
 
-            createField("上传参考图") {
+            createField("上传参考资产") {
                 referenceImagesDropZone(height: boxHeight)
             }
         }
@@ -1077,17 +1080,17 @@ struct PromptComposerOverlay: View {
                 .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
 
-            if existingReferencePaths.isEmpty && referenceURLs.isEmpty {
+            if existingReferenceAssets.isEmpty && referenceURLs.isEmpty {
                 Button {
-                    appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                 } label: {
-                    createUploadPlaceholder("拖拽或点击添加参考图")
+                    createUploadPlaceholder("拖拽或点击添加参考资产")
                 }
                 .buttonStyle(.plain)
             } else {
                 LazyVGrid(columns: createReferenceColumns, alignment: .leading, spacing: 12) {
-                    ForEach(existingReferencePaths, id: \.self) { path in
-                        ComposerUploadThumb(path: path, width: 96, height: 78, removable: false)
+                    ForEach(existingReferenceAssets) { reference in
+                        ComposerUploadThumb(reference: reference, width: 96, height: 78, removable: false)
                     }
                     ForEach(referenceURLs, id: \.path) { url in
                         ComposerUploadThumb(path: url.path, width: 96, height: 78) {
@@ -1095,7 +1098,7 @@ struct PromptComposerOverlay: View {
                         }
                     }
                     Button {
-                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                        appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                     } label: {
                         Image(systemName: "plus")
                             .font(StudioFont.symbol(16, weight: .medium))
@@ -1137,16 +1140,9 @@ struct PromptComposerOverlay: View {
                     .font(StudioFont.font(16, weight: .semibold))
                     .foregroundStyle(StudioColor.text)
                 Spacer()
-                Button {
+                OverlayCloseButton {
                     requestClose()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(StudioFont.symbol(13, weight: .semibold))
-                        .frame(width: 30, height: 30)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(StudioColor.primaryActionText)
-                .background(Circle().fill(StudioColor.primaryAction))
             }
 
             if hasCreatePreviewContent {
@@ -1203,14 +1199,14 @@ struct PromptComposerOverlay: View {
 
     private var createPreviewReferenceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("参考图")
+            Text("参考资产")
                 .font(StudioFont.caption(12))
                 .foregroundStyle(StudioColor.secondaryText)
                 .tracking(1.2)
 
             LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                ForEach(allReferencePreviewPaths, id: \.self) { path in
-                    ComposerPreviewImage(path: path)
+                ForEach(allReferencePreviewAssets) { reference in
+                    ReferenceAssetPreview(reference: reference)
                         .frame(width: 62, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
@@ -1227,7 +1223,7 @@ struct PromptComposerOverlay: View {
     }
 
     private var hasCreatePreviewContent: Bool {
-        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewPaths.isEmpty || !previewMetadataChips.isEmpty
+        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewAssets.isEmpty || !previewMetadataChips.isEmpty
     }
 
     private var previewImageSize: CGSize {
@@ -1256,6 +1252,7 @@ struct PromptComposerOverlay: View {
                 createPromptPreviewText
             }
             .frame(height: max(72, maxHeight))
+            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
@@ -1412,8 +1409,8 @@ struct PromptComposerOverlay: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
 
                 HStack(spacing: 4) {
-                    opsIconTool("photo", help: "添加参考图") {
-                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    opsIconTool("photo", help: "添加参考资产") {
+                        appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                     }
                     opsIconTool("rectangle.badge.hd", help: "高清参数") {
                         appendParameterLine("quality=high")
@@ -1460,7 +1457,7 @@ struct PromptComposerOverlay: View {
         HStack(spacing: 10) {
             counter("字符", prompt.count + negativePrompt.count)
             counter("词数估算", estimatedTokenCount)
-            counter("参考图", referenceURLs.count + (editingItem?.referenceAssets.count ?? 0))
+            counter("参考资产", referenceURLs.count + (editingItem?.referenceAssets.count ?? 0))
             counter(type.displayName.replacingOccurrences(of: " Prompt", with: ""), 0, showValue: false)
             Spacer()
         }
@@ -1516,7 +1513,7 @@ struct PromptComposerOverlay: View {
                         .font(StudioFont.font(13))
                 }
 
-                composerSection("参考图") {
+                composerSection("参考资产") {
                     referenceDropZone
                 }
             }
@@ -1589,11 +1586,11 @@ struct PromptComposerOverlay: View {
     private var opsReferencePanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("参考图")
+                Text("参考资产")
                     .font(StudioFont.font(13, weight: .semibold))
                     .foregroundStyle(OPSColor.bodyText)
                 Spacer()
-                Text("\(referenceURLs.count + (editingItem?.referenceAssets.count ?? 0)) 张")
+                Text("\(referenceURLs.count + (editingItem?.referenceAssets.count ?? 0)) 个")
                     .font(StudioFont.font(12))
                     .foregroundStyle(OPSColor.mutedText)
             }
@@ -1705,16 +1702,16 @@ struct PromptComposerOverlay: View {
 
     private var referenceDropZone: some View {
         VStack(spacing: 10) {
-            if existingReferencePaths.isEmpty && referenceURLs.isEmpty {
+            if existingReferenceAssets.isEmpty && referenceURLs.isEmpty {
                 Button {
-                    appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                    appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                 } label: {
                     VStack(spacing: 8) {
                         Image(systemName: "photo.on.rectangle")
                             .font(StudioFont.symbol(24))
-                        Text("拖拽或点击添加参考图")
+                        Text("拖拽或点击添加参考资产")
                             .font(StudioFont.font(13))
-                        Text("支持 JPG、PNG、WEBP")
+                        Text("支持图片、音频、视频")
                             .font(StudioFont.font(11))
                             .foregroundStyle(OPSColor.mutedText)
                     }
@@ -1732,8 +1729,8 @@ struct PromptComposerOverlay: View {
                 .buttonStyle(.plain)
             } else {
                 LazyVGrid(columns: referenceColumns, alignment: .leading, spacing: 8) {
-                    ForEach(existingReferencePaths, id: \.self) { path in
-                        OPSReferenceThumb(path: path, removable: false)
+                    ForEach(existingReferenceAssets) { reference in
+                        OPSReferenceThumb(reference: reference, removable: false)
                     }
                     ForEach(referenceURLs, id: \.path) { url in
                         OPSReferenceThumb(path: url.path, removable: true) {
@@ -1741,7 +1738,7 @@ struct PromptComposerOverlay: View {
                         }
                     }
                     Button {
-                        appendReferenceImages(AppKitBridge.chooseReferenceImages())
+                        appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                     } label: {
                         VStack(spacing: 6) {
                             Image(systemName: "plus")
@@ -1769,12 +1766,12 @@ struct PromptComposerOverlay: View {
 
     private var referenceSummary: String {
         if !referenceURLs.isEmpty {
-            return "已选择 \(referenceURLs.count) 张参考图"
+            return "已选择 \(referenceURLs.count) 个参考资产"
         }
         if let editingItem, !editingItem.referenceAssets.isEmpty {
-            return "已有 \(editingItem.referenceAssets.count) 张参考图"
+            return "已有 \(editingItem.referenceAssets.count) 个参考资产"
         }
-        return "拖拽或点击添加参考图"
+        return "拖拽或点击添加参考资产"
     }
 
     private var activeModelName: String {
@@ -1974,12 +1971,12 @@ struct PromptComposerOverlay: View {
         parsePromptTokens(prompt)
     }
 
-    private var existingReferencePaths: [String] {
-        editingItem?.referenceAssets.map(\.path) ?? []
+    private var existingReferenceAssets: [ReferenceAsset] {
+        editingItem?.referenceAssets ?? []
     }
 
-    private var allReferencePreviewPaths: [String] {
-        existingReferencePaths + referenceURLs.map(\.path)
+    private var allReferencePreviewAssets: [ReferenceAsset] {
+        existingReferenceAssets + referenceURLs.map(referenceAssetPreview)
     }
 
     private var referenceColumns: [GridItem] {
@@ -2177,8 +2174,7 @@ struct PromptComposerOverlay: View {
     }
 
     private func appendReferenceImages(_ urls: [URL]) {
-        let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
-        let next = urls.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+        let next = urls.filter(isSupportedReferenceAsset)
         for url in next where !referenceURLs.contains(url) {
             referenceURLs.append(url)
         }
@@ -2233,6 +2229,23 @@ struct PromptComposerOverlay: View {
             }
         }
         return handled
+    }
+
+    private func isSupportedReferenceAsset(_ url: URL) -> Bool {
+        switch AppKitBridge.assetKind(for: url) {
+        case .image, .audio, .video:
+            true
+        default:
+            false
+        }
+    }
+
+    private func referenceAssetPreview(for url: URL) -> ReferenceAsset {
+        ReferenceAsset(
+            type: url.pathExtension.uppercased(),
+            path: url.path,
+            label: url.deletingPathExtension().lastPathComponent
+        )
     }
 }
 
@@ -2468,24 +2481,27 @@ private struct OPSPromptTokenChip: View {
 
 private struct OPSReferenceThumb: View {
     let path: String
+    let type: String
     var removable = false
     var onRemove: () -> Void = {}
-    @StateObject private var loader = OverlayImageLoader()
+
+    init(path: String, type: String = "", removable: Bool = false, onRemove: @escaping () -> Void = {}) {
+        self.path = path
+        self.type = type
+        self.removable = removable
+        self.onRemove = onRemove
+    }
+
+    init(reference: ReferenceAsset, removable: Bool = false, onRemove: @escaping () -> Void = {}) {
+        self.path = reference.path
+        self.type = reference.type
+        self.removable = removable
+        self.onRemove = onRemove
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            ZStack {
-                if let image = loader.image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    OPSColor.buttonBackground
-                    Image(systemName: "photo")
-                        .font(StudioFont.symbol(16))
-                        .foregroundStyle(OPSColor.mutedText)
-                }
-            }
+            ReferenceAssetPreview(path: path, type: type)
             .frame(maxWidth: .infinity)
             .frame(height: 78)
             .clipped()
@@ -2502,9 +2518,6 @@ private struct OPSReferenceThumb: View {
                 .background(Circle().fill(Color.black.opacity(0.72)))
                 .padding(5)
             }
-        }
-        .task(id: path) {
-            await loader.load(path)
         }
     }
 }
@@ -2537,6 +2550,7 @@ private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
 
 private struct ComposerUploadThumb: View {
     let path: String
+    let type: String
     let width: CGFloat
     let height: CGFloat
     let removable: Bool
@@ -2544,6 +2558,16 @@ private struct ComposerUploadThumb: View {
 
     init(path: String, width: CGFloat, height: CGFloat, removable: Bool = true, onRemove: @escaping () -> Void = {}) {
         self.path = path
+        self.type = ""
+        self.width = width
+        self.height = height
+        self.removable = removable
+        self.onRemove = onRemove
+    }
+
+    init(reference: ReferenceAsset, width: CGFloat, height: CGFloat, removable: Bool = true, onRemove: @escaping () -> Void = {}) {
+        self.path = reference.path
+        self.type = reference.type
         self.width = width
         self.height = height
         self.removable = removable
@@ -2552,7 +2576,7 @@ private struct ComposerUploadThumb: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            ComposerPreviewImage(path: path)
+            ReferenceAssetPreview(path: path, type: type)
                 .frame(width: width, height: height)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -2707,8 +2731,8 @@ private struct OverlayCloseButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(StudioFont.symbol(11, weight: .semibold))
-                .frame(width: 24, height: 24)
+                .font(StudioFont.symbol(12, weight: .semibold))
+                .frame(width: 34, height: 34)
         }
         .buttonStyle(.plain)
         .background(Circle().fill(StudioColor.control.opacity(0.92)))

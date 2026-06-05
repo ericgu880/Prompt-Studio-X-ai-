@@ -2227,7 +2227,7 @@ private struct AssetCardView: View {
                     state.modal = .references
                 }
             } label: {
-                Label("参考图管理", systemImage: "photo.on.rectangle")
+                Label("参考资产管理", systemImage: "photo.on.rectangle")
             }
         }
 

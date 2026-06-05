@@ -78,6 +78,17 @@ enum AppKitBridge {
     }
 
     @MainActor
+    static func chooseReferenceAssets() -> [URL] {
+        let panel = NSOpenPanel()
+        panel.title = "选择参考资产"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image, .audio, .movie, .video]
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    @MainActor
     static func chooseExportDirectory() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "选择导出目录"

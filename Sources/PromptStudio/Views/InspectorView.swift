@@ -75,6 +75,7 @@ struct InspectorView: View {
                 .padding(.bottom, 24)
                 .padding(.top, 24)
             }
+            .transparentScrollArea()
         } else if item.isPromptPrimaryAsset {
             mediaReadOnlyInspector(item)
         } else {
@@ -133,6 +134,7 @@ struct InspectorView: View {
             .padding(.bottom, 24)
             .padding(.top, 24)
         }
+        .transparentScrollArea()
     }
 
     private func fileBasicInfoSection(_ item: PromptItem) -> some View {
@@ -379,6 +381,7 @@ struct InspectorView: View {
                 promptTextView(item)
             }
             .frame(height: max(72, maxHeight))
+            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
@@ -563,10 +566,10 @@ struct InspectorView: View {
 
     private func referenceSection(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("参考图")
+            sectionTitle("参考资产")
             HStack(spacing: 10) {
                 ForEach(item.referenceAssets.prefix(4)) { reference in
-                    ThumbnailImage(path: reference.path)
+                    ReferenceAssetPreview(reference: reference)
                         .frame(width: 48, height: 48)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
@@ -577,14 +580,14 @@ struct InspectorView: View {
 
     private func mediaReferenceSection(_ item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("参考图")
+            Text("参考资产")
                 .font(StudioFont.caption(12))
                 .foregroundStyle(StudioColor.secondaryText)
                 .tracking(1.2)
 
             LazyVGrid(columns: mediaReferenceColumns, alignment: .leading, spacing: 8) {
                 ForEach(item.referenceAssets.prefix(8)) { reference in
-                    ThumbnailImage(path: reference.path)
+                    ReferenceAssetPreview(reference: reference)
                         .frame(width: 62, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
@@ -862,6 +865,7 @@ private struct MidjourneyPromptInfoPanel: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(14)
         }
+        .transparentScrollArea()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .promptContainer()
     }
@@ -945,6 +949,7 @@ private struct CollapsiblePromptPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: expandedTextHeight)
+                .transparentScrollArea()
             } else {
                 promptText(lineLimit: collapsedLineLimit)
                     .padding(.horizontal, horizontalPadding)

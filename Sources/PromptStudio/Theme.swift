@@ -379,3 +379,11 @@ private struct TextHoverButtonBody: View {
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
+
+extension View {
+    func transparentScrollArea() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+    }
+}

@@ -587,7 +587,7 @@ final class AppState: ObservableObject {
         guard var item = selectedItem else { return }
         do {
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
-                let copied = try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+                let copied = try repository?.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source)) ?? source
                 return (source, copied)
             }
             let newReferences = copiedReferences.map { pair in
@@ -696,8 +696,15 @@ final class AppState: ObservableObject {
             let previewPath = try previewImageURL.map { source in
                 try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
             }?.path ?? ""
+            let textAssetURL = try createTextPromptAssetIfNeeded(
+                title: title,
+                type: type,
+                prompt: prompt,
+                parameters: parameters,
+                hasPreviewImage: !previewPath.isEmpty
+            )
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
-                let copied = try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+                let copied = try repository?.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source)) ?? source
                 return (source, copied)
             }
             let references = copiedReferences.map { pair in
@@ -707,10 +714,10 @@ final class AppState: ObservableObject {
                     label: pair.original.deletingPathExtension().lastPathComponent
                 )
             }
-            let assetKind: AssetKind = previewPath.isEmpty ? .text : .image
-            let previewInfo = previewPath.isEmpty
-                ? (width: 0, height: 0, fileSize: Int64(0), format: "PROMPT")
-                : AppKitBridge.fileInfo(for: URL(fileURLWithPath: previewPath), assetKind: assetKind)
+            let assetURL = textAssetURL ?? (previewPath.isEmpty ? nil : URL(fileURLWithPath: previewPath))
+            let assetKind: AssetKind = textAssetURL.map { AppKitBridge.assetKind(for: $0) } ?? (previewPath.isEmpty ? .text : .image)
+            let previewInfo = assetURL.map { AppKitBridge.fileInfo(for: $0, assetKind: assetKind) }
+                ?? (width: 0, height: 0, fileSize: Int64(0), format: "PROMPT")
             let item = PromptItem(
                 id: id,
                 title: title,
@@ -721,7 +728,7 @@ final class AppState: ObservableObject {
                 folderId: defaultFolder().id,
                 folderName: defaultFolder().name,
                 category: type.displayName,
-                assetPath: previewPath,
+                assetPath: assetURL?.path ?? "",
                 aspectRatio: Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
                 width: previewInfo.width,
                 height: previewInfo.height,
@@ -1866,6 +1873,38 @@ final class AppState: ObservableObject {
         }
         let divisor = max(a, 1)
         return "\(width / divisor):\(height / divisor)"
+    }
+
+    private func createTextPromptAssetIfNeeded(
+        title: String,
+        type: PromptType,
+        prompt: String,
+        parameters: [String: String],
+        hasPreviewImage: Bool
+    ) throws -> URL? {
+        guard type == .text, !hasPreviewImage, let repository else { return nil }
+        let fileExtension = textPromptFileExtension(parameters: parameters)
+        let directory = repository.libraryURL.appendingPathComponent("assets/documents")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baseName = safeExportFileName(title.isEmpty ? "Untitled Prompt" : title)
+        let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(baseName).\(fileExtension)")
+        try prompt.write(to: destination, atomically: true, encoding: .utf8)
+        return destination
+    }
+
+    private func textPromptFileExtension(parameters: [String: String]) -> String {
+        let id = parameters["prompt_format_id"]?.lowercased() ?? ""
+        let title = parameters["prompt_format"]?.lowercased() ?? ""
+        if id.contains("json") || title.contains("json") {
+            return "json"
+        }
+        if id.contains("yaml") || title.contains("yaml") {
+            return "yaml"
+        }
+        if id.contains("txt") || title.contains("txt") {
+            return "txt"
+        }
+        return "md"
     }
 
     private func nextSortOrderForNewItem() -> Int {
