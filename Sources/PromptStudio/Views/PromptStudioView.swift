@@ -1335,6 +1335,7 @@ private struct SearchInputField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextField {
         let textField = NSTextField()
         textField.delegate = context.coordinator
+        context.coordinator.textField = textField
         textField.isBordered = false
         textField.isBezeled = false
         textField.drawsBackground = false
@@ -1355,14 +1356,21 @@ private struct SearchInputField: NSViewRepresentable {
 
     func updateNSView(_ textField: NSTextField, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.textField = textField
         if textField.stringValue != text {
             textField.stringValue = text
         }
     }
 
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.removeOutsideClickMonitor()
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: SearchInputField
+        weak var textField: NSTextField?
+        private var outsideClickMonitor: Any?
 
         init(_ parent: SearchInputField) {
             self.parent = parent
@@ -1370,11 +1378,13 @@ private struct SearchInputField: NSViewRepresentable {
 
         func controlTextDidBeginEditing(_ notification: Notification) {
             parent.isFocused = true
+            installOutsideClickMonitor()
             setWhiteInsertionPoint(for: notification.object)
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
             parent.isFocused = false
+            removeOutsideClickMonitor()
         }
 
         func controlTextDidChange(_ notification: Notification) {
@@ -1387,6 +1397,30 @@ private struct SearchInputField: NSViewRepresentable {
             guard let textField = object as? NSTextField,
                   let editor = textField.window?.fieldEditor(true, for: textField) as? NSTextView else { return }
             editor.insertionPointColor = NSColor.white
+        }
+
+        func installOutsideClickMonitor() {
+            guard outsideClickMonitor == nil else { return }
+            outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self, let textField = self.textField, let window = textField.window else {
+                    return event
+                }
+                guard event.window === window else { return event }
+                let fieldFrame = textField.convert(textField.bounds, to: nil)
+                if !fieldFrame.contains(event.locationInWindow) {
+                    DispatchQueue.main.async {
+                        clearTextFocus()
+                    }
+                }
+                return event
+            }
+        }
+
+        func removeOutsideClickMonitor() {
+            if let outsideClickMonitor {
+                NSEvent.removeMonitor(outsideClickMonitor)
+                self.outsideClickMonitor = nil
+            }
         }
     }
 }
@@ -1559,38 +1593,9 @@ private struct ModelTabsView: View {
     }
 
     private func filterPagerButton(direction: FilterBarPagerDirection, proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 0) {
-            if direction == .right {
-                LinearGradient(
-                    colors: [StudioColor.appBackground.opacity(0), StudioColor.appBackground.opacity(0.92)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 54)
-            }
-
-            Button {
-                pageFilters(proxy: proxy, direction: direction)
-            } label: {
-                Image(systemName: direction == .right ? "chevron.right" : "chevron.left")
-                    .font(StudioFont.symbol(12, weight: .semibold))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(StudioColor.control.opacity(0.86)))
-                    .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(StudioColor.text)
-
-            if direction == .left {
-                LinearGradient(
-                    colors: [StudioColor.appBackground.opacity(0.92), StudioColor.appBackground.opacity(0)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 54)
-            }
+        FilterPagerButton(direction: direction) {
+            pageFilters(proxy: proxy, direction: direction)
         }
-        .allowsHitTesting(true)
     }
 
     private func pageFilters(proxy: ScrollViewProxy, direction: FilterBarPagerDirection) {
@@ -1647,6 +1652,46 @@ private struct ModelTabsView: View {
 private enum FilterBarPagerDirection {
     case left
     case right
+}
+
+private struct FilterPagerButton: View {
+    let direction: FilterBarPagerDirection
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack(alignment: direction == .right ? .trailing : .leading) {
+            LinearGradient(
+                colors: gradientColors,
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 70, height: 32)
+            .allowsHitTesting(false)
+
+            Button(action: action) {
+                Image(systemName: direction == .right ? "chevron.right" : "chevron.left")
+                    .font(StudioFont.symbol(12, weight: .semibold))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(isHovered ? StudioColor.control.opacity(0.88) : Color.clear))
+                    .overlay(Circle().stroke(isHovered ? StudioColor.hairline : Color.clear, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(StudioColor.text)
+            .onHover { isHovered = $0 }
+        }
+        .frame(width: 74, height: 32)
+        .allowsHitTesting(true)
+    }
+
+    private var gradientColors: [Color] {
+        switch direction {
+        case .left:
+            [StudioColor.previewBackground, StudioColor.previewBackground.opacity(0)]
+        case .right:
+            [StudioColor.previewBackground.opacity(0), StudioColor.previewBackground]
+        }
+    }
 }
 
 private struct FilterBarContentWidthKey: PreferenceKey {
@@ -1963,14 +2008,6 @@ private struct AssetCardView: View {
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
-            ImmediateCardClickLayer {
-                selectImmediately()
-            } onDoubleClick: {
-                selectImmediately()
-                state.previewSelected()
-            }
-            .frame(width: contentWidth, height: contentHeight)
-
             if isSelected {
                 selectedCardOverlay
                     .frame(width: contentWidth, height: contentHeight, alignment: .bottom)
@@ -1987,6 +2024,13 @@ private struct AssetCardView: View {
         )
         .frame(width: width, height: contentHeight + AssetCardMetrics.selectionOutset * 2)
         .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
+        .onTapGesture {
+            selectImmediately()
+        }
+        .onTapGesture(count: 2) {
+            selectImmediately()
+            state.previewSelected()
+        }
         .contextMenu {
             assetContextMenu
         }
@@ -2227,16 +2271,23 @@ private struct AssetCardView: View {
     private var dragPreview: some View {
         let previewWidth = min(138, max(88, width * 0.46))
         let previewHeight = min(156, max(72, AssetCardMetrics.contentHeight(for: item, width: previewWidth)))
-        return AssetMediaView(item: item)
-            .frame(width: previewWidth, height: previewHeight)
-            .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.white.opacity(0.55), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.36), radius: 14, x: 0, y: 10)
-            .opacity(0.86)
+        return Group {
+            if item.isTextDocumentLike {
+                TextDocumentCardPreview(item: item)
+            } else {
+                AssetMediaView(item: item)
+            }
+        }
+        .frame(width: previewWidth, height: previewHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.36), radius: 14, x: 0, y: 10)
+        .opacity(0.78)
+        .padding(8)
+        .background(Color.clear)
     }
 
     private func cardAction(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
@@ -2285,59 +2336,6 @@ private struct AssetCardDropDelegate: DropDelegate {
         guard let draggedItemID, draggedItemID != targetItemID else { return false }
         state.moveFilteredItem(draggedID: draggedItemID, before: targetItemID)
         return true
-    }
-}
-
-private struct ImmediateCardClickLayer: NSViewRepresentable {
-    let onClick: () -> Void
-    let onDoubleClick: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onClick: onClick, onDoubleClick: onDoubleClick)
-    }
-
-    func makeNSView(context: Context) -> ClickPassthroughView {
-        let view = ClickPassthroughView()
-        view.onMouseDown = { event in
-            if event.clickCount >= 2 {
-                context.coordinator.onDoubleClick()
-            } else {
-                context.coordinator.onClick()
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: ClickPassthroughView, context: Context) {
-        context.coordinator.onClick = onClick
-        context.coordinator.onDoubleClick = onDoubleClick
-        nsView.onMouseDown = { event in
-            if event.clickCount >= 2 {
-                context.coordinator.onDoubleClick()
-            } else {
-                context.coordinator.onClick()
-            }
-        }
-    }
-
-    final class Coordinator {
-        var onClick: () -> Void
-        var onDoubleClick: () -> Void
-
-        init(onClick: @escaping () -> Void, onDoubleClick: @escaping () -> Void) {
-            self.onClick = onClick
-            self.onDoubleClick = onDoubleClick
-        }
-    }
-}
-
-private final class ClickPassthroughView: NSView {
-    var onMouseDown: ((NSEvent) -> Void)?
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        onMouseDown?(event)
     }
 }
 

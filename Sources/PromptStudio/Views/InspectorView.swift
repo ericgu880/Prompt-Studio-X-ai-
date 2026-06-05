@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import PromptStudioCore
 
 struct InspectorView: View {
@@ -12,6 +13,7 @@ struct InspectorView: View {
     @State private var markdownDocumentItemID = ""
     @State private var isPromptExpanded = false
     @State private var isNegativePromptExpanded = false
+    @State private var mediaPromptHovered = false
 
     var body: some View {
         Group {
@@ -69,9 +71,9 @@ struct InspectorView: View {
                     tagSection(item)
                     actionSection(item)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
-                .padding(.top, StudioLayout.contentTopPadding)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+                .padding(.top, 24)
             }
         } else if item.isPromptPrimaryAsset {
             mediaReadOnlyInspector(item)
@@ -127,9 +129,9 @@ struct InspectorView: View {
                 Divider().overlay(StudioColor.hairline)
                 fileActionSection(item)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 22)
-            .padding(.top, StudioLayout.contentTopPadding)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
+            .padding(.top, 24)
         }
     }
 
@@ -193,8 +195,8 @@ struct InspectorView: View {
     private func markdownInspector(for item: PromptItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             markdownHeader(item)
-                .padding(.horizontal, 20)
-                .padding(.top, StudioLayout.contentTopPadding)
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
                 .padding(.bottom, 14)
 
             ZStack(alignment: .topLeading) {
@@ -216,13 +218,8 @@ struct InspectorView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 20)
-
-            actionSection(item)
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
-                .padding(.bottom, 18)
-                .background(StudioColor.panel)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: item.id) {
@@ -231,20 +228,61 @@ struct InspectorView: View {
     }
 
     private func markdownHeader(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(item.title)
-                .font(StudioFont.font(14, weight: .semibold))
+                .font(StudioFont.font(15, weight: .semibold))
                 .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
+                .lineLimit(3)
 
-            Text(markdownMetadata(for: item))
-                .font(StudioFont.font(11))
-                .foregroundStyle(StudioColor.tertiaryText)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack(alignment: .center, spacing: 10) {
+                Text(markdownInfoText(for: item))
+                    .font(StudioFont.caption(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .tracking(1.2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 10)
+            }
 
             markdownHeaderChips(item)
+
+            HStack(alignment: .center, spacing: 12) {
+                Text("文本信息")
+                    .font(StudioFont.caption(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .tracking(1.2)
+
+                Spacer(minLength: 12)
+
+                markdownActionButtons(item)
+            }
         }
+    }
+
+    private func markdownActionButtons(_ item: PromptItem) -> some View {
+        HStack(spacing: 10) {
+            mediaActionButton("pencil", help: "编辑") {
+                state.openMarkdownEditor(for: item)
+            }
+            mediaActionButton("doc.on.doc", help: "复制文档信息") {
+                state.copyMarkdownDocumentText(activeMarkdownText)
+            }
+            mediaActionButton("arrow.down.circle", help: "导出") {
+                state.modal = .export
+            }
+            mediaActionButton("clock", help: "历史版本") {
+                state.modal = .versionHistory
+            }
+        }
+    }
+
+    private func markdownInfoText(for item: PromptItem) -> String {
+        [
+            item.format.isEmpty ? "MD" : item.format.uppercased(),
+            "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行",
+            fileSizeText(item.fileSize)
+        ].joined(separator: " · ")
     }
 
     private func markdownHeaderChips(_ item: PromptItem) -> some View {
@@ -344,6 +382,33 @@ struct InspectorView: View {
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if mediaPromptHovered && hasPrompt(item) {
+                Text("点击提示词复制")
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(Capsule().fill(StudioColor.control.opacity(0.94)))
+                    .padding(8)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onTapGesture {
+            guard hasPrompt(item) else { return }
+            state.copySelectedPrompt()
+        }
+        .onHover { hovering in
+            mediaPromptHovered = hovering
+            if hovering, hasPrompt(item) {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.arrow.set()
+            }
+        }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: mediaPromptHovered)
     }
 
     private func promptTextView(_ item: PromptItem) -> some View {

@@ -795,8 +795,9 @@ struct PromptComposerOverlay: View {
             let panelHeight = max(0, geometry.size.height - verticalPadding * 2 - headerHeight - headerGap)
             let contentWidth = max(0, panelWidth - panelPadding * 2)
             let contentHeight = max(0, panelHeight - panelPadding * 2)
-            let uploadWidth = min(360, max(300, contentWidth * 0.34))
-            let leftWidth = max(0, contentWidth - columnSpacing - uploadWidth)
+            let showsUploadColumn = type != .text
+            let uploadWidth = showsUploadColumn ? min(360, max(300, contentWidth * 0.34)) : 0
+            let leftWidth = showsUploadColumn ? max(0, contentWidth - columnSpacing - uploadWidth) : contentWidth
             let promptHeight = max(220, contentHeight - 226)
             let uploadBoxHeight = max(150, (contentHeight - 76) / 2)
 
@@ -827,8 +828,10 @@ struct PromptComposerOverlay: View {
                                     .frame(width: leftWidth, alignment: .topLeading)
                             }
 
-                            createUploadColumn(boxHeight: uploadBoxHeight)
-                                .frame(width: uploadWidth, alignment: .topLeading)
+                            if showsUploadColumn {
+                                createUploadColumn(boxHeight: uploadBoxHeight)
+                                    .frame(width: uploadWidth, alignment: .topLeading)
+                            }
                         }
                         .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
                     }
@@ -1084,10 +1087,10 @@ struct PromptComposerOverlay: View {
             } else {
                 LazyVGrid(columns: createReferenceColumns, alignment: .leading, spacing: 12) {
                     ForEach(existingReferencePaths, id: \.self) { path in
-                        ComposerUploadThumb(path: path, width: 132, height: 78, removable: false)
+                        ComposerUploadThumb(path: path, width: 96, height: 78, removable: false)
                     }
                     ForEach(referenceURLs, id: \.path) { url in
-                        ComposerUploadThumb(path: url.path, width: 132, height: 78) {
+                        ComposerUploadThumb(path: url.path, width: 96, height: 78) {
                             referenceURLs.removeAll { $0 == url }
                         }
                     }
@@ -1097,7 +1100,7 @@ struct PromptComposerOverlay: View {
                         Image(systemName: "plus")
                             .font(StudioFont.symbol(16, weight: .medium))
                             .foregroundStyle(CreateComposerColor.primaryText)
-                            .frame(width: 132, height: 78)
+                            .frame(width: 96, height: 78)
                             .background(CreateComposerColor.inputBackground)
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(
@@ -1847,9 +1850,7 @@ struct PromptComposerOverlay: View {
 
     private var createReferenceColumns: [GridItem] {
         [
-            GridItem(.fixed(132), spacing: 12),
-            GridItem(.fixed(132), spacing: 12),
-            GridItem(.fixed(132), spacing: 12)
+            GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 12)
         ]
     }
 
@@ -2560,13 +2561,15 @@ private struct ComposerUploadThumb: View {
                 Button(action: onRemove) {
                     Image(systemName: "xmark")
                         .font(StudioFont.symbol(9, weight: .semibold))
-                        .frame(width: 22, height: 22)
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(StudioColor.text)
                 .background(Circle().fill(Color.black.opacity(0.76)))
                 .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
-                .offset(x: 8, y: -8)
+                .contentShape(Circle())
+                .padding(4)
+                .zIndex(2)
             }
         }
     }
@@ -2577,12 +2580,14 @@ private func composerRemoveButton(action: @escaping () -> Void) -> some View {
     Button(action: action) {
         Image(systemName: "xmark")
             .font(StudioFont.symbol(9, weight: .semibold))
-            .frame(width: 22, height: 22)
+            .frame(width: 30, height: 30)
     }
     .buttonStyle(.plain)
     .foregroundStyle(StudioColor.text)
     .background(Circle().fill(Color.black.opacity(0.76)))
     .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
+    .contentShape(Circle())
+    .zIndex(2)
 }
 
 private struct ComposerPreviewImage: View {
