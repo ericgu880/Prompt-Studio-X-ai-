@@ -14,6 +14,7 @@ struct PromptStudioView: View {
     @State private var liveSidebarWidth: Double?
     @State private var liveInspectorWidth: Double?
     @State private var isSplitResizing = false
+    @State private var isFileDropTargeted = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -28,11 +29,41 @@ struct PromptStudioView: View {
                                 .transition(sidebarTransition)
                         }
 
-                        MainContentView(isSidebarVisible: $isSidebarVisible, isSplitResizing: isSplitResizing)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        HStack(spacing: 0) {
+                            MainContentView(isSidebarVisible: $isSidebarVisible, isSplitResizing: isSplitResizing)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                        InspectorView()
-                            .frame(width: layout.inspector)
+                            InspectorView()
+                                .frame(width: layout.inspector)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .overlay(
+                            ZStack {
+                                if isFileDropTargeted {
+                                    Color.white.opacity(0.30)
+                                        .ignoresSafeArea()
+
+                                    Text("将任意文件拖放至此处添加")
+                                        .font(StudioFont.font(16, weight: .semibold))
+                                        .foregroundStyle(StudioColor.text)
+                                        .padding(.horizontal, 18)
+                                        .frame(height: 42)
+                                        .background(Capsule().fill(StudioColor.panel.opacity(0.76)))
+                                        .overlay(Capsule().stroke(StudioColor.primaryAction.opacity(0.44), lineWidth: 1))
+                                }
+
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
+                                    .padding(10)
+                            }
+                            .allowsHitTesting(false)
+                        )
+                        .overlay(
+                            FileDropCaptureOverlay(isTargeted: $isFileDropTargeted) { urls in
+                                state.importFiles(urls)
+                            }
+                        )
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: isSidebarVisible)
@@ -502,6 +533,83 @@ private func loadDroppedFileURLs(from providers: [NSItemProvider]) async -> [URL
         }
     }
     return urls
+}
+
+private struct FileDropCaptureOverlay: NSViewRepresentable {
+    @Binding var isTargeted: Bool
+    let onDrop: ([URL]) -> Void
+
+    func makeNSView(context: Context) -> FileDropCaptureView {
+        let view = FileDropCaptureView()
+        view.onTargetChange = { targeted in
+            isTargeted = targeted
+        }
+        view.onDrop = onDrop
+        return view
+    }
+
+    func updateNSView(_ view: FileDropCaptureView, context: Context) {
+        view.onTargetChange = { targeted in
+            isTargeted = targeted
+        }
+        view.onDrop = onDrop
+    }
+
+    final class FileDropCaptureView: NSView {
+        var onTargetChange: (Bool) -> Void = { _ in }
+        var onDrop: ([URL]) -> Void = { _ in }
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            registerForDraggedTypes([.fileURL])
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            registerForDraggedTypes([.fileURL])
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            guard fileURLs(from: sender).isEmpty == false else { return [] }
+            onTargetChange(true)
+            return .copy
+        }
+
+        override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+            guard fileURLs(from: sender).isEmpty == false else { return [] }
+            onTargetChange(true)
+            return .copy
+        }
+
+        override func draggingExited(_ sender: NSDraggingInfo?) {
+            onTargetChange(false)
+        }
+
+        override func draggingEnded(_ sender: NSDraggingInfo) {
+            onTargetChange(false)
+        }
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            let urls = fileURLs(from: sender)
+            onTargetChange(false)
+            guard !urls.isEmpty else { return false }
+            onDrop(urls)
+            return true
+        }
+
+        private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            return sender.draggingPasteboard
+                .readObjects(forClasses: [NSURL.self], options: options)?
+                .compactMap { ($0 as? URL) ?? ($0 as? NSURL)?.absoluteURL } ?? []
+        }
+    }
 }
 
 private struct SidebarView: View {
@@ -1190,7 +1298,6 @@ private struct MainContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
-    @State private var isFileDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1231,21 +1338,6 @@ private struct MainContentView: View {
             .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
         .background(StudioColor.previewBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
-                .padding(10)
-                .allowsHitTesting(false)
-        )
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isFileDropTargeted) { providers in
-            Task { @MainActor in
-                let urls = await loadDroppedFileURLs(from: providers)
-                if !urls.isEmpty {
-                    state.importFiles(urls)
-                }
-            }
-            return true
-        }
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
     }
 
@@ -1470,6 +1562,7 @@ private struct ModelTabsView: View {
                             }
                         )
                     }
+                    .mask(filterBarContentMask)
 
                     if canPageLeft {
                         filterPagerButton(direction: .left, proxy: proxy)
@@ -1506,6 +1599,26 @@ private struct ModelTabsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 32)
+    }
+
+    private var filterBarContentMask: some View {
+        HStack(spacing: 0) {
+            if canPageLeft {
+                Color.clear.frame(width: 52)
+                LinearGradient(
+                    colors: [.clear, .black],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 48)
+            }
+
+            Color.black
+
+            if canPageRight {
+                Color.clear.frame(width: 52)
+            }
+        }
     }
 
     private var availableFilters: [FilterQuickEntry] {
@@ -1629,12 +1742,17 @@ private struct FilterPagerButton: View {
     var body: some View {
         ZStack(alignment: direction == .right ? .trailing : .leading) {
             LinearGradient(
-                colors: gradientColors,
+                gradient: Gradient(stops: gradientStops),
                 startPoint: .leading,
                 endPoint: .trailing
             )
-            .frame(width: 70, height: 32)
+            .frame(width: 80, height: 36)
             .allowsHitTesting(false)
+
+            Rectangle()
+                .fill(StudioColor.previewBackground)
+                .frame(width: 40, height: 36)
+                .allowsHitTesting(false)
 
             Button(action: action) {
                 Image(systemName: direction == .right ? "chevron.right" : "chevron.left")
@@ -1647,16 +1765,24 @@ private struct FilterPagerButton: View {
             .foregroundStyle(StudioColor.text)
             .onHover { isHovered = $0 }
         }
-        .frame(width: 74, height: 32)
+        .frame(width: 80, height: 36)
         .allowsHitTesting(true)
     }
 
-    private var gradientColors: [Color] {
+    private var gradientStops: [Gradient.Stop] {
         switch direction {
         case .left:
-            [StudioColor.previewBackground, StudioColor.previewBackground.opacity(0)]
+            [
+                .init(color: StudioColor.previewBackground, location: 0),
+                .init(color: StudioColor.previewBackground, location: 0.46),
+                .init(color: StudioColor.previewBackground.opacity(0), location: 1)
+            ]
         case .right:
-            [StudioColor.previewBackground.opacity(0), StudioColor.previewBackground]
+            [
+                .init(color: StudioColor.previewBackground.opacity(0), location: 0),
+                .init(color: StudioColor.previewBackground, location: 0.54),
+                .init(color: StudioColor.previewBackground, location: 1)
+            ]
         }
     }
 }
@@ -1833,6 +1959,7 @@ private struct MasonryGridView: View {
                                     isSelected: selectedFolderID == folder.id,
                                     onSelect: {
                                         selectedFolderID = folder.id
+                                        state.selectedID = nil
                                     }
                                 )
                                     .offset(x: placement.x, y: placement.y)
@@ -2031,10 +2158,7 @@ private struct SubfolderCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous)
-                    .stroke(
-                        isSelected ? StudioColor.primaryAction.opacity(0.72) : StudioColor.hairline,
-                        lineWidth: isSelected ? 1.5 : 1
-                    )
+                    .strokeBorder(StudioColor.hairline, lineWidth: 1)
             )
             .overlay(alignment: .bottom) {
                 if isSelected {
@@ -2047,6 +2171,15 @@ private struct SubfolderCardView: View {
                     .allowsHitTesting(false)
                 }
             }
+
+            ImmediateFolderClickCapture(
+                onSingleClick: onSelect,
+                onDoubleClick: {
+                    onSelect()
+                    state.selectFolder(row.folder)
+                }
+            )
+            .frame(width: contentWidth, height: height)
 
             Button {
                 onSelect()
@@ -2070,16 +2203,9 @@ private struct SubfolderCardView: View {
         .frame(width: width, height: height + AssetCardMetrics.selectionOutset * 2)
         .overlay(
             RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous)
-                .stroke(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
+                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
         )
         .contentShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous))
-        .onTapGesture {
-            onSelect()
-        }
-        .onTapGesture(count: 2) {
-            onSelect()
-            state.selectFolder(row.folder)
-        }
         .accessibilityLabel("进入文件夹 \(row.folder.name)，\(row.count) 个文件")
     }
 
@@ -2129,6 +2255,38 @@ private struct SubfolderCardView: View {
         let trimmed = row.folder.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "PS" }
         return String(trimmed.prefix(8))
+    }
+}
+
+private struct ImmediateFolderClickCapture: NSViewRepresentable {
+    let onSingleClick: () -> Void
+    let onDoubleClick: () -> Void
+
+    func makeNSView(context: Context) -> FolderClickCaptureView {
+        let view = FolderClickCaptureView()
+        view.onSingleClick = onSingleClick
+        view.onDoubleClick = onDoubleClick
+        return view
+    }
+
+    func updateNSView(_ view: FolderClickCaptureView, context: Context) {
+        view.onSingleClick = onSingleClick
+        view.onDoubleClick = onDoubleClick
+    }
+
+    final class FolderClickCaptureView: NSView {
+        var onSingleClick: () -> Void = {}
+        var onDoubleClick: () -> Void = {}
+
+        override var acceptsFirstResponder: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount >= 2 {
+                onDoubleClick()
+            } else {
+                onSingleClick()
+            }
+        }
     }
 }
 
