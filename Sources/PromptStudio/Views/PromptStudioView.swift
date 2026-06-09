@@ -650,24 +650,49 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 10)
+                .padding(.top, 32)
                 .padding(.bottom, 28)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
             .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                SidebarBackgroundFill()
+                    .frame(height: 28)
+                    .padding(.trailing, 18)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black.opacity(0.98), location: 0.00),
+                                .init(color: .black.opacity(0.62), location: 0.18),
+                                .init(color: .black.opacity(0.22), location: 0.45),
+                                .init(color: .black.opacity(0.06), location: 0.72),
+                                .init(color: .clear, location: 1.00)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .allowsHitTesting(false)
+            }
             .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [
-                        StudioColor.sidebar.opacity(0),
-                        StudioColor.sidebar.opacity(0.82),
-                        StudioColor.sidebar.opacity(0.98)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 54)
-                .allowsHitTesting(false)
+                SidebarBackgroundFill()
+                    .frame(height: 44)
+                    .padding(.trailing, 18)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0.00),
+                                .init(color: .black.opacity(0.06), location: 0.28),
+                                .init(color: .black.opacity(0.22), location: 0.55),
+                                .init(color: .black.opacity(0.62), location: 0.82),
+                                .init(color: .black.opacity(0.98), location: 1.00)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .allowsHitTesting(false)
             }
 
             Button {
@@ -682,8 +707,8 @@ private struct SidebarView: View {
                 }
                 .font(StudioFont.font(14))
                 .foregroundStyle(StudioColor.text)
-                .frame(height: 42)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .background(settingsHovered ? StudioColor.panelRaised : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -692,15 +717,11 @@ private struct SidebarView: View {
             .onHover { settingsHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: settingsHovered)
             .padding(.horizontal, 14)
-            .padding(.bottom, 20)
+            .padding(.bottom, 14)
         }
         .background {
-            ZStack {
-                SidebarGlassBackground()
-                    .ignoresSafeArea(.container, edges: .top)
-                StudioColor.sidebar.opacity(0.30)
-                    .ignoresSafeArea(.container, edges: .top)
-            }
+            SidebarBackgroundFill()
+                .ignoresSafeArea(.container, edges: .top)
         }
     }
 
@@ -825,6 +846,29 @@ private final class TransparentOverlayScroller: NSScroller {
     override func draw(_ dirtyRect: NSRect) {
         drawKnob()
     }
+
+    override func drawKnob() {
+        let knobRect = rect(for: .knob)
+        guard knobRect.height > 0 else { return }
+
+        let knobWidth: CGFloat = 6
+        let knobX = knobRect.midX - knobWidth / 2
+        let visibleKnobRect = NSRect(
+            x: knobX,
+            y: knobRect.minY,
+            width: knobWidth,
+            height: knobRect.height
+        )
+
+        NSColor(calibratedWhite: 0.34, alpha: 0.62).setFill()
+        NSBezierPath(
+            roundedRect: visibleKnobRect,
+            xRadius: knobWidth / 2,
+            yRadius: knobWidth / 2
+        ).fill()
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
 }
 
 private struct FolderTreeView: View {
@@ -1526,6 +1570,15 @@ private struct ThumbnailScaleControl: View {
         .frame(height: 28)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help("调整缩略图大小")
+    }
+}
+
+private struct SidebarBackgroundFill: View {
+    var body: some View {
+        ZStack {
+            SidebarGlassBackground()
+            StudioColor.sidebar.opacity(0.30)
+        }
     }
 }
 
