@@ -253,6 +253,7 @@ struct InspectorView: View {
 
                 markdownActionButtons(item)
             }
+            .padding(.top, 4)
         }
     }
 
@@ -275,13 +276,26 @@ struct InspectorView: View {
 
     private func markdownHeaderChips(_ item: PromptItem) -> some View {
         FlowLayout(spacing: 8) {
-            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
-            DocumentSemanticChip(text: "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行", role: .count)
-            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
+            metadataChip(item.format.isEmpty ? "MD" : item.format.uppercased())
+            metadataChip("\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行")
+            metadataChip(item.currentVersion?.version ?? "V1.0")
             ForEach(item.tags.prefix(4), id: \.self) { tag in
-                DocumentSemanticChip(text: tag, role: .tag)
+                metadataChip(tag)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metadataChip(_ text: String) -> some View {
+        Text(text)
+            .font(StudioFont.font(11))
+            .foregroundStyle(StudioColor.secondaryText)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(StudioColor.control))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
     }
 
     private func header(_ item: PromptItem) -> some View {
@@ -359,12 +373,13 @@ struct InspectorView: View {
 
     private func mediaPromptBox(_ item: PromptItem, maxHeight: CGFloat) -> some View {
         ViewThatFits(in: .vertical) {
-            promptTextView(item)
+            selectablePromptTextView(item)
                 .fixedSize(horizontal: false, vertical: true)
                 .promptContainer()
 
             ScrollView {
-                promptTextView(item)
+                selectablePromptTextView(item)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(height: max(72, maxHeight))
             .transparentScrollArea()
@@ -394,28 +409,31 @@ struct InspectorView: View {
                 .allowsHitTesting(false)
             }
         }
-        .onTapGesture {
-            guard hasPrompt(item) else { return }
-            copyMediaPrompt()
-        }
         .onHover { hovering in
             mediaPromptHovered = hovering
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: mediaPromptHovered)
     }
 
-    private func promptTextView(_ item: PromptItem) -> some View {
-        Text(mediaPromptText(item))
-            .font(StudioFont.font(13))
-            .lineSpacing(4)
-            .foregroundStyle((item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(14)
-            .allowsHitTesting(false)
+    private func selectablePromptTextView(_ item: PromptItem) -> some View {
+        SelectablePromptTextView(
+            text: mediaPromptText(item),
+            isPlaceholder: (item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            onCopyAll: copyMediaPrompt,
+            onCopySelection: copyMediaPromptFragment
+        )
     }
 
     private func copyMediaPrompt() {
         state.copySelectedPrompt()
+        mediaPromptCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            mediaPromptCopyFeedback = false
+        }
+    }
+
+    private func copyMediaPromptFragment(_ fragment: String) {
+        state.copyPromptFragment(fragment)
         mediaPromptCopyFeedback = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             mediaPromptCopyFeedback = false
@@ -928,6 +946,161 @@ private extension View {
     }
 }
 
+private struct SelectablePromptTextView: NSViewRepresentable {
+    let text: String
+    let isPlaceholder: Bool
+    let onCopyAll: () -> Void
+    let onCopySelection: (String) -> Void
+
+    func makeNSView(context: Context) -> SelectablePromptTextContainer {
+        let view = SelectablePromptTextContainer()
+        view.onCopyAll = onCopyAll
+        view.onCopySelection = onCopySelection
+        view.update(text: text, isPlaceholder: isPlaceholder)
+        return view
+    }
+
+    func updateNSView(_ nsView: SelectablePromptTextContainer, context: Context) {
+        nsView.onCopyAll = onCopyAll
+        nsView.onCopySelection = onCopySelection
+        nsView.update(text: text, isPlaceholder: isPlaceholder)
+    }
+}
+
+private final class SelectablePromptTextContainer: NSView {
+    var onCopyAll: (() -> Void)?
+    var onCopySelection: ((String) -> Void)?
+
+    private let textView = CopyingPromptTextView()
+    private let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+    private let textInset = NSSize(width: 14, height: 14)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    override var intrinsicContentSize: NSSize {
+        let width = bounds.width > 1 ? bounds.width : 260
+        return NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight(for: width))
+    }
+
+    override func layout() {
+        super.layout()
+        textView.frame = bounds
+        textView.textContainer?.containerSize = NSSize(
+            width: max(1, bounds.width - textInset.width * 2),
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        invalidateIntrinsicContentSize()
+    }
+
+    func update(text: String, isPlaceholder: Bool) {
+        textView.onCopyAll = onCopyAll
+        textView.onCopySelection = onCopySelection
+        let textColor = isPlaceholder ? NSColor(hex: 0x7D8187) : NSColor(hex: 0xFFFFFF)
+        let attributed = attributedString(for: text, color: textColor)
+        if textView.string != text {
+            textView.textStorage?.setAttributedString(attributed)
+        } else {
+            textView.textStorage?.setAttributes(attributed.attributes(at: 0, effectiveRange: nil), range: NSRange(location: 0, length: attributed.length))
+        }
+        invalidateIntrinsicContentSize()
+    }
+
+    private func setup() {
+        wantsLayer = false
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.textContainerInset = textInset
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width, .height]
+        addSubview(textView)
+    }
+
+    private func measuredHeight(for width: CGFloat) -> CGFloat {
+        let textWidth = max(1, width - textInset.width * 2)
+        let storage = NSTextStorage(attributedString: textView.attributedString())
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.widthTracksTextView = false
+        layoutManager.addTextContainer(textContainer)
+        storage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return max(44, ceil(usedRect.height) + textInset.height * 2)
+    }
+
+    private func attributedString(for text: String, color: NSColor) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ]
+        )
+    }
+}
+
+private final class CopyingPromptTextView: NSTextView {
+    var onCopyAll: (() -> Void)?
+    var onCopySelection: ((String) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+        if let selectedText {
+            onCopySelection?(selectedText)
+        } else if event.clickCount == 1 {
+            onCopyAll?()
+        }
+    }
+
+    private var selectedText: String? {
+        let range = selectedRange()
+        guard range.length > 0,
+              let swiftRange = Range(range, in: string) else {
+            return nil
+        }
+        let text = String(string[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+}
+
 private struct PointingHandCursorArea: NSViewRepresentable {
     func makeNSView(context: Context) -> CursorView {
         CursorView()
@@ -975,6 +1148,17 @@ private struct PointingHandCursorArea: NSViewRepresentable {
         override func mouseEntered(with event: NSEvent) {
             NSCursor.pointingHand.set()
         }
+    }
+}
+
+private extension NSColor {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
+        self.init(
+            calibratedRed: CGFloat((hex >> 16) & 0xff) / 255.0,
+            green: CGFloat((hex >> 8) & 0xff) / 255.0,
+            blue: CGFloat(hex & 0xff) / 255.0,
+            alpha: alpha
+        )
     }
 }
 
@@ -1185,8 +1369,67 @@ private struct FlowLayout<Content: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: spacing) {
+        WrappingLayout(spacing: spacing) {
             content
+        }
+    }
+}
+
+private struct WrappingLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        guard maxWidth.isFinite else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            let width = sizes.reduce(CGFloat.zero) { $0 + $1.width } + CGFloat(max(0, sizes.count - 1)) * spacing
+            let height = sizes.map(\.height).max() ?? 0
+            return CGSize(width: width, height: height)
+        }
+
+        var currentX: CGFloat = 0
+        var currentRowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            if currentX > 0, currentX + spacing + size.width > maxWidth {
+                totalHeight += currentRowHeight + spacing
+                currentX = 0
+                currentRowHeight = 0
+            }
+
+            if currentX > 0 {
+                currentX += spacing
+            }
+            currentX += min(size.width, maxWidth)
+            currentRowHeight = max(currentRowHeight, size.height)
+        }
+
+        totalHeight += currentRowHeight
+        return CGSize(width: maxWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var currentX = bounds.minX
+        var currentY = bounds.minY
+        var currentRowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            if currentX > bounds.minX, currentX + spacing + size.width > bounds.maxX {
+                currentX = bounds.minX
+                currentY += currentRowHeight + spacing
+                currentRowHeight = 0
+            }
+
+            subview.place(
+                at: CGPoint(x: currentX, y: currentY),
+                proposal: ProposedViewSize(width: min(size.width, maxWidth), height: size.height)
+            )
+            currentX += min(size.width, maxWidth) + spacing
+            currentRowHeight = max(currentRowHeight, size.height)
         }
     }
 }

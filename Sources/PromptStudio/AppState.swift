@@ -447,6 +447,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    func copyPromptFragment(_ fragment: String) {
+        let text = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        AppKitBridge.copyToPasteboard(text)
+        showToast("已复制提示词")
+        if let id = selectedID {
+            markRecentlyUsed(itemID: id)
+        }
+    }
+
     func markdownDocumentText(for item: PromptItem) -> String {
         if !item.assetPath.isEmpty,
            let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
@@ -1060,14 +1070,16 @@ final class AppState: ObservableObject {
         return childFolderRows(parentID: folderID)
     }
 
-    func folderTreeRows() -> [FolderTreeRow] {
+    func folderTreeRows(orderOverrides: [String: Int] = [:]) -> [FolderTreeRow] {
         let children = Dictionary(grouping: folders, by: { $0.parentId })
         func sorted(_ folders: [LibraryFolder]) -> [LibraryFolder] {
             folders.sorted {
-                if $0.sortOrder == $1.sortOrder {
+                let lhsOrder = orderOverrides[$0.id] ?? $0.sortOrder
+                let rhsOrder = orderOverrides[$1.id] ?? $1.sortOrder
+                if lhsOrder == rhsOrder {
                     return $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 }
-                return $0.sortOrder < $1.sortOrder
+                return lhsOrder < rhsOrder
             }
         }
 
@@ -1092,6 +1104,35 @@ final class AppState: ObservableObject {
         }
         append(parentID: nil, level: 0)
         return rows
+    }
+
+    func reorderFolders(parentId: String?, orderedIDs: [String]) {
+        let siblings = folders
+            .filter { $0.parentId == parentId }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+        let siblingIDSet = Set(siblings.map(\.id))
+        var finalIDs = orderedIDs.filter { siblingIDSet.contains($0) }
+        for folder in siblings where !finalIDs.contains(folder.id) {
+            finalIDs.append(folder.id)
+        }
+        guard finalIDs.count == siblings.count else { return }
+
+        do {
+            let lookup = Dictionary(uniqueKeysWithValues: siblings.map { ($0.id, $0) })
+            for (index, id) in finalIDs.enumerated() {
+                guard var folder = lookup[id] else { continue }
+                folder.sortOrder = index
+                try repository?.saveFolder(folder)
+            }
+            folders = try repository?.loadFolders() ?? folders
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
     }
 
     private func childFolderRows(parentID: String) -> [FolderRow] {
@@ -1124,6 +1165,38 @@ final class AppState: ObservableObject {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             setCollection(.folder(folder.id))
+        }
+    }
+
+    func swapFolderOrder(draggedID: String, targetID: String) {
+        guard draggedID != targetID,
+              let dragged = folder(withID: draggedID),
+              let target = folder(withID: targetID),
+              dragged.parentId == target.parentId else { return }
+
+        var siblings = folders
+            .filter { $0.parentId == target.parentId }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+
+        guard let draggedIndex = siblings.firstIndex(where: { $0.id == draggedID }),
+              let targetIndex = siblings.firstIndex(where: { $0.id == targetID }) else { return }
+
+        siblings.swapAt(draggedIndex, targetIndex)
+
+        do {
+            for index in siblings.indices {
+                var folder = siblings[index]
+                folder.sortOrder = index
+                try repository?.saveFolder(folder)
+            }
+            folders = try repository?.loadFolders() ?? folders
+        } catch {
+            modal = .error(error.localizedDescription)
         }
     }
 

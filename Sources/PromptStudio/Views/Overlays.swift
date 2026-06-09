@@ -378,17 +378,23 @@ private struct MarkdownDocumentPreviewContent: View {
                     Spacer(minLength: 12)
 
                     HStack(spacing: 10) {
-                        documentActionButton(.externalLink, help: "打开") {
-                            state.openSelectedInDefaultApplication()
+                        documentActionButton(.pencil, help: "编辑") {
+                            state.requestInlineEdit(item)
                         }
                         documentActionButton(.copy, help: "复制文档信息") {
                             state.copyMarkdownDocumentText(text)
                         }
-                        documentActionButton(.link, help: "复制路径") {
-                            state.copySelectedFilePath()
+                        documentActionButton(.circleArrowDown, help: "下载") {
+                            state.isPreviewPresented = false
+                            state.modal = .export
+                        }
+                        documentActionButton(.history, help: "历史版本") {
+                            state.isPreviewPresented = false
+                            state.modal = .versionHistory
                         }
                     }
                 }
+                .padding(.top, 6)
 
                 documentFileInfo
             }
@@ -409,6 +415,7 @@ private struct MarkdownDocumentPreviewContent: View {
                 documentMetadataChip(tag)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func documentMetadataChip(_ text: String) -> some View {
@@ -3077,7 +3084,7 @@ private struct WrappingLayout: Layout {
         }
 
         totalHeight += currentRowHeight
-        return CGSize(width: min(measuredWidth, maxWidth), height: totalHeight)
+        return CGSize(width: maxWidth, height: totalHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

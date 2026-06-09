@@ -882,13 +882,91 @@ private final class TransparentOverlayScroller: NSScroller {
 
 private struct FolderTreeView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var orderOverrides: [String: Int] = [:]
+    @State private var rowFrames: [String: CGRect] = [:]
+    @State private var draggingFolderID: String?
+    @State private var draggingParentId: String?
+    @State private var baseSiblingIDs: [String] = []
+    @State private var currentSiblingIDs: [String] = []
+    @State private var dragOffset: CGSize = .zero
 
     var body: some View {
+        let rows = state.folderTreeRows(orderOverrides: orderOverrides)
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(state.folderTreeRows()) { row in
-                FolderTreeRowView(row: row)
+            ForEach(rows) { row in
+                FolderTreeRowView(
+                    row: row,
+                    isDragging: draggingFolderID == row.id,
+                    dragOffset: draggingFolderID == row.id ? dragOffset : .zero,
+                    onDragChanged: { value in
+                        updateDrag(row: row, value: value)
+                    },
+                    onDragEnded: { _ in
+                        endDrag()
+                    }
+                )
             }
         }
+        .coordinateSpace(name: "folderTree")
+        .onPreferenceChange(FolderTreeRowFramePreferenceKey.self) { rowFrames = $0 }
+        .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: orderOverrides)
+    }
+
+    private func updateDrag(row: AppState.FolderTreeRow, value: DragGesture.Value) {
+        if draggingFolderID == nil {
+            draggingFolderID = row.id
+            draggingParentId = row.folder.parentId
+            baseSiblingIDs = sortedSiblingIDs(parentId: row.folder.parentId)
+            currentSiblingIDs = baseSiblingIDs
+        }
+        guard draggingFolderID == row.id else { return }
+        dragOffset = value.translation
+
+        let siblingsWithoutDragged = baseSiblingIDs.filter { $0 != row.id }
+        let targetIndex = siblingsWithoutDragged.reduce(0) { index, folderID in
+            guard let frame = rowFrames[folderID] else { return index }
+            return value.location.y > frame.midY ? index + 1 : index
+        }
+
+        var nextIDs = siblingsWithoutDragged
+        nextIDs.insert(row.id, at: min(max(targetIndex, 0), nextIDs.count))
+        guard nextIDs != currentSiblingIDs else { return }
+        currentSiblingIDs = nextIDs
+        orderOverrides = Dictionary(uniqueKeysWithValues: nextIDs.enumerated().map { ($0.element, $0.offset) })
+    }
+
+    private func endDrag() {
+        defer {
+            draggingFolderID = nil
+            draggingParentId = nil
+            baseSiblingIDs = []
+            currentSiblingIDs = []
+            dragOffset = .zero
+            orderOverrides = [:]
+        }
+        guard draggingFolderID != nil, !currentSiblingIDs.isEmpty else { return }
+        state.reorderFolders(parentId: draggingParentId, orderedIDs: currentSiblingIDs)
+    }
+
+    private func sortedSiblingIDs(parentId: String?) -> [String] {
+        state.folders
+            .filter { $0.parentId == parentId }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            .map(\.id)
+    }
+}
+
+private struct FolderTreeRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 
@@ -896,6 +974,10 @@ private struct FolderTreeRowView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let row: AppState.FolderTreeRow
+    let isDragging: Bool
+    let dragOffset: CGSize
+    let onDragChanged: (DragGesture.Value) -> Void
+    let onDragEnded: (DragGesture.Value) -> Void
     @State private var isHovered = false
     @State private var isDisclosureHovered = false
     @State private var isDropTargeted = false
@@ -964,30 +1046,37 @@ private struct FolderTreeRowView: View {
                     .onEnded {
                         guard row.hasChildren, !isEditingName else { return }
                         state.toggleFolderExpansion(row.folder.id)
-                    }
+                }
             )
         }
         .onHover { isHovered = $0 }
-        .onDrop(of: [UTType.plainText.identifier, UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
-            if providers.contains(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
-                Task { @MainActor in
-                    let urls = await loadDroppedFileURLs(from: providers)
-                    if !urls.isEmpty {
-                        state.importFiles(urls, targetFolderID: row.folder.id)
-                    }
-                }
-                return true
+        .offset(dragOffset)
+        .opacity(isDragging ? 0.86 : 1)
+        .zIndex(isDragging ? 8 : 0)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: FolderTreeRowFramePreferenceKey.self,
+                    value: [row.id: proxy.frame(in: .named("folderTree"))]
+                )
             }
-
-            guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
-            provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let itemID = object as? String else { return }
-                Task { @MainActor in
-                    state.moveItem(itemID, toFolderID: row.folder.id)
+        )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .named("folderTree"))
+                .onChanged { value in
+                    guard !isEditingName else { return }
+                    onDragChanged(value)
                 }
-            }
-            return true
-        }
+                .onEnded { value in
+                    guard !isEditingName else { return }
+                    onDragEnded(value)
+                }
+        )
+        .onDrop(
+            of: [UTType.plainText.identifier, UTType.fileURL.identifier],
+            isTargeted: $isDropTargeted,
+            perform: handleDrop
+        )
         .contextMenu {
             folderContextMenu(row.folder)
         }
@@ -1061,6 +1150,27 @@ private struct FolderTreeRowView: View {
         isEditingName = false
         nameFieldFocused = false
         draftName = row.folder.name
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        if providers.contains(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
+            Task { @MainActor in
+                let urls = await loadDroppedFileURLs(from: providers)
+                if !urls.isEmpty {
+                    state.importFiles(urls, targetFolderID: row.folder.id)
+                }
+            }
+            return true
+        }
+
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let itemID = object as? String else { return }
+            Task { @MainActor in
+                state.moveItem(itemID, toFolderID: row.folder.id)
+            }
+        }
+        return true
     }
 
     @ViewBuilder
