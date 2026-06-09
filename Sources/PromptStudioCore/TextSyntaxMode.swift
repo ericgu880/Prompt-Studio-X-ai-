@@ -124,6 +124,9 @@ public enum TextSyntaxRules {
 
     public static func rules(for mode: TextSyntaxMode, text: String) -> [TextSyntaxRule] {
         if isLargeText(text) {
+            if mode == .markdown {
+                return markdownLightRules
+            }
             return lightRules
         }
 
@@ -189,6 +192,16 @@ public enum TextSyntaxRules {
         TextSyntaxRule(token: .inlineCode, pattern: #"(?<!`)`(?!`)[^`\n]+(?<!`)`(?!`)"#),
         TextSyntaxRule(token: .negativeConstraint, pattern: negativeConstraintPattern),
         TextSyntaxRule(token: .bold, pattern: #"\*\*[^*\n]+?\*\*"#)
+    ]
+
+    private static let markdownLightRules: [TextSyntaxRule] = [
+        TextSyntaxRule(token: .heading, pattern: #"(?m)^\s{0,6}#{1,6}\s.*$"#),
+        TextSyntaxRule(token: .heading, pattern: markdownSetextHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownWrappedHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownNumberedHeadingPattern, options: .caseInsensitive),
+        TextSyntaxRule(token: .heading, pattern: markdownColonHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownShortHeadingPattern),
+        TextSyntaxRule(token: .negativeConstraint, pattern: negativeConstraintPattern)
     ]
 
     private static let markdownSetextHeadingPattern = #"(?m)^\s{0,6}(?!\s*(?:[-*+]\s|>\s?|\||`{3,}|~{3,}))(?![^\n]*[。！？；，,!?;])[^\n]{1,40}(?=\n\s*[=-]{3,}\s*$)"#

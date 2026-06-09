@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 enum ThumbnailService {
     static let maxPixelSize = 900
-    private static let documentThumbnailVersion = 4
+    private static let documentThumbnailVersion = 6
 
     static func thumbnailURL(itemID: String, libraryURL: URL) -> URL {
         libraryURL
@@ -27,6 +27,28 @@ enum ThumbnailService {
             return item.thumbnailPath
         }
         return nil
+    }
+
+    static func invalidateGeneratedThumbnail(for item: PromptItem, libraryURL: URL) {
+        let fileManager = FileManager.default
+        let thumbnailsURL = libraryURL.appendingPathComponent("thumbnails")
+        let knownURLs = [
+            thumbnailURL(itemID: item.id, libraryURL: libraryURL),
+            generatedThumbnailURL(for: item, libraryURL: libraryURL)
+        ]
+        for url in knownURLs where fileManager.fileExists(atPath: url.path) {
+            try? fileManager.removeItem(at: url)
+        }
+
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: thumbnailsURL,
+            includingPropertiesForKeys: nil
+        ) else { return }
+
+        let documentPrefix = "\(item.id)-doc-v"
+        for url in files where url.lastPathComponent.hasPrefix(documentPrefix) && url.pathExtension.lowercased() == "jpg" {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     @discardableResult
@@ -148,15 +170,9 @@ enum ThumbnailService {
         lineNumberParagraph.alignment = .right
 
         let bodyFont = NSFont(name: "PingFangSC-Regular", size: 25) ?? .systemFont(ofSize: 25)
-        let headingFont = NSFont(name: "PingFangSC-Regular", size: 28) ?? .systemFont(ofSize: 28)
         let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 23, weight: .regular)
         let muted = NSColor(hex: 0xBDBEC0)
         let textColor = NSColor(hex: 0xBDBEC0)
-        let headingColor = NSColor(hex: 0x41CBE0)
-        let listColor = NSColor(hex: 0xFF9F0A)
-        let quoteColor = NSColor(hex: 0x37DD61)
-        let negativeColor = NSColor(hex: 0xFF5F57)
-        let strongColor = NSColor(hex: 0xEEEEEE)
 
         let lineHeight: CGFloat = 40
         let contentInset: CGFloat = 40
@@ -164,32 +180,12 @@ enum ThumbnailService {
         for (index, rawLine) in lines.enumerated() {
             guard y > panelRect.minY + contentInset else { break }
             let line = rawLine.isEmpty ? " " : rawLine
-            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
-            let isHeading = trimmedLine.hasPrefix("#")
-            let isList = trimmedLine.hasPrefix("-")
-            let isQuote = trimmedLine.hasPrefix(">")
-            let isNegative = line.range(
-                of: #"^\s{0,6}(?:(?:#{1,6}\s*.*(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt).*)|(?:(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt)(?:\s*(?:规则|内容|列表|清单|要求|Constraints?))?\s*[:：]?))\s*$"#,
-                options: [.regularExpression, .caseInsensitive]
-            ) != nil
-            let hasStrong = line.contains("**")
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: isHeading ? headingFont : bodyFont,
-                .foregroundColor: thumbnailTextColor(
-                    isHeading: isHeading,
-                    isList: isList,
-                    isQuote: isQuote,
-                    isNegative: isNegative,
-                    hasStrong: hasStrong,
-                    headingColor: headingColor,
-                    listColor: listColor,
-                    quoteColor: quoteColor,
-                    negativeColor: negativeColor,
-                    strongColor: strongColor,
-                    textColor: textColor
-                ),
+            let baseAttributes: [NSAttributedString.Key: Any] = [
+                .font: bodyFont,
+                .foregroundColor: textColor,
                 .paragraphStyle: paragraph
             ]
+            let attributedLine = thumbnailAttributedLine(line, baseAttributes: baseAttributes)
             let lineNumberAttributes: [NSAttributedString.Key: Any] = [
                 .font: lineNumberFont,
                 .foregroundColor: muted,
@@ -200,9 +196,8 @@ enum ThumbnailService {
                 in: NSRect(x: panelRect.minX + contentInset, y: y, width: 60, height: lineHeight),
                 withAttributes: lineNumberAttributes
             )
-            NSString(string: line).draw(
+            attributedLine.draw(
                 in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 120 - contentInset, height: lineHeight),
-                withAttributes: attributes
             )
             y -= lineHeight
         }
@@ -213,25 +208,41 @@ enum ThumbnailService {
         return jpeg
     }
 
-    private static func thumbnailTextColor(
-        isHeading: Bool,
-        isList: Bool,
-        isQuote: Bool,
-        isNegative: Bool,
-        hasStrong: Bool,
-        headingColor: NSColor,
-        listColor: NSColor,
-        quoteColor: NSColor,
-        negativeColor: NSColor,
-        strongColor: NSColor,
-        textColor: NSColor
-    ) -> NSColor {
-        if hasStrong { return strongColor }
-        if isNegative { return negativeColor }
-        if isHeading { return headingColor }
-        if isQuote { return quoteColor }
-        if isList { return listColor }
-        return textColor
+    private static func thumbnailAttributedLine(
+        _ line: String,
+        baseAttributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(string: line, attributes: baseAttributes)
+        for rule in TextSyntaxRules.rules(for: .markdown, text: line) {
+            guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else { continue }
+            let fullRange = NSRange(location: 0, length: (line as NSString).length)
+            regex.enumerateMatches(in: line, range: fullRange) { match, _, _ in
+                guard let match else { return }
+                let targetRange = rule.captureGroup > 0 && rule.captureGroup < match.numberOfRanges
+                    ? match.range(at: rule.captureGroup)
+                    : match.range
+                guard targetRange.location != NSNotFound, targetRange.length > 0 else { return }
+                attributed.addAttributes(thumbnailAttributes(for: rule.token), range: targetRange)
+            }
+        }
+        return attributed
+    }
+
+    private static func thumbnailAttributes(for token: TextSyntaxToken) -> [NSAttributedString.Key: Any] {
+        switch token {
+        case .heading, .jsonKey, .yamlKey, .xmlTag, .timestamp, .infoLevel, .sourceKeyword:
+            return [.foregroundColor: NSColor(hex: 0x41CBE0)]
+        case .quoteMarker, .inlineCode, .string, .url, .path:
+            return [.foregroundColor: NSColor(hex: 0x37DD61)]
+        case .listMarker, .number, .punctuation, .xmlAttribute, .warningLevel:
+            return [.foregroundColor: NSColor(hex: 0xFF9F0A)]
+        case .negativeConstraint, .literal, .errorLevel:
+            return [.foregroundColor: NSColor(hex: 0xFF5F57)]
+        case .bold:
+            return [.foregroundColor: NSColor(hex: 0xEEEEEE)]
+        case .comment, .muted:
+            return [.foregroundColor: NSColor(hex: 0xBDBEC0)]
+        }
     }
 
     private static func generateVideoThumbnail(from sourceURL: URL, to destinationURL: URL) throws -> String? {

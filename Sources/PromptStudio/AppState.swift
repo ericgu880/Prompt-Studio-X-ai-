@@ -205,7 +205,7 @@ final class AppState: ObservableObject {
     private var repository: PromptRepository?
     private var itemsByID: [String: PromptItem] = [:]
     private var pendingLastUsedTask: Task<Void, Never>?
-    private var thumbnailGenerationID = UUID()
+    private var activeThumbnailGenerationIDs: Set<UUID> = []
     private var isBatchingFilterUpdate = false
     private var isPreservingSelectionSet = false
     private var navigationBackStack: [NavigationSnapshot] = []
@@ -691,7 +691,10 @@ final class AppState: ObservableObject {
                     note: "文档全窗口编辑"
                 )
             )
-            save(current, toast: "已保存文档信息")
+            try repository?.saveItem(current)
+            reload(selecting: current.id)
+            showToast("已保存文档信息")
+            invalidateAndRegenerateTextThumbnail(for: current)
             markRecentlyUsed(itemID: current.id)
         } catch {
             modal = .error("保存文档失败：\(error.localizedDescription)")
@@ -1777,6 +1780,7 @@ final class AppState: ObservableObject {
         let libraryURL = libraryURL
         var candidates: [PromptItem] = []
         var existingGenerated: [(String, String)] = []
+        var invalidatedGenerated: [(String, String)] = []
         for item in items {
             guard item.supportsGeneratedThumbnail else { continue }
             if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
@@ -1785,17 +1789,17 @@ final class AppState: ObservableObject {
                 }
                 continue
             }
+            if item.isTextDocumentLike {
+                ThumbnailService.invalidateGeneratedThumbnail(for: item, libraryURL: libraryURL)
+                if item.thumbnailPath != item.assetPath {
+                    invalidatedGenerated.append((item.id, item.assetPath))
+                }
+            }
             candidates.append(item)
         }
-        applyGeneratedThumbnails(existingGenerated)
+        applyGeneratedThumbnails(existingGenerated + invalidatedGenerated)
         guard !candidates.isEmpty else { return }
-        thumbnailGenerationID = UUID()
-        ThumbnailGenerationCenter.shared.start(
-            candidates: candidates,
-            libraryURL: libraryURL,
-            generationID: thumbnailGenerationID,
-            receiver: self
-        )
+        startThumbnailGeneration(for: candidates)
     }
 
     private func applyGeneratedThumbnails(_ generated: [(String, String)]) {
@@ -1816,6 +1820,37 @@ final class AppState: ObservableObject {
         if changed {
             items = updatedItems
         }
+    }
+
+    private func invalidateAndRegenerateTextThumbnail(for item: PromptItem) {
+        guard item.isTextDocumentLike else { return }
+        ThumbnailService.invalidateGeneratedThumbnail(for: item, libraryURL: libraryURL)
+        do {
+            try repository?.updateThumbnailPath(itemID: item.id, thumbnailPath: item.assetPath)
+        } catch {
+            showToast("缩略图刷新失败")
+        }
+
+        var updatedItems = items
+        if let index = updatedItems.firstIndex(where: { $0.id == item.id }) {
+            updatedItems[index].thumbnailPath = item.assetPath
+            items = updatedItems
+        }
+
+        let candidate = itemsByID[item.id] ?? item
+        startThumbnailGeneration(for: [candidate])
+    }
+
+    private func startThumbnailGeneration(for candidates: [PromptItem]) {
+        guard !candidates.isEmpty else { return }
+        let generationID = UUID()
+        activeThumbnailGenerationIDs.insert(generationID)
+        ThumbnailGenerationCenter.shared.start(
+            candidates: candidates,
+            libraryURL: libraryURL,
+            generationID: generationID,
+            receiver: self
+        )
     }
 
     private func showToast(_ message: String) {
@@ -2000,7 +2035,7 @@ final class AppState: ObservableObject {
 
 extension AppState: ThumbnailGenerationReceiver {
     func thumbnailGenerationDidFinish(_ generated: [(String, String)], generationID: UUID) {
-        guard thumbnailGenerationID == generationID else { return }
+        guard activeThumbnailGenerationIDs.remove(generationID) != nil else { return }
         applyGeneratedThumbnails(generated)
     }
 }

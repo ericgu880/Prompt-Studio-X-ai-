@@ -204,6 +204,12 @@ func testMarkdownHeadingRulesAvoidBodyLikeLines() throws {
     }
 }
 
+func testLargeMarkdownKeepsHeadingHighlightRules() throws {
+    let largeMarkdown = "【基础设定】\n" + String(repeating: "正文内容\n", count: TextSyntaxRules.largeTextLineLimit + 5)
+    let tokens = TextSyntaxRules.tokenKinds(in: largeMarkdown, mode: .markdown)
+    try expect(tokens.contains(.heading), "large markdown should still highlight headings")
+}
+
 func testMarkdownNegativeHighlightRequiresTitle() throws {
     let titleTokens = TextSyntaxRules.tokenKinds(in: "## 负面提示\n不要出现水印", mode: .markdown)
     try expect(titleTokens.contains(.negativeConstraint), "negative heading should be highlighted")
@@ -564,6 +570,7 @@ do {
     try testTextSyntaxRulesDetectJSONTokens()
     try testMarkdownHeadingRulesDetectCommonTitleShapes()
     try testMarkdownHeadingRulesAvoidBodyLikeLines()
+    try testLargeMarkdownKeepsHeadingHighlightRules()
     try testMarkdownNegativeHighlightRequiresTitle()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()

@@ -2616,7 +2616,11 @@ private struct AssetCardView: View {
     @ViewBuilder
     private var cardContent: some View {
         if item.isTextDocumentLike {
-            TextDocumentCardPreview(item: item)
+            if item.hasGeneratedThumbnailFile {
+                AssetMediaView(item: item)
+            } else {
+                TextDocumentCardPreview(item: item)
+            }
         } else {
             AssetMediaView(item: item)
         }
@@ -2834,7 +2838,7 @@ private struct AssetCardView: View {
         let previewWidth = min(138, max(88, width * 0.46))
         let previewHeight = min(156, max(72, AssetCardMetrics.contentHeight(for: item, width: previewWidth)))
         return Group {
-            if item.isTextDocumentLike {
+            if item.isTextDocumentLike && !item.hasGeneratedThumbnailFile {
                 TextDocumentCardPreview(item: item)
             } else {
                 AssetMediaView(item: item)
@@ -2878,6 +2882,14 @@ private struct AssetCardView: View {
         }
     }
 
+}
+
+private extension PromptItem {
+    var hasGeneratedThumbnailFile: Bool {
+        thumbnailPath != assetPath
+            && !thumbnailPath.isEmpty
+            && FileManager.default.fileExists(atPath: thumbnailPath)
+    }
 }
 
 private struct AssetCardDropDelegate: DropDelegate {
@@ -3081,20 +3093,21 @@ private struct TextDocumentPreviewLine: View {
 
     private var lineText: Text {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if isNegativeConstraintTitle(trimmed) {
+        let tokens = TextSyntaxRules.tokenKinds(in: line, mode: .markdown)
+        if tokens.contains(.negativeConstraint) {
             return Text(line).foregroundColor(TextDocumentCardPalette.red)
         }
-        if trimmed.hasPrefix("#") {
+        if tokens.contains(.heading) {
             return Text(line).foregroundColor(TextDocumentCardPalette.blue)
         }
-        if trimmed.hasPrefix(">") {
+        if tokens.contains(.quoteMarker) {
             let indent = String(line.prefix { $0 == " " || $0 == "\t" })
             let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
             return Text(indent)
                 + Text(">").foregroundColor(TextDocumentCardPalette.green)
                 + Text(" " + rest).foregroundColor(TextDocumentCardPalette.text)
         }
-        if let marker = listMarker(in: trimmed) {
+        if tokens.contains(.listMarker), let marker = listMarker(in: trimmed) {
             let indent = String(line.prefix { $0 == " " || $0 == "\t" })
             let rest = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
             return Text(indent)
@@ -3123,13 +3136,6 @@ private struct TextDocumentPreviewLine: View {
             return "\(prefix)."
         }
         return nil
-    }
-
-    private func isNegativeConstraintTitle(_ value: String) -> Bool {
-        value.range(
-            of: #"^\s{0,6}(?:(?:#{1,6}\s*.*(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt).*)|(?:(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt)(?:\s*(?:规则|内容|列表|清单|要求|Constraints?))?\s*[:：]?))\s*$"#,
-            options: [.regularExpression, .caseInsensitive]
-        ) != nil
     }
 }
 
