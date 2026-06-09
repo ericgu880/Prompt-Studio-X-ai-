@@ -546,22 +546,29 @@ final class AppState: ObservableObject {
     }
 
     func moveSelectedToTrash() {
-        guard let id = selectedID else { return }
+        let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
+        guard !ids.isEmpty else { return }
         do {
-            try repository?.markDeleted(itemID: id, deletedAt: Date())
-            reload(selecting: filteredItems.first(where: { $0.id != id })?.id)
-            showToast("已移入回收站")
+            let deletedAt = Date()
+            for id in ids {
+                try repository?.markDeleted(itemID: id, deletedAt: deletedAt)
+            }
+            reload(selecting: filteredItems.first(where: { !ids.contains($0.id) })?.id)
+            showToast(ids.count > 1 ? "已移入回收站 \(ids.count) 个项目" : "已移入回收站")
         } catch {
             modal = .error(error.localizedDescription)
         }
     }
 
     func restoreSelected() {
-        guard let id = selectedID else { return }
+        let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
+        guard !ids.isEmpty else { return }
         do {
-            try repository?.markDeleted(itemID: id, deletedAt: nil)
-            reload(selecting: id)
-            showToast("已恢复")
+            for id in ids {
+                try repository?.markDeleted(itemID: id, deletedAt: nil)
+            }
+            reload(selecting: selectedID ?? ids.first)
+            showToast(ids.count > 1 ? "已恢复 \(ids.count) 个项目" : "已恢复")
         } catch {
             modal = .error(error.localizedDescription)
         }

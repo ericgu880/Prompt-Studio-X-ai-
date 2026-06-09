@@ -14,6 +14,7 @@ struct InspectorView: View {
     @State private var isPromptExpanded = false
     @State private var isNegativePromptExpanded = false
     @State private var mediaPromptHovered = false
+    @State private var mediaPromptCopyFeedback = false
 
     var body: some View {
         Group {
@@ -45,6 +46,7 @@ struct InspectorView: View {
             }
             isPromptExpanded = false
             isNegativePromptExpanded = false
+            mediaPromptCopyFeedback = false
         }
         .onChange(of: state.inspectorEditRequest) { _, request in
             guard let request,
@@ -370,30 +372,34 @@ struct InspectorView: View {
         }
         .frame(maxWidth: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            if hasPrompt(item) {
+                PointingHandCursorArea()
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if mediaPromptHovered && hasPrompt(item) {
-                Text("点击提示词复制")
-                    .font(StudioFont.font(11))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .padding(.horizontal, 8)
-                    .frame(height: 24)
-                    .background(Capsule().fill(StudioColor.control.opacity(0.94)))
-                    .padding(8)
-                    .transition(.opacity)
-                    .allowsHitTesting(false)
+                HStack(spacing: 5) {
+                    LucideIcon(kind: .copy)
+                        .frame(width: 12, height: 12)
+                    Text(mediaPromptCopyFeedback ? "已复制提示词" : "点击提示词复制")
+                }
+                .font(StudioFont.font(11))
+                .foregroundStyle(StudioColor.secondaryText)
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(Capsule().fill(StudioColor.control.opacity(0.94)))
+                .padding(8)
+                .transition(.opacity)
+                .allowsHitTesting(false)
             }
         }
         .onTapGesture {
             guard hasPrompt(item) else { return }
-            state.copySelectedPrompt()
+            copyMediaPrompt()
         }
         .onHover { hovering in
             mediaPromptHovered = hovering
-            if hovering, hasPrompt(item) {
-                NSCursor.pointingHand.set()
-            } else {
-                NSCursor.arrow.set()
-            }
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: mediaPromptHovered)
     }
@@ -403,9 +409,17 @@ struct InspectorView: View {
             .font(StudioFont.font(13))
             .lineSpacing(4)
             .foregroundStyle((item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-            .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(14)
+            .allowsHitTesting(false)
+    }
+
+    private func copyMediaPrompt() {
+        state.copySelectedPrompt()
+        mediaPromptCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            mediaPromptCopyFeedback = false
+        }
     }
 
     private func mediaPromptText(_ item: PromptItem) -> String {
@@ -911,6 +925,56 @@ private extension View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
             )
+    }
+}
+
+private struct PointingHandCursorArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> CursorView {
+        CursorView()
+    }
+
+    func updateNSView(_ nsView: CursorView, context: Context) {
+        nsView.window?.invalidateCursorRects(for: nsView)
+    }
+
+    final class CursorView: NSView {
+        private var trackingArea: NSTrackingArea?
+
+        override var isOpaque: Bool { false }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+
+        override func updateTrackingAreas() {
+            if let trackingArea {
+                removeTrackingArea(trackingArea)
+            }
+            let nextTrackingArea = NSTrackingArea(
+                rect: bounds,
+                options: [.activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
+                owner: self
+            )
+            addTrackingArea(nextTrackingArea)
+            trackingArea = nextTrackingArea
+            super.updateTrackingAreas()
+        }
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+
+        override func cursorUpdate(with event: NSEvent) {
+            NSCursor.pointingHand.set()
+        }
+
+        override func mouseMoved(with event: NSEvent) {
+            NSCursor.pointingHand.set()
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            NSCursor.pointingHand.set()
+        }
     }
 }
 

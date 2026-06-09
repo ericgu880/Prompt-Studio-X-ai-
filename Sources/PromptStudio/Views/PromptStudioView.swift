@@ -2043,6 +2043,7 @@ private struct MasonryGridView: View {
             let columnCount = lockedColumnCount ?? computedColumnCount
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
             let layout = makeMasonryLayout(folders: folders, items: items, columnCount: columnCount, width: width)
+            let visualItemIDs = itemIDsInVisualOrder(layout)
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
@@ -2087,7 +2088,10 @@ private struct MasonryGridView: View {
                                 AssetCardView(
                                     item: item,
                                     width: width,
-                                    draggedItemID: $draggedItemID
+                                    draggedItemID: $draggedItemID,
+                                    selectionAction: { item, modifiers in
+                                        selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
+                                    }
                                 )
                                 .offset(x: placement.x, y: placement.y)
                                 .simultaneousGesture(TapGesture().onEnded {
@@ -2219,6 +2223,45 @@ private struct MasonryGridView: View {
             }
         }
         return ids
+    }
+
+    private func itemIDsInVisualOrder(_ layout: MasonryLayoutResult) -> [String] {
+        layout.placements
+            .compactMap { placement -> (id: String, x: CGFloat, y: CGFloat)? in
+                guard case .item(let item) = placement.entry else { return nil }
+                return (item.id, placement.x, placement.y)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.y - rhs.y) > 0.5 {
+                    return lhs.y < rhs.y
+                }
+                return lhs.x < rhs.x
+            }
+            .map(\.id)
+    }
+
+    private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags, visualItemIDs: [String]) {
+        selectedFolderID = nil
+        let isCommand = modifiers.contains(.command)
+        let isShift = modifiers.contains(.shift)
+
+        guard isShift,
+              let anchorID = state.selectedID,
+              let anchorIndex = visualItemIDs.firstIndex(of: anchorID),
+              let targetIndex = visualItemIDs.firstIndex(of: item.id) else {
+            if isCommand {
+                state.toggleSelection(item)
+            } else {
+                state.select(item)
+            }
+            return
+        }
+
+        let lowerBound = min(anchorIndex, targetIndex)
+        let upperBound = max(anchorIndex, targetIndex)
+        let rangeIDs = Set(visualItemIDs[lowerBound...upperBound])
+        let nextIDs = isCommand ? state.selectedIDs.union(rangeIDs) : rangeIDs
+        state.selectItems(ids: nextIDs, primaryID: item.id)
     }
 
     private func clearSelectionDrag() {
@@ -2540,6 +2583,7 @@ private struct AssetCardView: View {
     let item: PromptItem
     let width: CGFloat
     @Binding var draggedItemID: String?
+    let selectionAction: (PromptItem, NSEvent.ModifierFlags) -> Void
     @State private var lastClickAt: Date?
 
     private var isSelected: Bool {
@@ -2673,11 +2717,7 @@ private struct AssetCardView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            if NSEvent.modifierFlags.contains(.command) {
-                state.toggleSelection(item)
-            } else {
-                state.select(item)
-            }
+            selectionAction(item, NSEvent.modifierFlags)
         }
     }
 
@@ -2830,7 +2870,9 @@ private struct AssetCardView: View {
     }
 
     private func runContextAction(_ action: () -> Void) {
-        selectImmediately()
+        if !state.selectedIDs.contains(item.id) {
+            selectImmediately()
+        }
         action()
     }
 

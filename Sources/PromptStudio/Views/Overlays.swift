@@ -366,57 +366,31 @@ private struct MarkdownDocumentPreviewContent: View {
     private var inspectorPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.title)
-                        .font(StudioFont.font(15, weight: .semibold))
-                        .foregroundStyle(StudioColor.text)
-                        .lineLimit(3)
-
-                    Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
-                        .font(StudioFont.font(12))
-                        .foregroundStyle(StudioColor.secondaryText)
-                        .lineLimit(2)
-                }
+                Text(item.title)
+                    .font(StudioFont.font(15, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(3)
 
                 metadataChips
 
-                VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
                     sectionTitle("文档信息")
-                    infoRow("行数", "\(max(1, text.components(separatedBy: .newlines).count))")
-                    infoRow("字符", "\(text.count)")
-                    infoRow("文件大小", fileSizeText(item.fileSize))
-                    infoRow("文件名", URL(fileURLWithPath: item.assetPath).lastPathComponent)
-                }
+                    Spacer(minLength: 12)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("操作")
                     HStack(spacing: 10) {
-                        Button {
-                            state.openMarkdownEditor(for: item)
-                        } label: {
-                            Label("编辑", systemImage: "pencil")
-                                .frame(maxWidth: .infinity)
+                        documentActionButton(.externalLink, help: "打开") {
+                            state.openSelectedInDefaultApplication()
                         }
-                        .buttonStyle(CapsuleButtonStyle())
-
-                        Button {
-                            state.isPreviewPresented = false
-                            state.modal = .export
-                        } label: {
-                            Label("导出", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
+                        documentActionButton(.copy, help: "复制文档信息") {
+                            state.copyMarkdownDocumentText(text)
                         }
-                        .buttonStyle(CapsuleButtonStyle())
+                        documentActionButton(.link, help: "复制路径") {
+                            state.copySelectedFilePath()
+                        }
                     }
-
-                    Button {
-                        state.copyMarkdownDocumentText(text)
-                    } label: {
-                        Label("复制文档信息", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(CapsuleButtonStyle(filled: true))
                 }
+
+                documentFileInfo
             }
             .padding(.top, 58)
             .padding(.horizontal, 24)
@@ -427,13 +401,46 @@ private struct MarkdownDocumentPreviewContent: View {
 
     private var metadataChips: some View {
         FlowLayout(spacing: 8) {
-            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
-            DocumentSemanticChip(text: "\(max(1, text.components(separatedBy: .newlines).count)) 行", role: .count)
-            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
+            documentMetadataChip(item.format.isEmpty ? "MD" : item.format.uppercased())
+            documentMetadataChip("\(max(1, text.components(separatedBy: .newlines).count)) 行")
+            documentMetadataChip(fileSizeText(item.fileSize))
+            documentMetadataChip(item.currentVersion?.version ?? "V1.0")
             ForEach(item.tags.prefix(4), id: \.self) { tag in
-                DocumentSemanticChip(text: tag, role: .tag)
+                documentMetadataChip(tag)
             }
         }
+    }
+
+    private func documentMetadataChip(_ text: String) -> some View {
+        Text(text)
+            .font(StudioFont.font(11))
+            .foregroundStyle(StudioColor.secondaryText)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(StudioColor.control))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private var documentFileInfo: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            infoLine("格式", item.format.isEmpty ? "MD" : item.format.uppercased())
+            infoLine("行数", "\(max(1, text.components(separatedBy: .newlines).count)) 行")
+            infoLine("大小", fileSizeText(item.fileSize))
+            infoLine("文件名", URL(fileURLWithPath: item.assetPath).lastPathComponent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func documentActionButton(_ kind: LucideIcon.Kind, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            LucideIcon(kind: kind)
+                .frame(width: 14, height: 14)
+        }
+        .buttonStyle(IconCircleButtonStyle())
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -455,6 +462,21 @@ private struct MarkdownDocumentPreviewContent: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
         }
+    }
+
+    private func infoLine(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text("\(title)：")
+                .font(StudioFont.font(11))
+                .foregroundStyle(StudioColor.tertiaryText)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(value)
+                .font(StudioFont.font(13))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func loadText() {
@@ -3015,8 +3037,69 @@ private struct FlowLayout<Content: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: spacing) {
+        WrappingLayout(spacing: spacing) {
             content
+        }
+    }
+}
+
+private struct WrappingLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        guard maxWidth.isFinite else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            let width = sizes.reduce(CGFloat.zero) { $0 + $1.width } + CGFloat(max(0, sizes.count - 1)) * spacing
+            let height = sizes.map(\.height).max() ?? 0
+            return CGSize(width: width, height: height)
+        }
+
+        var currentX: CGFloat = 0
+        var currentRowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var measuredWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            if currentX > 0, currentX + spacing + size.width > maxWidth {
+                totalHeight += currentRowHeight + spacing
+                currentX = 0
+                currentRowHeight = 0
+            }
+
+            if currentX > 0 {
+                currentX += spacing
+            }
+            currentX += min(size.width, maxWidth)
+            currentRowHeight = max(currentRowHeight, size.height)
+            measuredWidth = max(measuredWidth, currentX)
+        }
+
+        totalHeight += currentRowHeight
+        return CGSize(width: min(measuredWidth, maxWidth), height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var currentX = bounds.minX
+        var currentY = bounds.minY
+        var currentRowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            if currentX > bounds.minX, currentX + spacing + size.width > bounds.maxX {
+                currentX = bounds.minX
+                currentY += currentRowHeight + spacing
+                currentRowHeight = 0
+            }
+
+            subview.place(
+                at: CGPoint(x: currentX, y: currentY),
+                proposal: ProposedViewSize(width: min(size.width, maxWidth), height: size.height)
+            )
+            currentX += min(size.width, maxWidth) + spacing
+            currentRowHeight = max(currentRowHeight, size.height)
         }
     }
 }
