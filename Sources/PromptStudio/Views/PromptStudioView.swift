@@ -1640,6 +1640,10 @@ private struct ModelTabsView: View {
                             .foregroundStyle(StudioColor.text)
                             .help("管理筛选标签")
                             .accessibilityLabel("管理筛选标签")
+
+                            Color.clear
+                                .frame(width: 6, height: 1)
+                                .id("filter-tail")
                         }
                         .background(
                             GeometryReader { contentProxy in
@@ -1773,9 +1777,10 @@ private struct ModelTabsView: View {
             pageIndex = max(0, pageIndex - 1)
         }
 
+        let isLastPage = pageIndex >= maxPage
         let targetID = scrollTargetID(for: pageIndex)
         withAnimation(.easeInOut(duration: 0.18)) {
-            proxy.scrollTo(targetID, anchor: .leading)
+            proxy.scrollTo(targetID, anchor: isLastPage ? .trailing : .leading)
         }
     }
 
@@ -1798,8 +1803,11 @@ private struct ModelTabsView: View {
     }
 
     private func scrollTargetID(for page: Int) -> String {
-        let ids = quickFilters.map(\.id) + ["filter-manage"]
-        guard !ids.isEmpty else { return "filter-manage" }
+        let ids = quickFilters.map(\.id) + ["filter-manage", "filter-tail"]
+        guard !ids.isEmpty else { return "filter-tail" }
+        if page >= maxPageIndex {
+            return ids[ids.count - 1]
+        }
         let index = min(ids.count - 1, max(0, page * itemsPerPage))
         return ids[index]
     }

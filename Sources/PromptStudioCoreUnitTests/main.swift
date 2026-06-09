@@ -164,9 +164,50 @@ func testTextSyntaxRulesDetectJSONTokens() throws {
     try expect(!tokens.contains(.string), "JSON highlighter should keep string values as base text to avoid large color blocks")
 }
 
+func testMarkdownHeadingRulesDetectCommonTitleShapes() throws {
+    let headingSamples = [
+        "# 标题",
+        "## 标题",
+        "Setext 标题\n---",
+        "【基础设定】",
+        "《角色设定》",
+        "「镜头规则」",
+        "一、测试目标",
+        "1. 测试目标",
+        "01. 开场成品",
+        "Step 1: 准备",
+        "测试目标：",
+        "角色设定:",
+        "质量检查",
+        "成品主参照帧说明"
+    ]
+
+    for sample in headingSamples {
+        let tokens = TextSyntaxRules.tokenKinds(in: sample, mode: .markdown)
+        try expect(tokens.contains(.heading), "\(sample) should be highlighted as a markdown heading")
+    }
+}
+
+func testMarkdownHeadingRulesAvoidBodyLikeLines() throws {
+    let bodySamples = [
+        "- 质量检查",
+        "* 质量检查",
+        "+ 质量检查",
+        "> 质量检查",
+        "| 项目 | 内容 |",
+        "我希望画面不要出现水印。"
+    ]
+
+    for sample in bodySamples {
+        let tokens = TextSyntaxRules.tokenKinds(in: sample, mode: .markdown)
+        try expect(!tokens.contains(.heading), "\(sample) should not be highlighted as a markdown heading")
+    }
+}
+
 func testMarkdownNegativeHighlightRequiresTitle() throws {
     let titleTokens = TextSyntaxRules.tokenKinds(in: "## 负面提示\n不要出现水印", mode: .markdown)
     try expect(titleTokens.contains(.negativeConstraint), "negative heading should be highlighted")
+    try expect(titleTokens.contains(.heading), "negative markdown title can still match heading before red override")
 
     let suffixedTitleTokens = TextSyntaxRules.tokenKinds(in: "## 负面约束规则\n无字幕、无水印", mode: .markdown)
     try expect(suffixedTitleTokens.contains(.negativeConstraint), "negative heading with title suffix should be highlighted")
@@ -521,6 +562,8 @@ do {
     try testPrimaryPromptAssetsAndAttachments()
     try testTextSyntaxModeInference()
     try testTextSyntaxRulesDetectJSONTokens()
+    try testMarkdownHeadingRulesDetectCommonTitleShapes()
+    try testMarkdownHeadingRulesAvoidBodyLikeLines()
     try testMarkdownNegativeHighlightRequiresTitle()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()

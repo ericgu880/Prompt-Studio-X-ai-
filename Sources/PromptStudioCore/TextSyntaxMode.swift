@@ -178,6 +178,11 @@ public enum TextSyntaxRules {
 
     private static let markdownRules: [TextSyntaxRule] = [
         TextSyntaxRule(token: .heading, pattern: #"(?m)^\s{0,6}#{1,6}\s.*$"#),
+        TextSyntaxRule(token: .heading, pattern: markdownSetextHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownWrappedHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownNumberedHeadingPattern, options: .caseInsensitive),
+        TextSyntaxRule(token: .heading, pattern: markdownColonHeadingPattern),
+        TextSyntaxRule(token: .heading, pattern: markdownShortHeadingPattern),
         TextSyntaxRule(token: .quoteMarker, pattern: #"(?m)^\s{0,3}(>)"#, captureGroup: 1),
         TextSyntaxRule(token: .muted, pattern: #"(?m)^\s*[-*_]{3,}\s*$"#),
         TextSyntaxRule(token: .listMarker, pattern: #"(?m)^\s*((?:\d+\.|[-*]))"#, captureGroup: 1),
@@ -185,6 +190,12 @@ public enum TextSyntaxRules {
         TextSyntaxRule(token: .negativeConstraint, pattern: negativeConstraintPattern),
         TextSyntaxRule(token: .bold, pattern: #"\*\*[^*\n]+?\*\*"#)
     ]
+
+    private static let markdownSetextHeadingPattern = #"(?m)^\s{0,6}(?!\s*(?:[-*+]\s|>\s?|\||`{3,}|~{3,}))(?![^\n]*[。！？；，,!?;])[^\n]{1,40}(?=\n\s*[=-]{3,}\s*$)"#
+    private static let markdownWrappedHeadingPattern = #"(?m)^\s{0,6}(?:【[^】\n]{1,40}】|《[^》\n]{1,40}》|「[^」\n]{1,40}」|『[^』\n]{1,40}』|\[[^\]\n]{1,40}\]|\([^)\n]{1,40}\)|（[^）\n]{1,40}）)\s*$"#
+    private static let markdownNumberedHeadingPattern = #"(?m)^\s{0,6}(?:[一二三四五六七八九十百千万]+[、.．]\s*|\d{1,2}[.、．]\s+|step\s+\d+\s*[:：]\s*)[^\n。！？；，,!?;]{1,60}$"#
+    private static let markdownColonHeadingPattern = #"(?m)^\s{0,6}(?!\s*(?:[-*+]\s|>\s?|\||`{3,}|~{3,}))[^。\n！？；，,!?;:：|]{1,40}[:：]\s*$"#
+    private static let markdownShortHeadingPattern = #"(?m)^\s{0,6}(?!\s*(?:[-*+]\s|>\s?|\||`{3,}|~{3,}))(?![^\n]*[。！？；，,!?;])(?=[^\n]{1,40}\s*$)(?=(?:[^\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}\n]*[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]){0,16}[^\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}\n]*$)[\p{L}\p{N}][\p{L}\p{N}\s·・／/()（）-]*$"#
 
     private static let jsonRules: [TextSyntaxRule] = [
         TextSyntaxRule(token: .punctuation, pattern: #"[{}\[\],:]"#),
