@@ -5,7 +5,9 @@ struct LucideIcon: View {
         case pencil
         case copy
         case circleArrowDown
+        case externalLink
         case history
+        case link
         case trash2
     }
 
@@ -61,6 +63,15 @@ struct LucideIcon: View {
                     path.addLine(to: CGPoint(x: 16, y: 12))
                 }
             }
+        case .externalLink:
+            stroked { path in
+                path.addRoundedRect(in: CGRect(x: 4, y: 7, width: 13, height: 13), cornerSize: CGSize(width: 2, height: 2))
+                path.move(to: CGPoint(x: 14, y: 4))
+                path.addLine(to: CGPoint(x: 20, y: 4))
+                path.addLine(to: CGPoint(x: 20, y: 10))
+                path.move(to: CGPoint(x: 10, y: 14))
+                path.addLine(to: CGPoint(x: 20, y: 4))
+            }
         case .history:
             stroked { path in
                 path.move(to: CGPoint(x: 3, y: 12))
@@ -90,6 +101,45 @@ struct LucideIcon: View {
                 path.move(to: CGPoint(x: 12, y: 7))
                 path.addLine(to: CGPoint(x: 12, y: 12))
                 path.addLine(to: CGPoint(x: 16, y: 14))
+            }
+        case .link:
+            stroked { path in
+                path.move(to: CGPoint(x: 10, y: 13))
+                path.addCurve(
+                    to: CGPoint(x: 13, y: 13),
+                    control1: CGPoint(x: 11, y: 14),
+                    control2: CGPoint(x: 12, y: 14)
+                )
+                path.addLine(to: CGPoint(x: 17, y: 9))
+                path.addCurve(
+                    to: CGPoint(x: 17, y: 5),
+                    control1: CGPoint(x: 18.2, y: 7.8),
+                    control2: CGPoint(x: 18.2, y: 6.2)
+                )
+                path.addCurve(
+                    to: CGPoint(x: 13, y: 5),
+                    control1: CGPoint(x: 15.8, y: 3.8),
+                    control2: CGPoint(x: 14.2, y: 3.8)
+                )
+                path.addLine(to: CGPoint(x: 11, y: 7))
+                path.move(to: CGPoint(x: 14, y: 11))
+                path.addCurve(
+                    to: CGPoint(x: 11, y: 11),
+                    control1: CGPoint(x: 13, y: 10),
+                    control2: CGPoint(x: 12, y: 10)
+                )
+                path.addLine(to: CGPoint(x: 7, y: 15))
+                path.addCurve(
+                    to: CGPoint(x: 7, y: 19),
+                    control1: CGPoint(x: 5.8, y: 16.2),
+                    control2: CGPoint(x: 5.8, y: 17.8)
+                )
+                path.addCurve(
+                    to: CGPoint(x: 11, y: 19),
+                    control1: CGPoint(x: 8.2, y: 20.2),
+                    control2: CGPoint(x: 9.8, y: 20.2)
+                )
+                path.addLine(to: CGPoint(x: 13, y: 17))
             }
         case .trash2:
             stroked { path in

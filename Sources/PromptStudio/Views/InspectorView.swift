@@ -124,74 +124,77 @@ struct InspectorView: View {
     }
 
     private func fileReadOnlyInspector(_ item: PromptItem) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                fileBasicInfoSection(item)
-                Divider().overlay(StudioColor.hairline)
-                fileActionSection(item)
+        VStack(alignment: .leading, spacing: 18) {
+            Text(item.title)
+                .font(StudioFont.font(14, weight: .bold))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(3)
+
+            VStack(alignment: .leading, spacing: 10) {
+                filePreviewSummary(item)
+                fileTopChips(item)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 24)
-            .padding(.top, 24)
+
+            HStack(alignment: .center, spacing: 10) {
+                Text("文件信息")
+                    .font(StudioFont.caption(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .tracking(1.2)
+
+                Spacer(minLength: 12)
+
+                fileActionButtons(item)
+            }
+
+            fileDetailSection(item)
+
+            Spacer(minLength: 0)
         }
-        .transparentScrollArea()
+        .padding(.horizontal, 24)
+        .padding(.bottom, 28)
+        .padding(.top, 24)
     }
 
-    private func fileBasicInfoSection(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("文件信息")
-            HStack(alignment: .top, spacing: 14) {
-                AssetMediaView(item: item, contentMode: .fit)
-                    .frame(width: 86, height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+    private func filePreviewSummary(_ item: PromptItem) -> some View {
+        mediaPreviewThumbnail(item)
+    }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title)
-                        .font(StudioFont.font(14, weight: .semibold))
-                        .foregroundStyle(StudioColor.text)
-                        .lineLimit(2)
-
-                    infoLine("格式", item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
-                    if item.width > 0, item.height > 0 {
-                        infoLine("尺寸", item.displaySize)
-                    }
-                    infoLine("大小", fileSizeText(item.fileSize))
-                    infoLine("路径", URL(fileURLWithPath: item.assetPath).lastPathComponent)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func fileTopChips(_ item: PromptItem) -> some View {
+        FlowLayout(spacing: 8) {
+            ForEach(fileTopChipTexts(item), id: \.self) { text in
+                mediaChip(text)
             }
         }
     }
 
-    private func fileActionSection(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Button {
-                    state.openSelectedInDefaultApplication()
-                } label: {
-                    Text("打开")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(CapsuleButtonStyle(filled: true))
-
-                Button {
-                    state.copySelectedFilePath()
-                } label: {
-                    Text("复制路径")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(CapsuleButtonStyle())
-            }
-
-            Button {
-                state.copySelectedFile()
-            } label: {
-                Text("复制文件")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(CapsuleButtonStyle())
+    private func fileTopChipTexts(_ item: PromptItem) -> [String] {
+        var chips = [fileFormatText(item)]
+        if item.width > 0, item.height > 0 {
+            chips.append(item.displaySize)
         }
+        chips.append(fileSizeText(item.fileSize))
+        chips.append("附件")
+        return chips.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func fileActionButtons(_ item: PromptItem) -> some View {
+        HStack(spacing: 10) {
+            mediaActionButton("arrow.up.right.square", help: "打开") { state.openSelectedInDefaultApplication() }
+            mediaActionButton("doc.on.doc", help: "复制文件") { state.copySelectedFile() }
+            mediaActionButton("link", help: "复制路径") { state.copySelectedFilePath() }
+        }
+    }
+
+    private func fileDetailSection(_ item: PromptItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            infoLine("格式", fileFormatText(item))
+            if item.width > 0, item.height > 0 {
+                infoLine("尺寸", item.displaySize)
+            }
+            infoLine("大小", fileSizeText(item.fileSize))
+            infoLine("文件名", URL(fileURLWithPath: item.assetPath).lastPathComponent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func markdownInspector(for item: PromptItem) -> some View {
@@ -479,8 +482,12 @@ struct InspectorView: View {
             .copy
         case "arrow.down.circle":
             .circleArrowDown
+        case "arrow.up.right.square":
+            .externalLink
         case "clock":
             .history
+        case "link":
+            .link
         default:
             .copy
         }
@@ -687,6 +694,10 @@ struct InspectorView: View {
     private func fileSizeText(_ bytes: Int64) -> String {
         guard bytes > 0 else { return "0 KB" }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func fileFormatText(_ item: PromptItem) -> String {
+        item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased()
     }
 
     private func startEditing(_ item: PromptItem) {
