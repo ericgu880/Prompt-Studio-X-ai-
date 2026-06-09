@@ -169,7 +169,7 @@ enum ThumbnailService {
             let isList = trimmedLine.hasPrefix("-")
             let isQuote = trimmedLine.hasPrefix(">")
             let isNegative = line.range(
-                of: #"负面提示词|负面约束|反向提示词|Negative Prompt|不要|禁止|避免|不出现|不使用|无字幕|无文字|无水印|无logo|无Logo|无LOGO|无品牌|无现代|无多余|无夸张|无脸部崩坏|无身份不一致"#,
+                of: #"^\s{0,6}(?:(?:#{1,6}\s*.*(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt).*)|(?:(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt)(?:\s*(?:规则|内容|列表|清单|要求|Constraints?))?\s*[:：]?))\s*$"#,
                 options: [.regularExpression, .caseInsensitive]
             ) != nil
             let hasStrong = line.contains("**")

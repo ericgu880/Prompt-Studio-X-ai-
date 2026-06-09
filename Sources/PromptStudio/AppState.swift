@@ -257,7 +257,10 @@ final class AppState: ObservableObject {
             self.items = try repository.loadItems()
             try repairLegacyRecentTimestampsIfNeeded(repository: repository)
             self.tags = try repository.loadTags()
-            refreshFilteredItems(selecting: filteredItems.first?.id)
+            isBatchingFilterUpdate = true
+            filter = PromptFilter()
+            isBatchingFilterUpdate = false
+            refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
             prepareMissingThumbnails()
         } catch {
             self.modal = .error(error.localizedDescription)
@@ -1710,7 +1713,11 @@ final class AppState: ObservableObject {
         canNavigateForward = !navigationForwardStack.isEmpty
     }
 
-    private func refreshFilteredItems(selecting requestedID: String? = nil, preserveExistingSelection: Bool = true) {
+    private func refreshFilteredItems(
+        selecting requestedID: String? = nil,
+        preserveExistingSelection: Bool = true,
+        allowEmptySelection: Bool = false
+    ) {
         let nextFilteredItems = filteredItems(for: filter)
         filteredItems = nextFilteredItems
 
@@ -1718,6 +1725,8 @@ final class AppState: ObservableObject {
             selectedID = requestedID
         } else if preserveExistingSelection, let selectedID, nextFilteredItems.contains(where: { $0.id == selectedID }) {
             return
+        } else if allowEmptySelection {
+            selectedID = nil
         } else {
             selectedID = nextFilteredItems.first?.id
         }

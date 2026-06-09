@@ -164,6 +164,23 @@ func testTextSyntaxRulesDetectJSONTokens() throws {
     try expect(!tokens.contains(.string), "JSON highlighter should keep string values as base text to avoid large color blocks")
 }
 
+func testMarkdownNegativeHighlightRequiresTitle() throws {
+    let titleTokens = TextSyntaxRules.tokenKinds(in: "## 负面提示\n不要出现水印", mode: .markdown)
+    try expect(titleTokens.contains(.negativeConstraint), "negative heading should be highlighted")
+
+    let suffixedTitleTokens = TextSyntaxRules.tokenKinds(in: "## 负面约束规则\n无字幕、无水印", mode: .markdown)
+    try expect(suffixedTitleTokens.contains(.negativeConstraint), "negative heading with title suffix should be highlighted")
+
+    let bodyTokens = TextSyntaxRules.tokenKinds(in: "画面不要出现水印，保持干净。", mode: .markdown)
+    try expect(!bodyTokens.contains(.negativeConstraint), "body text containing 不要 should not be highlighted as negative")
+
+    let bodyLabelTokens = TextSyntaxRules.tokenKinds(in: "这里是负面提示内容，不要大面积标红。", mode: .markdown)
+    try expect(!bodyLabelTokens.contains(.negativeConstraint), "body text mentioning negative prompt should not be highlighted as a heading")
+
+    let reverseTitleTokens = TextSyntaxRules.tokenKinds(in: "反向约束：", mode: .markdown)
+    try expect(reverseTitleTokens.contains(.negativeConstraint), "reverse constraint title should be highlighted")
+}
+
 func testFolderFilteringUsesStableFolderID() throws {
     var first = sampleItem(title: "同名文件夹 A", prompt: "first")
     var second = sampleItem(title: "同名文件夹 B", prompt: "second")
@@ -504,6 +521,7 @@ do {
     try testPrimaryPromptAssetsAndAttachments()
     try testTextSyntaxModeInference()
     try testTextSyntaxRulesDetectJSONTokens()
+    try testMarkdownNegativeHighlightRequiresTitle()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testAssetKindInferenceAndPromptParsing()

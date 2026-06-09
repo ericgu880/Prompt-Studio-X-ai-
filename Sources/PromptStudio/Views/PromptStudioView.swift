@@ -650,7 +650,7 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 32)
+                .padding(.top, 24)
                 .padding(.bottom, 28)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -798,7 +798,7 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
         hostingView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         hostingView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
-        let documentView = NSView()
+        let documentView = SidebarScrollDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         documentView.wantsLayer = true
         documentView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -813,6 +813,11 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
             hostingView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
         ])
+
+        DispatchQueue.main.async {
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
 
         return scrollView
     }
@@ -840,6 +845,10 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
             scrollView.verticalScroller = TransparentOverlayScroller()
         }
     }
+}
+
+private final class SidebarScrollDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 private final class TransparentOverlayScroller: NSScroller {
@@ -3064,11 +3073,11 @@ private struct TextDocumentPreviewLine: View {
 
     private var lineText: Text {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if isNegativeConstraintTitle(trimmed) {
+            return Text(line).foregroundColor(TextDocumentCardPalette.red)
+        }
         if trimmed.hasPrefix("#") {
             return Text(line).foregroundColor(TextDocumentCardPalette.blue)
-        }
-        if isNegativeConstraint(trimmed) {
-            return Text(line).foregroundColor(TextDocumentCardPalette.red)
         }
         if trimmed.hasPrefix(">") {
             let indent = String(line.prefix { $0 == " " || $0 == "\t" })
@@ -3108,14 +3117,11 @@ private struct TextDocumentPreviewLine: View {
         return nil
     }
 
-    private func isNegativeConstraint(_ value: String) -> Bool {
-        let keywords = [
-            "负面提示词", "负面约束", "反向提示词", "Negative Prompt",
-            "不要", "禁止", "避免", "不出现", "不使用",
-            "无字幕", "无文字", "无水印", "无logo", "无Logo", "无LOGO",
-            "无品牌", "无现代", "无多余", "无夸张", "无脸部崩坏", "无身份不一致"
-        ]
-        return keywords.contains { value.localizedCaseInsensitiveContains($0) }
+    private func isNegativeConstraintTitle(_ value: String) -> Bool {
+        value.range(
+            of: #"^\s{0,6}(?:(?:#{1,6}\s*.*(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt).*)|(?:(?:负面提示(?:词)?|反向提示(?:词)?|负面约束|反向约束|Negative Prompt)(?:\s*(?:规则|内容|列表|清单|要求|Constraints?))?\s*[:：]?))\s*$"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 }
 
