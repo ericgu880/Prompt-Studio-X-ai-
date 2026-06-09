@@ -884,6 +884,8 @@ struct SettingsSheet: View {
                 shortcutRow("新建 Prompt", value: "⌘N")
                 shortcutRow("复制内容", value: "⌘C")
                 shortcutRow("沉浸预览", value: "Space")
+                shortcutRow("返回上一步", value: "⌘Z")
+                shortcutRow("前进一步", value: "⇧⌘Z")
             }
             settingsGroup("本地数据", detail: "不提供云端同步、API Key 和自动上传设置，避免把本地 Prompt 管理工具做成 API 控制台。") {
                 settingsValueRow("数据保存", value: "本机资料库")

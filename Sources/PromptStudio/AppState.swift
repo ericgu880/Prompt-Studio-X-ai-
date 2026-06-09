@@ -181,7 +181,13 @@ final class AppState: ObservableObject {
             }
         }
     }
-    @Published var selectedID: String?
+    @Published var selectedID: String? {
+        didSet {
+            guard !isPreservingSelectionSet else { return }
+            selectedIDs = selectedID.map { Set([$0]) } ?? []
+        }
+    }
+    @Published var selectedIDs: Set<String> = []
     @Published private(set) var filteredItems: [PromptItem] = []
     @Published var modal: Modal?
     @Published var toast: String?
@@ -201,6 +207,7 @@ final class AppState: ObservableObject {
     private var pendingLastUsedTask: Task<Void, Never>?
     private var thumbnailGenerationID = UUID()
     private var isBatchingFilterUpdate = false
+    private var isPreservingSelectionSet = false
     private var navigationBackStack: [NavigationSnapshot] = []
     private var navigationForwardStack: [NavigationSnapshot] = []
 
@@ -258,8 +265,27 @@ final class AppState: ObservableObject {
     }
 
     func select(_ item: PromptItem) {
-        guard selectedID != item.id else { return }
+        guard selectedID != item.id || selectedIDs != Set([item.id]) else { return }
         selectedID = item.id
+    }
+
+    func toggleSelection(_ item: PromptItem) {
+        isPreservingSelectionSet = true
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+            selectedID = selectedIDs.first
+        } else {
+            selectedIDs.insert(item.id)
+            selectedID = item.id
+        }
+        isPreservingSelectionSet = false
+    }
+
+    func selectItems(ids: Set<String>, primaryID: String? = nil) {
+        isPreservingSelectionSet = true
+        selectedIDs = ids
+        selectedID = primaryID ?? ids.first
+        isPreservingSelectionSet = false
     }
 
     func openNewPromptComposer() {

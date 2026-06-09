@@ -22,6 +22,28 @@ struct PromptStudioApp: App {
         .defaultSize(width: WindowStartupConfigurator.defaultContentSize.width, height: WindowStartupConfigurator.defaultContentSize.height)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("返回上一步") {
+                    if AppKitBridge.isTextInputActive() {
+                        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                    } else {
+                        appState.navigateBack()
+                    }
+                }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!AppKitBridge.isTextInputActive() && !appState.canNavigateBack)
+
+                Button("前进一步") {
+                    if AppKitBridge.isTextInputActive() {
+                        NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                    } else {
+                        appState.navigateForward()
+                    }
+                }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!AppKitBridge.isTextInputActive() && !appState.canNavigateForward)
+            }
+
             CommandGroup(after: .newItem) {
                 Button("新建 Prompt") { appState.openNewPromptComposer() }
                     .keyboardShortcut("n", modifiers: .command)

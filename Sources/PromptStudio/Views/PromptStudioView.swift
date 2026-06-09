@@ -656,6 +656,19 @@ private struct SidebarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
             .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                LinearGradient(
+                    colors: [
+                        StudioColor.sidebar.opacity(0),
+                        StudioColor.sidebar.opacity(0.82),
+                        StudioColor.sidebar.opacity(0.98)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 54)
+                .allowsHitTesting(false)
+            }
 
             Button {
                 state.modal = .settings
@@ -745,6 +758,7 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
+        scrollView.verticalScroller = TransparentOverlayScroller()
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
         scrollView.autohidesScrollers = true
@@ -801,6 +815,15 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
         scrollView.autohidesScrollers = true
+        if !(scrollView.verticalScroller is TransparentOverlayScroller) {
+            scrollView.verticalScroller = TransparentOverlayScroller()
+        }
+    }
+}
+
+private final class TransparentOverlayScroller: NSScroller {
+    override func draw(_ dirtyRect: NSRect) {
+        drawKnob()
     }
 }
 
@@ -1940,6 +1963,9 @@ private struct MasonryGridView: View {
     @State private var draggedItemID: String?
     @State private var selectedFolderID: String?
     @State private var lockedColumnCount: Int?
+    @State private var selectionDragStart: CGPoint?
+    @State private var selectionDragCurrent: CGPoint?
+    @State private var selectionDragBaseIDs: Set<String> = []
 
     var body: some View {
         GeometryReader { proxy in
@@ -1950,6 +1976,29 @@ private struct MasonryGridView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
+                        SelectionDragCaptureOverlay(
+                            onBegin: { point, additive in
+                                selectionDragStart = point
+                                selectionDragCurrent = point
+                                selectionDragBaseIDs = additive ? state.selectedIDs : []
+                                selectedFolderID = nil
+                            },
+                            onChange: { point in
+                                selectionDragCurrent = point
+                                guard let selectionRect else { return }
+                                let hitIDs = itemIDs(in: selectionRect, layout: layout, width: width)
+                                let nextIDs = selectionDragBaseIDs.union(hitIDs)
+                                state.selectItems(ids: nextIDs, primaryID: hitIDs.first ?? nextIDs.first)
+                            },
+                            onEnd: {
+                                clearSelectionDrag()
+                            }
+                        )
+                        .frame(
+                            width: max(0, proxy.size.width - 48),
+                            height: max(layout.height, proxy.size.height)
+                        )
+
                         ForEach(layout.placements) { placement in
                             switch placement.entry {
                             case .folder(let folder):
@@ -1959,7 +2008,7 @@ private struct MasonryGridView: View {
                                     isSelected: selectedFolderID == folder.id,
                                     onSelect: {
                                         selectedFolderID = folder.id
-                                        state.selectedID = nil
+                                        state.selectItems(ids: [])
                                     }
                                 )
                                     .offset(x: placement.x, y: placement.y)
@@ -1974,8 +2023,21 @@ private struct MasonryGridView: View {
                                 .simultaneousGesture(TapGesture().onEnded {
                                     selectedFolderID = nil
                                 })
-                                .zIndex(state.selectedID == item.id ? 1 : 0)
+                                .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
                             }
+                        }
+
+                        if let selectionRect {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(StudioColor.primaryAction.opacity(0.16))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(StudioColor.primaryAction.opacity(0.72), lineWidth: 1)
+                                )
+                                .frame(width: selectionRect.width, height: selectionRect.height)
+                                .offset(x: selectionRect.minX, y: selectionRect.minY)
+                                .allowsHitTesting(false)
+                                .zIndex(20)
                         }
                     }
                     .id(Self.topAnchorID)
@@ -1984,6 +2046,8 @@ private struct MasonryGridView: View {
                         height: layout.height,
                         alignment: .topLeading
                     )
+                    .contentShape(Rectangle())
+                    .coordinateSpace(name: Self.gridCoordinateSpace)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 24)
                 }
@@ -1995,6 +2059,7 @@ private struct MasonryGridView: View {
                         scrollProxy.scrollTo(Self.topAnchorID, anchor: .top)
                     }
                     selectedFolderID = nil
+                    clearSelectionDrag()
                 }
             }
             .onChange(of: isSplitResizing) { _, resizing in
@@ -2062,6 +2127,35 @@ private struct MasonryGridView: View {
     }
 
     private static let topAnchorID = "masonry-grid-top"
+    private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
+
+    private var selectionRect: CGRect? {
+        guard let selectionDragStart, let selectionDragCurrent else { return nil }
+        let minX = min(selectionDragStart.x, selectionDragCurrent.x)
+        let minY = min(selectionDragStart.y, selectionDragCurrent.y)
+        let maxX = max(selectionDragStart.x, selectionDragCurrent.x)
+        let maxY = max(selectionDragStart.y, selectionDragCurrent.y)
+        guard maxX - minX >= 3, maxY - minY >= 3 else { return nil }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private func itemIDs(in rect: CGRect, layout: MasonryLayoutResult, width: CGFloat) -> Set<String> {
+        var ids = Set<String>()
+        for placement in layout.placements {
+            guard case .item(let item) = placement.entry else { continue }
+            let itemRect = CGRect(x: placement.x, y: placement.y, width: width, height: placement.height)
+            if itemRect.intersects(rect) {
+                ids.insert(item.id)
+            }
+        }
+        return ids
+    }
+
+    private func clearSelectionDrag() {
+        selectionDragStart = nil
+        selectionDragCurrent = nil
+        selectionDragBaseIDs = []
+    }
 }
 
 private struct MasonryLayoutResult {
@@ -2290,6 +2384,55 @@ private struct ImmediateFolderClickCapture: NSViewRepresentable {
     }
 }
 
+private struct SelectionDragCaptureOverlay: NSViewRepresentable {
+    let onBegin: (CGPoint, Bool) -> Void
+    let onChange: (CGPoint) -> Void
+    let onEnd: () -> Void
+
+    func makeNSView(context: Context) -> SelectionDragCaptureView {
+        let view = SelectionDragCaptureView()
+        view.onBegin = onBegin
+        view.onChange = onChange
+        view.onEnd = onEnd
+        return view
+    }
+
+    func updateNSView(_ view: SelectionDragCaptureView, context: Context) {
+        view.onBegin = onBegin
+        view.onChange = onChange
+        view.onEnd = onEnd
+    }
+
+    final class SelectionDragCaptureView: NSView {
+        var onBegin: (CGPoint, Bool) -> Void = { _, _ in }
+        var onChange: (CGPoint) -> Void = { _ in }
+        var onEnd: () -> Void = {}
+        private var isSelecting = false
+
+        override var isFlipped: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            isSelecting = false
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            if !isSelecting {
+                isSelecting = true
+                onBegin(point, event.modifierFlags.contains(.command))
+            }
+            onChange(point)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            if isSelecting {
+                onEnd()
+            }
+            isSelecting = false
+        }
+    }
+}
+
 private enum AssetCardMetrics {
     static let cardCornerRadius: CGFloat = 12
     static let selectionCornerRadius: CGFloat = 15
@@ -2327,9 +2470,10 @@ private struct AssetCardView: View {
     let item: PromptItem
     let width: CGFloat
     @Binding var draggedItemID: String?
+    @State private var lastClickAt: Date?
 
     private var isSelected: Bool {
-        state.selectedID == item.id
+        state.selectedIDs.contains(item.id)
     }
 
     var body: some View {
@@ -2357,12 +2501,15 @@ private struct AssetCardView: View {
         .frame(width: width, height: contentHeight + AssetCardMetrics.selectionOutset * 2)
         .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
         .onTapGesture {
-            selectImmediately()
+            handleCardTap()
         }
-        .onTapGesture(count: 2) {
-            selectImmediately()
-            state.previewSelected()
-        }
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded {
+                    selectImmediately()
+                    state.previewSelected()
+                }
+        )
         .contextMenu {
             assetContextMenu
         }
@@ -2383,6 +2530,16 @@ private struct AssetCardView: View {
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true
+        }
+    }
+
+    private func handleCardTap() {
+        let now = Date()
+        let isDoubleClick = lastClickAt.map { now.timeIntervalSince($0) <= 0.35 } ?? false
+        lastClickAt = isDoubleClick ? nil : now
+        selectImmediately()
+        if isDoubleClick {
+            state.previewSelected()
         }
     }
 
@@ -2442,7 +2599,11 @@ private struct AssetCardView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            state.select(item)
+            if NSEvent.modifierFlags.contains(.command) {
+                state.toggleSelection(item)
+            } else {
+                state.select(item)
+            }
         }
     }
 
@@ -2697,11 +2858,15 @@ private struct PromptListView: View {
                     .studioPanel(radius: 8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(state.selectedID == item.id ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
+                            .stroke(state.selectedIDs.contains(item.id) ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
                     )
                     .onTapGesture {
                         clearTextFocus()
-                        state.select(item)
+                        if NSEvent.modifierFlags.contains(.command) {
+                            state.toggleSelection(item)
+                        } else {
+                            state.select(item)
+                        }
                     }
                 }
             }

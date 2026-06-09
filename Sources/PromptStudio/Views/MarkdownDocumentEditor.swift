@@ -320,7 +320,7 @@ private enum MarkdownEditorPalette {
     static let background = NSColor(hex: 0x141414)
     static let border = NSColor(hex: 0x363A3F)
     static let strongText = NSColor(hex: 0xFFFFFF)
-    static let text = NSColor(hex: 0xFFFFFF, alpha: 0.80)
+    static let text = NSColor(hex: 0xFFFFFF)
     static let mutedText = NSColor(hex: 0xBDBEC0)
     static let red = NSColor(hex: 0xFF5F57)
     static let orange = NSColor(hex: 0xFF9F0A)
