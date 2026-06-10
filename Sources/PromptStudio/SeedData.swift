@@ -8,13 +8,45 @@ enum SeedData {
 
     static let models: [ModelProfile] = [
         ModelProfile(id: "all", name: "全部模型", type: .image, parameters: []),
-        ModelProfile(id: "nano_banana_2", name: "Nano banana 2", type: .image, parameters: ["aspectRatio", "style", "seed", "quality"]),
-        ModelProfile(id: "image_2", name: "Image 2", type: .image, parameters: ["aspectRatio", "style", "chaos"]),
+        ModelProfile(id: "image_2", name: "GPT Image 2", type: .image, parameters: ["aspectRatio", "style", "quality"]),
+        ModelProfile(id: "nano_banana_2", name: "Nano Banana 2", type: .image, parameters: ["aspectRatio", "style", "seed", "quality"]),
+        ModelProfile(id: "nano_banana_pro", name: "Nano Banana Pro", type: .image, parameters: ["aspectRatio", "style", "quality"]),
         ModelProfile(id: "midjourney", name: "Midjourney", type: .image, parameters: ["ar", "v", "style", "seed"]),
-        ModelProfile(id: "seedream_7", name: "Seedream 7.0", type: .image, parameters: ["aspectRatio", "camera", "color"]),
+        ModelProfile(id: "seedream_7", name: "Seedream 5.0 Lite", type: .image, parameters: ["aspectRatio", "style", "color"]),
+        ModelProfile(id: "stable_diffusion_sdxl", name: "Stable Diffusion / SDXL", type: .image, parameters: ["aspectRatio", "style", "seed"]),
+        ModelProfile(id: "flux", name: "FLUX", type: .image, parameters: ["aspectRatio", "style", "seed"]),
+        ModelProfile(id: "qwen_z_image", name: "千问Z-Image", type: .image, parameters: ["aspectRatio", "style", "quality"]),
         ModelProfile(id: "seedance_2", name: "Seedance 2.0", type: .video, parameters: ["duration", "camera", "motion"]),
-        ModelProfile(id: "happyhorse_1", name: "HappyHorse 1.0", type: .video, parameters: ["duration", "fps"]),
-        ModelProfile(id: "kling_3", name: "可灵 3.0", type: .video, parameters: ["duration", "motion", "camera"])
+        ModelProfile(id: "kling_3", name: "Kling / 可灵", type: .video, parameters: ["duration", "motion", "camera"]),
+        ModelProfile(id: "google_veo", name: "Google Veo", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "runway", name: "Runway", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "sora", name: "Sora", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "ltx_2_3", name: "LTX 2.3", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "hailuo_minimax", name: "Hailuo / MiniMax", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "luma_ray", name: "Luma / Ray", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "pika", name: "Pika", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "vidu", name: "Vidu", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "wan_video", name: "Wan / 通义万相视频", type: .video, parameters: ["duration", "camera", "motion"]),
+        ModelProfile(id: "chatgpt_gpt", name: "ChatGPT / GPT", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "claude", name: "Claude", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "gemini", name: "Gemini", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "deepseek", name: "DeepSeek", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "qwen", name: "Qwen / 通义千问", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "doubao", name: "豆包", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "kimi", name: "Kimi", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "grok", name: "Grok", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "glm", name: "GLM / 智谱", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "minimax_text", name: "MiniMax", type: .text, parameters: ["format", "tone", "length"]),
+        ModelProfile(id: "elevenlabs", name: "ElevenLabs", type: .audio, parameters: ["voice", "mood", "duration"]),
+        ModelProfile(id: "openai_audio", name: "OpenAI Audio", type: .audio, parameters: ["voice", "mood", "duration"]),
+        ModelProfile(id: "minimax_audio", name: "MiniMax Audio", type: .audio, parameters: ["voice", "mood", "duration"]),
+        ModelProfile(id: "suno", name: "Suno", type: .audio, parameters: ["mood", "genre", "duration"]),
+        ModelProfile(id: "udio", name: "Udio", type: .audio, parameters: ["mood", "genre", "duration"]),
+        ModelProfile(id: "google_lyria", name: "Google Lyria", type: .audio, parameters: ["mood", "genre", "duration"]),
+        ModelProfile(id: "cartesia", name: "Cartesia", type: .audio, parameters: ["voice", "mood", "duration"]),
+        ModelProfile(id: "fish_audio", name: "Fish Audio", type: .audio, parameters: ["voice", "mood", "duration"]),
+        ModelProfile(id: "stable_audio", name: "Stable Audio", type: .audio, parameters: ["mood", "genre", "duration"]),
+        ModelProfile(id: "riffusion", name: "Riffusion", type: .audio, parameters: ["mood", "genre", "duration"])
     ]
 
     static let tags: [Tag] = [
@@ -43,11 +75,24 @@ enum SeedData {
     static func orderedModels(_ persisted: [ModelProfile]) -> [ModelProfile] {
         let persistedByID = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
         let knownIDs = Set(models.map(\.id))
-        let known = models.compactMap { persistedByID[$0.id] ?? $0 }
+        let known = models.map { defaultModel in
+            guard let persisted = persistedByID[defaultModel.id] else { return defaultModel }
+            return shouldRefreshDefaultModel(persisted) ? defaultModel : persisted
+        }
         let custom = persisted
             .filter { !knownIDs.contains($0.id) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         return known + custom
+    }
+
+    private static func shouldRefreshDefaultModel(_ model: ModelProfile) -> Bool {
+        let legacyNamesByID: [String: Set<String>] = [
+            "image_2": ["Image 2"],
+            "nano_banana_2": ["Nano banana 2", "Nano Banana 2"],
+            "seedream_7": ["Seedream 7.0"],
+            "kling_3": ["可灵 3.0"]
+        ]
+        return legacyNamesByID[model.id]?.contains(model.name) == true
     }
 
     static func makePromptItems(resourceBundle: Bundle, libraryURL: URL) throws -> [PromptItem] {

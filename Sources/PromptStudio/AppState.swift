@@ -85,6 +85,13 @@ final class AppState: ObservableObject {
         var collection: LibraryCollection { .folder(folder.id) }
     }
 
+    struct FolderMoveDestinationRow: Identifiable, Equatable {
+        let folder: LibraryFolder
+        let level: Int
+
+        var id: String { folder.id }
+    }
+
     struct InspectorEditRequest: Equatable {
         let token = UUID()
         let itemID: String
@@ -1124,6 +1131,31 @@ final class AppState: ObservableObject {
         return rows
     }
 
+    func folderMoveDestinationRows(for movingFolder: LibraryFolder) -> [FolderMoveDestinationRow] {
+        let excludedIDs = descendantFolderIDs(of: movingFolder.id, includingSelf: true)
+        let availableFolders = folders.filter { !excludedIDs.contains($0.id) }
+        let children = Dictionary(grouping: availableFolders, by: { $0.parentId })
+
+        func sorted(_ folders: [LibraryFolder]) -> [LibraryFolder] {
+            folders.sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+        }
+
+        var rows: [FolderMoveDestinationRow] = []
+        func append(parentID: String?, level: Int) {
+            for folder in sorted(children[parentID] ?? []) {
+                rows.append(FolderMoveDestinationRow(folder: folder, level: level))
+                append(parentID: folder.id, level: level + 1)
+            }
+        }
+        append(parentID: nil, level: 0)
+        return rows
+    }
+
     func reorderFolders(parentId: String?, orderedIDs: [String]) {
         let siblings = folders
             .filter { $0.parentId == parentId }
@@ -1241,6 +1273,38 @@ final class AppState: ObservableObject {
     func beginCreateChildFolder(_ folder: LibraryFolder) {
         expandedFolderIDs.insert(folder.id)
         createInlineEditableFolder(parentId: folder.id, insertAtTop: true)
+    }
+
+    func moveFolder(_ folder: LibraryFolder, toParentID parentID: String?) {
+        guard folder.parentId != parentID else { return }
+        if let parentID, descendantFolderIDs(of: folder.id, includingSelf: true).contains(parentID) {
+            showToast("不能移动到自身或子文件夹")
+            return
+        }
+        guard !folders.contains(where: {
+            $0.id != folder.id
+                && $0.parentId == parentID
+                && $0.name.caseInsensitiveCompare(folder.name) == .orderedSame
+        }) else {
+            showToast("目标位置已有同名文件夹")
+            return
+        }
+
+        var movedFolder = folder
+        movedFolder.parentId = parentID
+        movedFolder.sortOrder = (folders.filter { $0.parentId == parentID }.map(\.sortOrder).max() ?? -1) + 1
+
+        do {
+            try repository?.saveFolder(movedFolder)
+            folders = try repository?.loadFolders() ?? folders
+            if let parentID {
+                expandedFolderIDs.insert(parentID)
+            }
+            selectFolder(movedFolder)
+            showToast("已移动文件夹")
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
     }
 
     func beginRenameFolder(_ folder: LibraryFolder) {
@@ -1728,7 +1792,7 @@ final class AppState: ObservableObject {
         case .video:
             ("seedance_2", "Seedance 2.0")
         case .image:
-            ("nano_banana_2", "Nano Banana 2")
+            ("image_2", "GPT Image 2")
         case .audio, .markdown, .json, .document, .text, .data, .source, .raw, .threeD, .texture, .font, .web, .unknown:
             ("local_asset", "Local Asset")
         }

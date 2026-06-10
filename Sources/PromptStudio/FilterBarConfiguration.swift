@@ -90,10 +90,10 @@ enum FilterBarConfiguration {
         ]
 
         let preferredModelTitles = [
-            "image_2": "Image 2",
+            "image_2": "GPT Image 2",
             "nano_banana_2": "Nano Banana 2",
             "seedance_2": "Seedance 2.0",
-            "kling_3": "可灵3.0"
+            "kling_3": "可灵"
         ]
         let sortedModels = models
             .filter { $0.id != "all" }

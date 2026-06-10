@@ -1294,6 +1294,8 @@ private struct FolderTreeRowView: View {
             Label("重命名", systemImage: "pencil")
         }
 
+        moveFolderMenu(folder)
+
         Divider()
 
         Button {
@@ -1314,6 +1316,40 @@ private struct FolderTreeRowView: View {
             state.beginDeleteFolder(folder)
         } label: {
             Label("删除文件夹", systemImage: "trash")
+        }
+    }
+
+    @ViewBuilder
+    private func moveFolderMenu(_ folder: LibraryFolder) -> some View {
+        Menu {
+            Button {
+                state.moveFolder(folder, toParentID: nil)
+            } label: {
+                if folder.parentId == nil {
+                    Label("顶层", systemImage: "checkmark")
+                } else {
+                    Text("顶层")
+                }
+            }
+            .disabled(folder.parentId == nil)
+
+            Divider()
+
+            ForEach(state.folderMoveDestinationRows(for: folder)) { row in
+                Button {
+                    state.moveFolder(folder, toParentID: row.folder.id)
+                } label: {
+                    let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
+                    if folder.parentId == row.folder.id {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+                .disabled(folder.parentId == row.folder.id)
+            }
+        } label: {
+            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
         }
     }
 
@@ -1520,6 +1556,8 @@ private struct SidebarRow: View {
             Label("重命名", systemImage: "pencil")
         }
 
+        moveFolderMenu(folder)
+
         Divider()
 
         Button {
@@ -1540,6 +1578,40 @@ private struct SidebarRow: View {
             state.beginDeleteFolder(folder)
         } label: {
             Label("删除文件夹", systemImage: "trash")
+        }
+    }
+
+    @ViewBuilder
+    private func moveFolderMenu(_ folder: LibraryFolder) -> some View {
+        Menu {
+            Button {
+                state.moveFolder(folder, toParentID: nil)
+            } label: {
+                if folder.parentId == nil {
+                    Label("顶层", systemImage: "checkmark")
+                } else {
+                    Text("顶层")
+                }
+            }
+            .disabled(folder.parentId == nil)
+
+            Divider()
+
+            ForEach(state.folderMoveDestinationRows(for: folder)) { row in
+                Button {
+                    state.moveFolder(folder, toParentID: row.folder.id)
+                } label: {
+                    let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
+                    if folder.parentId == row.folder.id {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+                .disabled(folder.parentId == row.folder.id)
+            }
+        } label: {
+            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
         }
     }
 

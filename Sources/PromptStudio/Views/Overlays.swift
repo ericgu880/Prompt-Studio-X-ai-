@@ -751,7 +751,7 @@ struct PromptComposerOverlay: View {
     let mode: AppState.PromptComposerMode
     @State private var title = ""
     @State private var type: PromptType = .image
-    @State private var modelId = "nano_banana_2"
+    @State private var modelId = "image_2"
     @State private var promptFormatID = ""
     @State private var prompt = ""
     @State private var negativePrompt = ""

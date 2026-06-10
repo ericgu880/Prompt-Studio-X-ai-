@@ -8,7 +8,7 @@ struct NewPromptSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var type: PromptType = .image
-    @State private var modelId = "nano_banana_2"
+    @State private var modelId = "image_2"
     @State private var prompt = ""
     @State private var negativePrompt = ""
     @State private var tags = ["风景", "人物"]
