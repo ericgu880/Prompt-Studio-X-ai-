@@ -189,10 +189,14 @@ enum AppKitBridge {
     @MainActor
     static func isTextInputActive() -> Bool {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-        if responder is NSTextView || responder is NSTextField {
+        if let textView = responder as? NSTextView {
+            return textView.isEditable
+        }
+        if responder is NSTextField {
             return true
         }
-        return String(describing: type(of: responder)).contains("Text")
+        let responderName = String(describing: type(of: responder))
+        return responderName.contains("FieldEditor") || responderName.contains("TextField")
     }
 
     @MainActor

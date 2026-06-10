@@ -9,19 +9,25 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     let scrollResetID: String?
     let contentFontSize: CGFloat
     let syntaxMode: TextSyntaxMode
+    let onCopyAll: (() -> Void)?
+    let onCopySelection: ((String) -> Void)?
 
     init(
         text: Binding<String>,
         isEditable: Bool,
         scrollResetID: String? = nil,
         contentFontSize: CGFloat = 14,
-        syntaxMode: TextSyntaxMode = .markdown
+        syntaxMode: TextSyntaxMode = .markdown,
+        onCopyAll: (() -> Void)? = nil,
+        onCopySelection: ((String) -> Void)? = nil
     ) {
         self._text = text
         self.isEditable = isEditable
         self.scrollResetID = scrollResetID
         self.contentFontSize = contentFontSize
         self.syntaxMode = syntaxMode
+        self.onCopyAll = onCopyAll
+        self.onCopySelection = onCopySelection
     }
 
     func makeCoordinator() -> Coordinator {
@@ -34,6 +40,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.string = text
         textView.isEditable = isEditable
+        containerView.setCopyHandlers(onCopyAll: onCopyAll, onCopySelection: onCopySelection, isEditable: isEditable)
         TextSyntaxHighlighter.apply(to: textView, mode: syntaxMode, contentFontSize: contentFontSize)
         if let scrollResetID {
             context.coordinator.lastScrollResetID = scrollResetID
@@ -48,6 +55,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         let textView = containerView.textView
         textView.isEditable = isEditable
         textView.insertionPointColor = MarkdownEditorPalette.strongText
+        containerView.setCopyHandlers(onCopyAll: onCopyAll, onCopySelection: onCopySelection, isEditable: isEditable)
         let fontSizeChanged = containerView.updateContentFontSize(contentFontSize)
         let syntaxModeChanged = context.coordinator.lastSyntaxMode != syntaxMode
         context.coordinator.lastSyntaxMode = syntaxMode
@@ -100,7 +108,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
 
 @MainActor
 final class MarkdownEditorContainerView: NSView {
-    let textView: NSTextView
+    let textView: CopyingMarkdownTextView
     let scrollView: NSScrollView
     let gutterView: MarkdownLineNumberGutterView
 
@@ -109,7 +117,7 @@ final class MarkdownEditorContainerView: NSView {
 
     init(contentFontSize: CGFloat = 14, frame frameRect: NSRect = .zero) {
         self.contentFontSize = contentFontSize
-        let textView = NSTextView(frame: .zero)
+        let textView = CopyingMarkdownTextView(frame: .zero)
         self.textView = textView
         self.scrollView = NSScrollView(frame: .zero)
         self.gutterView = MarkdownLineNumberGutterView(textView: textView, contentFontSize: contentFontSize)
@@ -174,6 +182,13 @@ final class MarkdownEditorContainerView: NSView {
         return true
     }
 
+    func setCopyHandlers(onCopyAll: (() -> Void)?, onCopySelection: ((String) -> Void)?, isEditable: Bool) {
+        textView.onCopyAll = isEditable ? nil : onCopyAll
+        textView.onCopySelection = isEditable ? nil : onCopySelection
+        textView.usesPointingHandCursor = !isEditable && onCopyAll != nil
+        textView.window?.invalidateCursorRects(for: textView)
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
@@ -212,6 +227,57 @@ final class MarkdownEditorContainerView: NSView {
             scrollView.reflectScrolledClipView(scrollView.contentView)
             gutterView.needsDisplay = true
         }
+    }
+}
+
+@MainActor
+final class CopyingMarkdownTextView: NSTextView {
+    var onCopyAll: (() -> Void)?
+    var onCopySelection: ((String) -> Void)?
+    var usesPointingHandCursor = false
+
+    override func resetCursorRects() {
+        if usesPointingHandCursor {
+            addCursorRect(bounds, cursor: .pointingHand)
+        } else {
+            super.resetCursorRects()
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if usesPointingHandCursor {
+            NSCursor.pointingHand.set()
+        } else {
+            super.cursorUpdate(with: event)
+        }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if usesPointingHandCursor {
+            NSCursor.pointingHand.set()
+        } else {
+            super.mouseMoved(with: event)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        guard usesPointingHandCursor else { return }
+        if let selectedText {
+            onCopySelection?(selectedText)
+        } else if event.clickCount == 1 {
+            onCopyAll?()
+        }
+    }
+
+    private var selectedText: String? {
+        let range = selectedRange()
+        guard range.length > 0,
+              let swiftRange = Range(range, in: string) else {
+            return nil
+        }
+        let text = String(string[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 }
 

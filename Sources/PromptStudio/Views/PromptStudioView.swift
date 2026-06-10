@@ -372,11 +372,7 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
 
         @MainActor
         private static var isTextInputActive: Bool {
-            guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-            if responder is NSTextView || responder is NSTextField {
-                return true
-            }
-            return String(describing: type(of: responder)).contains("FieldEditor")
+            AppKitBridge.isTextInputActive()
         }
     }
 }
@@ -896,10 +892,13 @@ private struct FolderTreeView: View {
         let rows = state.folderTreeRows(orderOverrides: orderOverrides)
         VStack(alignment: .leading, spacing: 4) {
             ForEach(rows) { row in
+                let isPrimaryDragRow = draggingFolderID == row.id
+                let isDragGroupMember = isPrimaryDragRow || isDescendant(row.folder.id, of: draggingFolderID)
                 FolderTreeRowView(
                     row: row,
-                    isDragging: draggingFolderID == row.id,
-                    dragOffset: draggingFolderID == row.id ? dragOffset : .zero,
+                    isPrimaryDragRow: isPrimaryDragRow,
+                    isDragGroupMember: isDragGroupMember,
+                    dragOffset: isDragGroupMember ? dragOffset : .zero,
                     onDragChanged: { value in
                         updateDrag(row: row, value: value)
                     },
@@ -974,6 +973,19 @@ private struct FolderTreeView: View {
             }
             .map(\.id)
     }
+
+    private func isDescendant(_ folderID: String, of ancestorID: String?) -> Bool {
+        guard let ancestorID, folderID != ancestorID else { return false }
+        let parentByID = Dictionary(uniqueKeysWithValues: state.folders.map { ($0.id, $0.parentId) })
+        var currentParent = parentByID[folderID] ?? nil
+        while let parent = currentParent {
+            if parent == ancestorID {
+                return true
+            }
+            currentParent = parentByID[parent] ?? nil
+        }
+        return false
+    }
 }
 
 private struct FolderTreeRowFramePreferenceKey: PreferenceKey {
@@ -988,7 +1000,8 @@ private struct FolderTreeRowView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let row: AppState.FolderTreeRow
-    let isDragging: Bool
+    let isPrimaryDragRow: Bool
+    let isDragGroupMember: Bool
     let dragOffset: CGSize
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: (DragGesture.Value) -> Void
@@ -1065,8 +1078,8 @@ private struct FolderTreeRowView: View {
         }
         .onHover { isHovered = $0 }
         .offset(dragOffset)
-        .opacity(isDragging ? 0.86 : 1)
-        .zIndex(isDragging ? 8 : 0)
+        .opacity(isDragGroupMember ? 0.86 : 1)
+        .zIndex(isDragGroupMember ? 8 : 0)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -1078,11 +1091,11 @@ private struct FolderTreeRowView: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 2, coordinateSpace: .named("folderTree"))
                 .onChanged { value in
-                    guard !isEditingName else { return }
+                    guard !isEditingName, !isDragGroupMember || isPrimaryDragRow else { return }
                     onDragChanged(value)
                 }
                 .onEnded { value in
-                    guard !isEditingName else { return }
+                    guard !isEditingName, !isDragGroupMember || isPrimaryDragRow else { return }
                     onDragEnded(value)
                 }
         )
@@ -1348,7 +1361,11 @@ private struct SidebarRow: View {
     var body: some View {
         let active = isActive || state.filter.collection == collection
         Button {
-            state.setCollection(collection)
+            if collection == .all {
+                state.resetToAll()
+            } else {
+                state.setCollection(collection)
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -1418,9 +1435,15 @@ private struct SidebarRow: View {
         }
 
         Button {
-            state.beginCreateFolder(type: folder.type ?? .image)
+            state.beginCreateSiblingFolder(folder)
         } label: {
             Label("新增文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            state.beginCreateChildFolder(folder)
+        } label: {
+            Label("新增子文件夹", systemImage: "folder.badge.plus")
         }
 
         Button {
@@ -1850,7 +1873,12 @@ private struct ModelTabsView: View {
     private func isActive(_ filter: FilterQuickEntry) -> Bool {
         switch filter {
         case .all:
-            state.filter.type == nil && state.filter.modelId == nil && state.filter.textFormat == nil && state.filter.assetKindFilter == nil
+            state.filter.collection == .all
+                && state.filter.type == nil
+                && state.filter.modelId == nil
+                && state.filter.textFormat == nil
+                && state.filter.assetKindFilter == nil
+                && state.filter.requiredTag == nil
         case .type(let type, _):
             state.filter.type == type && state.filter.modelId == nil && state.filter.textFormat == nil && state.filter.assetKindFilter == nil
         case .model(let model, _):
@@ -2111,7 +2139,7 @@ private struct CompactFilterChip: View {
             withTransaction(transaction) {
                 switch filter {
                 case .all:
-                    state.setPromptType(nil)
+                    state.resetToAll()
                 case .type(let type, _):
                     state.setPromptType(type)
                 case .model(let model, _):

@@ -341,6 +341,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    func resetToAll() {
+        guard filter.collection != .all
+            || filter.type != nil
+            || filter.modelId != nil
+            || filter.textFormat != nil
+            || filter.assetKindFilter != nil
+            || filter.requiredTag != nil else { return }
+        pushCurrentNavigationSnapshot()
+        updateFilterSelectingFirst {
+            filter.collection = .all
+            filter.type = nil
+            filter.modelId = nil
+            filter.textFormat = nil
+            filter.assetKindFilter = nil
+            filter.requiredTag = nil
+        }
+    }
+
     func setModel(_ modelId: String?) {
         let normalizedModelID = modelId == "all" ? nil : modelId
         guard filter.modelId != normalizedModelID || filter.textFormat != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
@@ -1217,7 +1235,7 @@ final class AppState: ObservableObject {
     }
 
     func beginCreateSiblingFolder(_ folder: LibraryFolder) {
-        createInlineEditableFolder(parentId: folder.parentId)
+        createInlineEditableFolder(parentId: folder.parentId, afterFolderID: folder.id)
     }
 
     func beginCreateChildFolder(_ folder: LibraryFolder) {
@@ -1293,7 +1311,7 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func createInlineEditableFolder(parentId: String?, insertAtTop: Bool = false) -> Bool {
+    func createInlineEditableFolder(parentId: String?, insertAtTop: Bool = false, afterFolderID: String? = nil) -> Bool {
         let name = nextDefaultFolderName(parentId: parentId)
         let siblingOrders = folders.filter { $0.parentId == parentId }.map(\.sortOrder)
         let sortOrder = insertAtTop
@@ -1308,6 +1326,11 @@ final class AppState: ObservableObject {
 
         do {
             try repository?.saveFolder(folder)
+            if let afterFolderID {
+                folders = try repository?.loadFolders() ?? (folders + [folder])
+                let orderedIDs = folderIDsAfterInserting(folder.id, after: afterFolderID, parentId: parentId)
+                try saveFolderOrder(parentId: parentId, orderedIDs: orderedIDs)
+            }
             if let parentId {
                 expandedFolderIDs.insert(parentId)
             }
@@ -1318,6 +1341,32 @@ final class AppState: ObservableObject {
         } catch {
             modal = .error(error.localizedDescription)
             return false
+        }
+    }
+
+    private func folderIDsAfterInserting(_ insertedID: String, after anchorID: String, parentId: String?) -> [String] {
+        var ids = folders
+            .filter { $0.parentId == parentId }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            .map(\.id)
+            .filter { $0 != insertedID }
+        let insertIndex = (ids.firstIndex(of: anchorID).map { $0 + 1 }) ?? ids.count
+        ids.insert(insertedID, at: min(max(insertIndex, 0), ids.count))
+        return ids
+    }
+
+    private func saveFolderOrder(parentId: String?, orderedIDs: [String]) throws {
+        let siblings = folders.filter { $0.parentId == parentId }
+        let lookup = Dictionary(uniqueKeysWithValues: siblings.map { ($0.id, $0) })
+        for (index, id) in orderedIDs.enumerated() {
+            guard var folder = lookup[id] else { continue }
+            folder.sortOrder = index
+            try repository?.saveFolder(folder)
         }
     }
 

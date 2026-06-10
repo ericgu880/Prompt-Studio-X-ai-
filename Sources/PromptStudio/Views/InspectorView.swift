@@ -15,6 +15,8 @@ struct InspectorView: View {
     @State private var isNegativePromptExpanded = false
     @State private var mediaPromptHovered = false
     @State private var mediaPromptCopyFeedback = false
+    @State private var markdownPreviewHovered = false
+    @State private var markdownPreviewCopyFeedback = false
 
     var body: some View {
         Group {
@@ -47,6 +49,7 @@ struct InspectorView: View {
             isPromptExpanded = false
             isNegativePromptExpanded = false
             mediaPromptCopyFeedback = false
+            markdownPreviewCopyFeedback = false
         }
         .onChange(of: state.inspectorEditRequest) { _, request in
             guard let request,
@@ -212,7 +215,9 @@ struct InspectorView: View {
                     isEditable: false,
                     scrollResetID: item.id,
                     contentFontSize: 13,
-                    syntaxMode: TextSyntaxMode.infer(for: item)
+                    syntaxMode: TextSyntaxMode.infer(for: item),
+                    onCopyAll: copyMarkdownPreviewText,
+                    onCopySelection: copyMarkdownPreviewFragment
                 )
 
                 if activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -223,14 +228,44 @@ struct InspectorView: View {
                         .padding(.top, 16)
                         .allowsHitTesting(false)
                 }
+
+                markdownPreviewCopyHint
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onHover { hovering in
+                markdownPreviewHovered = hovering
+            }
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: item.id) {
             loadMarkdownDocument(item)
+        }
+    }
+
+    @ViewBuilder
+    private var markdownPreviewCopyHint: some View {
+        if markdownPreviewHovered && !activeMarkdownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    HStack(spacing: 5) {
+                        LucideIcon(kind: .copy)
+                            .frame(width: 12, height: 12)
+                        Text(markdownPreviewCopyFeedback ? "已复制文档信息" : "点击文档复制")
+                    }
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(Capsule().fill(StudioColor.control.opacity(0.94)))
+                    .padding(8)
+                    .transition(.opacity)
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -437,6 +472,22 @@ struct InspectorView: View {
         mediaPromptCopyFeedback = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             mediaPromptCopyFeedback = false
+        }
+    }
+
+    private func copyMarkdownPreviewText() {
+        state.copyMarkdownDocumentText(activeMarkdownText)
+        markdownPreviewCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            markdownPreviewCopyFeedback = false
+        }
+    }
+
+    private func copyMarkdownPreviewFragment(_ fragment: String) {
+        state.copyMarkdownDocumentText(fragment)
+        markdownPreviewCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            markdownPreviewCopyFeedback = false
         }
     }
 
