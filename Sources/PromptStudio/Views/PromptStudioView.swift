@@ -890,6 +890,7 @@ private struct FolderTreeView: View {
     @State private var baseSiblingIDs: [String] = []
     @State private var currentSiblingIDs: [String] = []
     @State private var dragOffset: CGSize = .zero
+    @State private var dragStartFrame: CGRect?
 
     var body: some View {
         let rows = state.folderTreeRows(orderOverrides: orderOverrides)
@@ -917,11 +918,12 @@ private struct FolderTreeView: View {
         if draggingFolderID == nil {
             draggingFolderID = row.id
             draggingParentId = row.folder.parentId
+            dragStartFrame = rowFrames[row.id]
             baseSiblingIDs = sortedSiblingIDs(parentId: row.folder.parentId)
             currentSiblingIDs = baseSiblingIDs
         }
         guard draggingFolderID == row.id else { return }
-        dragOffset = value.translation
+        dragOffset = compensatedOffset(for: row.id, translation: value.translation)
 
         let siblingsWithoutDragged = baseSiblingIDs.filter { $0 != row.id }
         let targetIndex = siblingsWithoutDragged.reduce(0) { index, folderID in
@@ -943,10 +945,22 @@ private struct FolderTreeView: View {
             baseSiblingIDs = []
             currentSiblingIDs = []
             dragOffset = .zero
+            dragStartFrame = nil
             orderOverrides = [:]
         }
         guard draggingFolderID != nil, !currentSiblingIDs.isEmpty else { return }
         state.reorderFolders(parentId: draggingParentId, orderedIDs: currentSiblingIDs)
+    }
+
+    private func compensatedOffset(for folderID: String, translation: CGSize) -> CGSize {
+        guard let startFrame = dragStartFrame,
+              let currentFrame = rowFrames[folderID] else {
+            return translation
+        }
+        return CGSize(
+            width: translation.width + startFrame.minX - currentFrame.minX,
+            height: translation.height + startFrame.minY - currentFrame.minY
+        )
     }
 
     private func sortedSiblingIDs(parentId: String?) -> [String] {
