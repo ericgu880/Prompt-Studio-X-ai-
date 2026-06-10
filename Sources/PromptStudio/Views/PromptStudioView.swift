@@ -164,8 +164,11 @@ struct PromptStudioView: View {
         }
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: state.toast)
         .background {
-            SpacePreviewKeyMonitor {
-                state.togglePreview()
+            ZStack {
+                SpacePreviewKeyMonitor {
+                    state.togglePreview()
+                }
+                GlobalTextFocusMonitor()
             }
         }
         .sheet(item: $state.modal) { modal in
@@ -373,6 +376,71 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
         @MainActor
         private static var isTextInputActive: Bool {
             AppKitBridge.isTextInputActive()
+        }
+    }
+}
+
+struct GlobalTextFocusMonitor: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Coordinator: @unchecked Sendable {
+        private var monitor: Any?
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+                let windowNumber = event.windowNumber
+                let locationInWindow = event.locationInWindow
+                MainActor.assumeIsolated {
+                    if AppKitBridge.isTextInputActive(),
+                       !Self.isClickInsideEditableTextInput(windowNumber: windowNumber, locationInWindow: locationInWindow) {
+                        clearTextFocus()
+                    }
+                }
+                return event
+            }
+        }
+
+        @MainActor
+        private static func isClickInsideEditableTextInput(windowNumber: Int, locationInWindow: NSPoint) -> Bool {
+            guard let window = NSApp.keyWindow,
+                  window.windowNumber == windowNumber,
+                  let contentView = window.contentView else {
+                return false
+            }
+            let point = contentView.convert(locationInWindow, from: nil)
+            guard let hitView = contentView.hitTest(point) else { return false }
+            return editableTextInputAncestor(for: hitView) != nil
+        }
+
+        @MainActor
+        private static func editableTextInputAncestor(for view: NSView) -> NSView? {
+            var current: NSView? = view
+            while let view = current {
+                if let textView = view as? NSTextView, textView.isEditable {
+                    return textView
+                }
+                if view is NSTextField {
+                    return view
+                }
+                current = view.superview
+            }
+            return nil
         }
     }
 }
