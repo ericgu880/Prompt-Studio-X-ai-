@@ -135,8 +135,18 @@ final class MarkdownEditorContainerView: NSView {
         scrollView.backgroundColor = .clear
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
+        scrollView.verticalScroller = TransparentOverlayScroller()
         scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
         scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.contentView.drawsBackground = false
+        scrollView.contentView.backgroundColor = .clear
+        scrollView.contentView.wantsLayer = true
+        scrollView.contentView.layer?.backgroundColor = NSColor.clear.cgColor
         scrollView.contentView.postsBoundsChangedNotifications = true
 
         textView.minSize = NSSize(width: 0, height: 0)

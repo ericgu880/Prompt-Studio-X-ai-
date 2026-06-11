@@ -156,11 +156,13 @@ struct ImmersivePreviewOverlay: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .promptContainer()
 
-            ScrollView {
+            TransparentOverlayScrollView {
                 previewPromptTextView
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 24)
             }
             .frame(height: max(72, maxHeight))
-            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
@@ -1048,15 +1050,15 @@ struct PromptComposerOverlay: View {
                     .padding(.top, 14)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $prompt)
-                .font(StudioFont.font(13))
-                .lineSpacing(4)
-                .foregroundStyle(CreateComposerColor.primaryText)
-                .scrollContentBackground(.hidden)
-                .padding(8)
+            TransparentOverlayTextEditor(
+                text: $prompt,
+                font: NSFont.systemFont(ofSize: 13, weight: .regular),
+                textColor: NSColor(CreateComposerColor.primaryText),
+                insertionPointColor: NSColor(CreateComposerColor.primaryText),
+                textContainerInset: NSSize(width: 14, height: 14),
+                lineSpacing: 4
+            )
                 .frame(height: height)
-                .background(Color.clear)
-                .focused($focusedCreateInput, equals: .prompt)
         }
         .background(CreateComposerColor.fieldBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1277,11 +1279,13 @@ struct PromptComposerOverlay: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .promptContainer()
 
-            ScrollView {
+            TransparentOverlayScrollView {
                 createPromptPreviewText
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 24)
             }
             .frame(height: max(72, maxHeight))
-            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)

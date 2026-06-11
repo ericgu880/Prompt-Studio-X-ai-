@@ -412,12 +412,13 @@ struct InspectorView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .promptContainer()
 
-            ScrollView {
+            TransparentOverlayScrollView {
                 selectablePromptTextView(item)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 28)
             }
             .frame(height: max(72, maxHeight))
-            .transparentScrollArea()
             .promptContainer()
         }
         .frame(maxWidth: .infinity)
@@ -931,16 +932,18 @@ private struct MidjourneyPromptInfoPanel: View {
     }
 
     private var scrollingPrompt: some View {
-        ScrollView {
+        TransparentOverlayScrollView {
             Text(prompt.isEmpty ? "暂无 Prompt" : prompt)
                 .font(StudioFont.font(14))
                 .lineSpacing(5)
                 .foregroundStyle(prompt.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(14)
+                .padding(.trailing, 10)
+                .padding(.bottom, 24)
         }
-        .transparentScrollArea()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .promptContainer()
     }
@@ -1233,14 +1236,13 @@ private struct CollapsiblePromptPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if isExpanded && isOverflowing {
-                ScrollView {
+                TransparentOverlayScrollView {
                     promptText(lineLimit: nil)
                         .padding(.horizontal, horizontalPadding)
                         .padding(.vertical, verticalPadding)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: expandedTextHeight)
-                .transparentScrollArea()
             } else {
                 promptText(lineLimit: collapsedLineLimit)
                     .padding(.horizontal, horizontalPadding)
