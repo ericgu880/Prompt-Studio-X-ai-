@@ -3,9 +3,15 @@ import SwiftUI
 
 struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     let content: Content
+    let resetID: AnyHashable?
 
-    init(@ViewBuilder content: () -> Content) {
+    init(resetID: AnyHashable? = nil, @ViewBuilder content: () -> Content) {
+        self.resetID = resetID
         self.content = content()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(resetID: resetID)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -22,24 +28,27 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         documentView.wantsLayer = true
         documentView.layer?.backgroundColor = NSColor.clear.cgColor
         documentView.hostingView = hostingView
-        documentView.needsInitialTopScroll = true
+        documentView.pendingTopScrollPasses = 3
         documentView.addSubview(hostingView)
         scrollView.documentView = documentView
 
         resizeDocumentView(in: scrollView)
+        scheduleResizeAndTopScroll(for: scrollView)
 
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         configure(scrollView)
+        if context.coordinator.resetID != resetID {
+            context.coordinator.resetID = resetID
+            (scrollView.documentView as? TransparentScrollDocumentView)?.pendingTopScrollPasses = 3
+        }
         (scrollView.documentView?.subviews.first as? NSHostingView<Content>)?.rootView = content
         scrollView.documentView?.layer?.backgroundColor = NSColor.clear.cgColor
         (scrollView.documentView?.subviews.first as? NSView)?.layer?.backgroundColor = NSColor.clear.cgColor
         resizeDocumentView(in: scrollView)
-        DispatchQueue.main.async {
-            resizeDocumentView(in: scrollView)
-        }
+        scheduleResizeAndTopScroll(for: scrollView)
     }
 
     private func configure(_ scrollView: NSScrollView) {
@@ -79,18 +88,41 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         documentView.hostedContentHeight = contentHeight
         documentView.frame = NSRect(x: 0, y: 0, width: width, height: documentHeight)
         hostingView.frame = NSRect(x: 0, y: 0, width: width, height: contentHeight)
-        if documentView.needsInitialTopScroll, width > 1 {
-            scrollView.contentView.scroll(to: .zero)
-            documentView.needsInitialTopScroll = false
-        }
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollToTop(in scrollView: NSScrollView) {
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scheduleResizeAndTopScroll(for scrollView: NSScrollView) {
+        DispatchQueue.main.async {
+            resizeDocumentView(in: scrollView)
+            guard let documentView = scrollView.documentView as? TransparentScrollDocumentView,
+                  documentView.pendingTopScrollPasses > 0,
+                  scrollView.contentView.bounds.width > 1 else { return }
+            scrollToTop(in: scrollView)
+            documentView.pendingTopScrollPasses -= 1
+            if documentView.pendingTopScrollPasses > 0 {
+                scheduleResizeAndTopScroll(for: scrollView)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var resetID: AnyHashable?
+
+        init(resetID: AnyHashable?) {
+            self.resetID = resetID
+        }
     }
 }
 
 private final class TransparentScrollDocumentView: NSView {
     weak var hostingView: NSView?
     var hostedContentHeight: CGFloat = 1
-    var needsInitialTopScroll = false
+    var pendingTopScrollPasses = 0
 
     override var isFlipped: Bool { true }
 

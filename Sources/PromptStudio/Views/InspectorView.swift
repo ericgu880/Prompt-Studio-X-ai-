@@ -105,19 +105,11 @@ struct InspectorView: View {
             }
 
             HStack(alignment: .center, spacing: 10) {
-                Text("Prompt")
-                    .font(StudioFont.caption(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .tracking(1.2)
+                SidePanelSectionTitle(title: "Prompt")
 
                 Spacer(minLength: 12)
 
-                HStack(spacing: 10) {
-                    mediaActionButton("pencil", help: "编辑") { state.requestInlineEdit(item) }
-                    mediaActionButton("doc.on.doc", help: "复制提示词") { state.copySelectedPrompt() }
-                    mediaActionButton("arrow.down.circle", help: "下载") { state.modal = .export }
-                    mediaActionButton("clock", help: "历史版本") { state.modal = .versionHistory }
-                }
+                SidePanelActionRow(actions: mediaPromptActions(item))
             }
 
             mediaPromptContent(item)
@@ -141,10 +133,7 @@ struct InspectorView: View {
             }
 
             HStack(alignment: .center, spacing: 10) {
-                Text("文件信息")
-                    .font(StudioFont.caption(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .tracking(1.2)
+                SidePanelSectionTitle(title: "文件信息")
 
                 Spacer(minLength: 12)
 
@@ -165,11 +154,7 @@ struct InspectorView: View {
     }
 
     private func fileTopChips(_ item: PromptItem) -> some View {
-        FlowLayout(spacing: 8) {
-            ForEach(fileTopChipTexts(item), id: \.self) { text in
-                mediaChip(text)
-            }
-        }
+        SidePanelChipFlow(texts: fileTopChipTexts(item))
     }
 
     private func fileTopChipTexts(_ item: PromptItem) -> [String] {
@@ -183,11 +168,11 @@ struct InspectorView: View {
     }
 
     private func fileActionButtons(_ item: PromptItem) -> some View {
-        HStack(spacing: 10) {
-            mediaActionButton("arrow.up.right.square", help: "打开") { state.openSelectedInDefaultApplication() }
-            mediaActionButton("doc.on.doc", help: "复制文件") { state.copySelectedFile() }
-            mediaActionButton("link", help: "复制路径") { state.copySelectedFilePath() }
-        }
+        SidePanelActionRow(actions: [
+            SidePanelAction(icon: .externalLink, help: "打开") { state.openSelectedInDefaultApplication() },
+            SidePanelAction(icon: .copy, help: "复制文件") { state.copySelectedFile() },
+            SidePanelAction(icon: .link, help: "复制路径") { state.copySelectedFilePath() }
+        ])
     }
 
     private func fileDetailSection(_ item: PromptItem) -> some View {
@@ -407,57 +392,25 @@ struct InspectorView: View {
     }
 
     private func mediaPromptBox(_ item: PromptItem, maxHeight: CGFloat) -> some View {
-        ViewThatFits(in: .vertical) {
-            selectablePromptTextView(item)
-                .fixedSize(horizontal: false, vertical: true)
-                .promptContainer()
-
-            TransparentOverlayScrollView {
-                selectablePromptTextView(item)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 28)
-            }
-            .frame(height: max(72, maxHeight))
-            .promptContainer()
+        GeometryReader { _ in
+            SidePanelPromptTextBox(
+                text: mediaPromptText(item),
+                maxHeight: maxHeight,
+                resetID: item.id,
+                isPlaceholder: (item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                isInteractive: hasPrompt(item),
+                isHovered: mediaPromptHovered,
+                copyFeedback: mediaPromptCopyFeedback,
+                onCopyAll: copyMediaPrompt,
+                onCopySelection: copyMediaPromptFragment
+            )
         }
         .frame(maxWidth: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            if hasPrompt(item) {
-                PointingHandCursorArea()
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if mediaPromptHovered && hasPrompt(item) {
-                HStack(spacing: 5) {
-                    LucideIcon(kind: .copy)
-                        .frame(width: 12, height: 12)
-                    Text(mediaPromptCopyFeedback ? "已复制提示词" : "点击提示词复制")
-                }
-                .font(StudioFont.font(11))
-                .foregroundStyle(StudioColor.secondaryText)
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(Capsule().fill(StudioColor.control.opacity(0.94)))
-                .padding(8)
-                .transition(.opacity)
-                .allowsHitTesting(false)
-            }
-        }
         .onHover { hovering in
             mediaPromptHovered = hovering
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: mediaPromptHovered)
-    }
-
-    private func selectablePromptTextView(_ item: PromptItem) -> some View {
-        SelectablePromptTextView(
-            text: mediaPromptText(item),
-            isPlaceholder: (item.currentVersion?.prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            onCopyAll: copyMediaPrompt,
-            onCopySelection: copyMediaPromptFragment
-        )
     }
 
     private func copyMediaPrompt() {
@@ -498,19 +451,11 @@ struct InspectorView: View {
     }
 
     private func mediaTopChips(_ item: PromptItem) -> some View {
-        FlowLayout(spacing: 8) {
-            ForEach(mediaTopChipTexts(item), id: \.self) { text in
-                mediaChip(text)
-            }
-        }
+        SidePanelChipFlow(texts: mediaTopChipTexts(item))
     }
 
     private func mediaBottomChips(_ item: PromptItem) -> some View {
-        FlowLayout(spacing: 10) {
-            ForEach(mediaBottomChipTexts(item), id: \.self) { text in
-                mediaChip(text)
-            }
-        }
+        SidePanelChipFlow(texts: mediaBottomChipTexts(item), spacing: 10)
     }
 
     private func mediaTopChipTexts(_ item: PromptItem) -> [String] {
@@ -538,14 +483,13 @@ struct InspectorView: View {
         return chips.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    private func mediaChip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(11))
-            .foregroundStyle(StudioColor.secondaryText)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(Capsule().fill(StudioColor.control))
-            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    private func mediaPromptActions(_ item: PromptItem) -> [SidePanelAction] {
+        [
+            SidePanelAction(icon: .pencil, help: "编辑") { state.requestInlineEdit(item) },
+            SidePanelAction(icon: .copy, help: "复制提示词") { state.copySelectedPrompt() },
+            SidePanelAction(icon: .circleArrowDown, help: "下载") { state.modal = .export },
+            SidePanelAction(icon: .history, help: "历史版本") { state.modal = .versionHistory }
+        ]
     }
 
     private func mediaActionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
@@ -651,25 +595,7 @@ struct InspectorView: View {
     }
 
     private func mediaReferenceSection(_ item: PromptItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("参考资产")
-                .font(StudioFont.caption(12))
-                .foregroundStyle(StudioColor.secondaryText)
-                .tracking(1.2)
-
-            LazyVGrid(columns: mediaReferenceColumns, alignment: .leading, spacing: 8) {
-                ForEach(item.referenceAssets.prefix(8)) { reference in
-                    ReferenceAssetPreview(reference: reference)
-                        .frame(width: 62, height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
-                }
-            }
-        }
-    }
-
-    private var mediaReferenceColumns: [GridItem] {
-        Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
+        SidePanelReferenceSection(references: item.referenceAssets)
     }
 
     private func actionSection(_ item: PromptItem) -> some View {
@@ -997,222 +923,6 @@ private extension View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(Color(hex: 0x3E3E3E), lineWidth: 1)
             )
-    }
-}
-
-private struct SelectablePromptTextView: NSViewRepresentable {
-    let text: String
-    let isPlaceholder: Bool
-    let onCopyAll: () -> Void
-    let onCopySelection: (String) -> Void
-
-    func makeNSView(context: Context) -> SelectablePromptTextContainer {
-        let view = SelectablePromptTextContainer()
-        view.onCopyAll = onCopyAll
-        view.onCopySelection = onCopySelection
-        view.update(text: text, isPlaceholder: isPlaceholder)
-        return view
-    }
-
-    func updateNSView(_ nsView: SelectablePromptTextContainer, context: Context) {
-        nsView.onCopyAll = onCopyAll
-        nsView.onCopySelection = onCopySelection
-        nsView.update(text: text, isPlaceholder: isPlaceholder)
-    }
-}
-
-private final class SelectablePromptTextContainer: NSView {
-    var onCopyAll: (() -> Void)?
-    var onCopySelection: ((String) -> Void)?
-
-    private let textView = CopyingPromptTextView()
-    private let font = NSFont.systemFont(ofSize: 13, weight: .regular)
-    private let textInset = NSSize(width: 14, height: 14)
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setup()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
-    }
-
-    override var isFlipped: Bool { true }
-    override var isOpaque: Bool { false }
-
-    override var intrinsicContentSize: NSSize {
-        let width = bounds.width > 1 ? bounds.width : 260
-        return NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight(for: width))
-    }
-
-    override func layout() {
-        super.layout()
-        textView.frame = bounds
-        textView.textContainer?.containerSize = NSSize(
-            width: max(1, bounds.width - textInset.width * 2),
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        invalidateIntrinsicContentSize()
-    }
-
-    func update(text: String, isPlaceholder: Bool) {
-        textView.onCopyAll = onCopyAll
-        textView.onCopySelection = onCopySelection
-        let textColor = isPlaceholder ? NSColor(hex: 0x7D8187) : NSColor(hex: 0xFFFFFF)
-        let attributed = attributedString(for: text, color: textColor)
-        if textView.string != text {
-            textView.textStorage?.setAttributedString(attributed)
-        } else {
-            textView.textStorage?.setAttributes(attributed.attributes(at: 0, effectiveRange: nil), range: NSRange(location: 0, length: attributed.length))
-        }
-        invalidateIntrinsicContentSize()
-    }
-
-    private func setup() {
-        wantsLayer = false
-        textView.drawsBackground = false
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.importsGraphics = false
-        textView.allowsUndo = false
-        textView.textContainerInset = textInset
-        textView.textContainer?.lineFragmentPadding = 0
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.heightTracksTextView = false
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width, .height]
-        addSubview(textView)
-    }
-
-    private func measuredHeight(for width: CGFloat) -> CGFloat {
-        let textWidth = max(1, width - textInset.width * 2)
-        let storage = NSTextStorage(attributedString: textView.attributedString())
-        let layoutManager = NSLayoutManager()
-        let textContainer = NSTextContainer(size: NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude))
-        textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = false
-        layoutManager.addTextContainer(textContainer)
-        storage.addLayoutManager(layoutManager)
-        layoutManager.ensureLayout(for: textContainer)
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        return max(44, ceil(usedRect.height) + textInset.height * 2)
-    }
-
-    private func attributedString(for text: String, color: NSColor) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 4
-        return NSAttributedString(
-            string: text,
-            attributes: [
-                .font: font,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph
-            ]
-        )
-    }
-}
-
-private final class CopyingPromptTextView: NSTextView {
-    var onCopyAll: (() -> Void)?
-    var onCopySelection: ((String) -> Void)?
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        super.mouseDown(with: event)
-        if let selectedText {
-            onCopySelection?(selectedText)
-        } else if event.clickCount == 1 {
-            onCopyAll?()
-        }
-    }
-
-    private var selectedText: String? {
-        let range = selectedRange()
-        guard range.length > 0,
-              let swiftRange = Range(range, in: string) else {
-            return nil
-        }
-        let text = String(string[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
-    }
-}
-
-private struct PointingHandCursorArea: NSViewRepresentable {
-    func makeNSView(context: Context) -> CursorView {
-        CursorView()
-    }
-
-    func updateNSView(_ nsView: CursorView, context: Context) {
-        nsView.window?.invalidateCursorRects(for: nsView)
-    }
-
-    final class CursorView: NSView {
-        private var trackingArea: NSTrackingArea?
-
-        override var isOpaque: Bool { false }
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            nil
-        }
-
-        override func updateTrackingAreas() {
-            if let trackingArea {
-                removeTrackingArea(trackingArea)
-            }
-            let nextTrackingArea = NSTrackingArea(
-                rect: bounds,
-                options: [.activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
-                owner: self
-            )
-            addTrackingArea(nextTrackingArea)
-            trackingArea = nextTrackingArea
-            super.updateTrackingAreas()
-        }
-
-        override func resetCursorRects() {
-            addCursorRect(bounds, cursor: .pointingHand)
-        }
-
-        override func cursorUpdate(with event: NSEvent) {
-            NSCursor.pointingHand.set()
-        }
-
-        override func mouseMoved(with event: NSEvent) {
-            NSCursor.pointingHand.set()
-        }
-
-        override func mouseEntered(with event: NSEvent) {
-            NSCursor.pointingHand.set()
-        }
-    }
-}
-
-private extension NSColor {
-    convenience init(hex: UInt32, alpha: CGFloat = 1) {
-        self.init(
-            calibratedRed: CGFloat((hex >> 16) & 0xff) / 255.0,
-            green: CGFloat((hex >> 8) & 0xff) / 255.0,
-            blue: CGFloat(hex & 0xff) / 255.0,
-            alpha: alpha
-        )
     }
 }
 

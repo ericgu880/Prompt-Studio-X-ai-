@@ -1035,6 +1035,93 @@ private struct FolderTreeRowFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct FolderActionsContextMenu: View {
+    @EnvironmentObject private var state: AppState
+    let folder: LibraryFolder
+    let renameAction: () -> Void
+
+    var body: some View {
+        Button {
+            state.selectFolder(folder)
+        } label: {
+            Label("打开文件夹", systemImage: "folder")
+        }
+
+        Button {
+            state.beginCreateSiblingFolder(folder)
+        } label: {
+            Label("新增文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button {
+            state.beginCreateChildFolder(folder)
+        } label: {
+            Label("新增子文件夹", systemImage: "folder.badge.plus")
+        }
+
+        Button(action: renameAction) {
+            Label("重命名", systemImage: "pencil")
+        }
+
+        moveFolderMenu
+
+        Divider()
+
+        Button {
+            state.importFiles(to: folder)
+        } label: {
+            Label("导入到此文件夹", systemImage: "square.and.arrow.down")
+        }
+
+        Button {
+            state.exportFolder(folder.id)
+        } label: {
+            Label("导出文件夹...", systemImage: "square.and.arrow.up")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            state.beginDeleteFolder(folder)
+        } label: {
+            Label("删除文件夹", systemImage: "trash")
+        }
+    }
+
+    private var moveFolderMenu: some View {
+        Menu {
+            Button {
+                state.moveFolder(folder, toParentID: nil)
+            } label: {
+                if folder.parentId == nil {
+                    Label("顶层", systemImage: "checkmark")
+                } else {
+                    Text("顶层")
+                }
+            }
+            .disabled(folder.parentId == nil)
+
+            Divider()
+
+            ForEach(state.folderMoveDestinationRows(for: folder)) { row in
+                Button {
+                    state.moveFolder(folder, toParentID: row.folder.id)
+                } label: {
+                    let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
+                    if folder.parentId == row.folder.id {
+                        Label(title, systemImage: "checkmark")
+                    } else {
+                        Text(title)
+                    }
+                }
+                .disabled(folder.parentId == row.folder.id)
+            }
+        } label: {
+            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
+        }
+    }
+}
+
 private struct FolderTreeRowView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1144,7 +1231,9 @@ private struct FolderTreeRowView: View {
             perform: handleDrop
         )
         .contextMenu {
-            folderContextMenu(row.folder)
+            FolderActionsContextMenu(folder: row.folder) {
+                startInlineRename()
+            }
         }
         .onAppear(perform: startInlineRenameIfRequested)
         .onChange(of: state.inlineRenamingFolderID) { _, _ in
@@ -1237,91 +1326,6 @@ private struct FolderTreeRowView: View {
             }
         }
         return true
-    }
-
-    @ViewBuilder
-    private func folderContextMenu(_ folder: LibraryFolder) -> some View {
-        Button {
-            state.selectFolder(folder)
-        } label: {
-            Label("打开文件夹", systemImage: "folder")
-        }
-
-        Button {
-            state.beginCreateSiblingFolder(folder)
-        } label: {
-            Label("新增文件夹", systemImage: "folder.badge.plus")
-        }
-
-        Button {
-            state.beginCreateChildFolder(folder)
-        } label: {
-            Label("新增子文件夹", systemImage: "folder.badge.plus")
-        }
-
-        Button {
-            startInlineRename()
-        } label: {
-            Label("重命名", systemImage: "pencil")
-        }
-
-        moveFolderMenu(folder)
-
-        Divider()
-
-        Button {
-            state.importFiles(to: folder)
-        } label: {
-            Label("导入到此文件夹", systemImage: "square.and.arrow.down")
-        }
-
-        Button {
-            state.exportFolder(folder.id)
-        } label: {
-            Label("导出文件夹...", systemImage: "square.and.arrow.up")
-        }
-
-        Divider()
-
-        Button(role: .destructive) {
-            state.beginDeleteFolder(folder)
-        } label: {
-            Label("删除文件夹", systemImage: "trash")
-        }
-    }
-
-    @ViewBuilder
-    private func moveFolderMenu(_ folder: LibraryFolder) -> some View {
-        Menu {
-            Button {
-                state.moveFolder(folder, toParentID: nil)
-            } label: {
-                if folder.parentId == nil {
-                    Label("顶层", systemImage: "checkmark")
-                } else {
-                    Text("顶层")
-                }
-            }
-            .disabled(folder.parentId == nil)
-
-            Divider()
-
-            ForEach(state.folderMoveDestinationRows(for: folder)) { row in
-                Button {
-                    state.moveFolder(folder, toParentID: row.folder.id)
-                } label: {
-                    let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
-                    if folder.parentId == row.folder.id {
-                        Label(title, systemImage: "checkmark")
-                    } else {
-                        Text(title)
-                    }
-                }
-                .disabled(folder.parentId == row.folder.id)
-            }
-        } label: {
-            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
-        }
     }
 
     private func rowBackground(active: Bool) -> Color {
@@ -1493,97 +1497,14 @@ private struct SidebarRow: View {
                 }
                 .disabled(state.trashCount == 0)
             } else if let folder {
-                folderContextMenu(folder)
+                FolderActionsContextMenu(folder: folder) {
+                    state.beginRenameFolder(folder)
+                }
             }
         }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
         .animation(StudioMotion.spring(reduceMotion: reduceMotion), value: active)
-    }
-
-    @ViewBuilder
-    private func folderContextMenu(_ folder: LibraryFolder) -> some View {
-        Button {
-            state.selectFolder(folder)
-        } label: {
-            Label("打开文件夹", systemImage: "folder")
-        }
-
-        Button {
-            state.beginCreateSiblingFolder(folder)
-        } label: {
-            Label("新增文件夹", systemImage: "folder.badge.plus")
-        }
-
-        Button {
-            state.beginCreateChildFolder(folder)
-        } label: {
-            Label("新增子文件夹", systemImage: "folder.badge.plus")
-        }
-
-        Button {
-            state.beginRenameFolder(folder)
-        } label: {
-            Label("重命名", systemImage: "pencil")
-        }
-
-        moveFolderMenu(folder)
-
-        Divider()
-
-        Button {
-            state.importFiles(to: folder)
-        } label: {
-            Label("导入到此文件夹", systemImage: "square.and.arrow.down")
-        }
-
-        Button {
-            state.exportFolder(folder.id)
-        } label: {
-            Label("导出文件夹...", systemImage: "square.and.arrow.up")
-        }
-
-        Divider()
-
-        Button(role: .destructive) {
-            state.beginDeleteFolder(folder)
-        } label: {
-            Label("删除文件夹", systemImage: "trash")
-        }
-    }
-
-    @ViewBuilder
-    private func moveFolderMenu(_ folder: LibraryFolder) -> some View {
-        Menu {
-            Button {
-                state.moveFolder(folder, toParentID: nil)
-            } label: {
-                if folder.parentId == nil {
-                    Label("顶层", systemImage: "checkmark")
-                } else {
-                    Text("顶层")
-                }
-            }
-            .disabled(folder.parentId == nil)
-
-            Divider()
-
-            ForEach(state.folderMoveDestinationRows(for: folder)) { row in
-                Button {
-                    state.moveFolder(folder, toParentID: row.folder.id)
-                } label: {
-                    let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
-                    if folder.parentId == row.folder.id {
-                        Label(title, systemImage: "checkmark")
-                    } else {
-                        Text(title)
-                    }
-                }
-                .disabled(folder.parentId == row.folder.id)
-            }
-        } label: {
-            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
-        }
     }
 
     private func rowBackground(active: Bool) -> Color {
@@ -2676,6 +2597,11 @@ private struct SubfolderCardView: View {
                 .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
         )
         .contentShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous))
+        .contextMenu {
+            FolderActionsContextMenu(folder: row.folder) {
+                state.beginRenameFolder(row.folder)
+            }
+        }
         .accessibilityLabel("进入文件夹 \(row.folder.name)，\(row.count) 个文件")
     }
 

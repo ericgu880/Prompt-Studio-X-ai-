@@ -8,6 +8,10 @@ struct ImmersivePreviewOverlay: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
     @State private var imageScale: CGFloat = 1.0
+    @State private var imageOffset: CGSize = .zero
+    @State private var previewPromptHovered = false
+    @State private var previewPromptCopyFeedback = false
+    @GestureState private var imageDragTranslation: CGSize = .zero
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -40,9 +44,9 @@ struct ImmersivePreviewOverlay: View {
                 if item.assetKind == .image {
                     PreviewZoomControl(
                         scale: imageScale,
-                        onZoomOut: { adjustImageScale(by: -0.15) },
-                        onZoomIn: { adjustImageScale(by: 0.15) },
-                        onReset: { imageScale = 1.0 }
+                        onZoomOut: { adjustImageScale(by: -0.25) },
+                        onZoomIn: { adjustImageScale(by: 0.25) },
+                        onReset: { resetImageTransform() }
                     )
                     .padding(.leading, 56)
                     .padding(.bottom, 36)
@@ -68,10 +72,25 @@ struct ImmersivePreviewOverlay: View {
                 }
             )
         }
+        .onChange(of: item.id) { _, _ in
+            resetImageTransform()
+        }
     }
 
     private func adjustImageScale(by delta: CGFloat) {
         imageScale = min(3.0, max(0.25, imageScale + delta))
+    }
+
+    private func resetImageTransform() {
+        imageScale = 1.0
+        imageOffset = .zero
+    }
+
+    private var activeImageOffset: CGSize {
+        CGSize(
+            width: imageOffset.width + imageDragTranslation.width,
+            height: imageOffset.height + imageDragTranslation.height
+        )
     }
 
     @ViewBuilder
@@ -81,11 +100,24 @@ struct ImmersivePreviewOverlay: View {
         } else if item.assetKind == .audio {
             AudioPreviewPlayer(item: item)
         } else if item.assetKind == .image {
-            OverlayImagePreview(path: item.assetPath, scale: imageScale)
+            OverlayImagePreview(path: item.assetPath, scale: imageScale, offset: activeImageOffset)
+                .contentShape(Rectangle())
+                .gesture(imagePanGesture)
         } else {
             PreviewDocumentBlock(title: item.title, text: textSummary(for: item), minHeight: 520)
                 .frame(maxWidth: 820)
         }
+    }
+
+    private var imagePanGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($imageDragTranslation) { value, state, _ in
+                state = value.translation
+            }
+            .onEnded { value in
+                imageOffset.width += value.translation.width
+                imageOffset.height += value.translation.height
+            }
     }
 
     private var previewInspector: some View {
@@ -102,29 +134,11 @@ struct ImmersivePreviewOverlay: View {
             }
 
             HStack(alignment: .center, spacing: 10) {
-                Text("Prompt")
-                    .font(StudioFont.caption(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .tracking(1.2)
+                SidePanelSectionTitle(title: "Prompt")
 
                 Spacer()
 
-                HStack(spacing: 10) {
-                    previewActionButton("pencil", help: "编辑") {
-                        state.requestInlineEdit(item)
-                    }
-                    previewActionButton("doc.on.doc", help: "复制提示词") {
-                        state.copySelectedPrompt()
-                    }
-                    previewActionButton("arrow.down.circle", help: "下载") {
-                        state.isPreviewPresented = false
-                        state.modal = .export
-                    }
-                    previewActionButton("clock", help: "历史版本") {
-                        state.isPreviewPresented = false
-                        state.modal = .versionHistory
-                    }
-                }
+                SidePanelActionRow(actions: previewPromptActions)
             }
 
             previewPromptContent
@@ -151,31 +165,24 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private func previewPromptBox(maxHeight: CGFloat) -> some View {
-        ViewThatFits(in: .vertical) {
-            previewPromptTextView
-                .fixedSize(horizontal: false, vertical: true)
-                .promptContainer()
-
-            TransparentOverlayScrollView {
-                previewPromptTextView
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 24)
-            }
-            .frame(height: max(72, maxHeight))
-            .promptContainer()
+        GeometryReader { _ in
+            SidePanelPromptTextBox(
+                text: previewPromptText,
+                maxHeight: maxHeight,
+                resetID: item.id,
+                isPlaceholder: !previewHasPrompt,
+                isInteractive: previewHasPrompt,
+                isHovered: previewPromptHovered,
+                copyFeedback: previewPromptCopyFeedback,
+                onCopyAll: copyPreviewPrompt,
+                onCopySelection: copyPreviewPromptFragment
+            )
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var previewPromptTextView: some View {
-        Text(previewPromptText)
-            .font(StudioFont.font(13))
-            .lineSpacing(4)
-            .foregroundStyle(previewPromptText.isEmpty ? StudioColor.tertiaryText : StudioColor.text)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(14)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onHover { hovering in
+            previewPromptHovered = hovering
+        }
     }
 
     private var previewPromptText: String {
@@ -187,38 +194,32 @@ struct ImmersivePreviewOverlay: View {
         !(item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
     }
 
-    private var previewTopChips: some View {
-        FlowLayout(spacing: 8) {
-            ForEach(previewTopChipTexts, id: \.self) { text in
-                chip(text)
-            }
+    private func copyPreviewPrompt() {
+        state.copySelectedPrompt()
+        previewPromptCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            previewPromptCopyFeedback = false
         }
+    }
+
+    private func copyPreviewPromptFragment(_ fragment: String) {
+        state.copyPromptFragment(fragment)
+        previewPromptCopyFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            previewPromptCopyFeedback = false
+        }
+    }
+
+    private var previewTopChips: some View {
+        SidePanelChipFlow(texts: previewTopChipTexts)
     }
 
     private var previewReferenceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("参考资产")
-                .font(StudioFont.caption(12))
-                .foregroundStyle(StudioColor.secondaryText)
-                .tracking(1.2)
-
-            LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                ForEach(item.referenceAssets.prefix(8)) { reference in
-                    ReferenceAssetPreview(reference: reference)
-                        .frame(width: 62, height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
-                }
-            }
-        }
+        SidePanelReferenceSection(references: item.referenceAssets)
     }
 
     private var previewBottomChips: some View {
-        FlowLayout(spacing: 10) {
-            ForEach(previewBottomChipTexts, id: \.self) { text in
-                chip(text)
-            }
-        }
+        SidePanelChipFlow(texts: previewBottomChipTexts, spacing: 10)
     }
 
     private var previewReferenceColumns: [GridItem] {
@@ -246,39 +247,23 @@ struct ImmersivePreviewOverlay: View {
         ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    private func chip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(11))
-            .foregroundStyle(StudioColor.secondaryText)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(Capsule().fill(StudioColor.control))
-            .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
-    }
-
-    private func previewActionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            LucideIcon(kind: lucideKind(for: systemName))
-                .frame(width: 14, height: 14)
-        }
-        .buttonStyle(IconCircleButtonStyle())
-        .help(help)
-        .accessibilityLabel(help)
-    }
-
-    private func lucideKind(for systemName: String) -> LucideIcon.Kind {
-        switch systemName {
-        case "pencil":
-            .pencil
-        case "doc.on.doc":
-            .copy
-        case "arrow.down.circle":
-            .circleArrowDown
-        case "clock":
-            .history
-        default:
-            .copy
-        }
+    private var previewPromptActions: [SidePanelAction] {
+        [
+            SidePanelAction(icon: .pencil, help: "编辑") {
+                state.requestInlineEdit(item)
+            },
+            SidePanelAction(icon: .copy, help: "复制提示词") {
+                state.copySelectedPrompt()
+            },
+            SidePanelAction(icon: .circleArrowDown, help: "下载") {
+                state.isPreviewPresented = false
+                state.modal = .export
+            },
+            SidePanelAction(icon: .history, help: "历史版本") {
+                state.isPreviewPresented = false
+                state.modal = .versionHistory
+            }
+        ]
     }
 
     private func textSummary(for item: PromptItem) -> String {
@@ -1195,23 +1180,16 @@ struct PromptComposerOverlay: View {
                 }
 
                 if !previewMetadataChips.isEmpty {
-                    FlowLayout(spacing: 8) {
-                        ForEach(previewMetadataChips, id: \.self) { chip in
-                            composerPreviewChip(chip)
-                        }
-                    }
+                    SidePanelChipFlow(texts: previewMetadataChips)
                 }
 
-                if !referenceURLs.isEmpty {
+                if !allReferencePreviewAssets.isEmpty {
                     createPreviewReferenceSection
                 }
 
                 if hasPrompt {
-                    Text("Prompt")
-                        .font(StudioFont.caption(12))
-                        .foregroundStyle(StudioColor.secondaryText)
-                        .tracking(1.2)
-                        .padding(.top, 6)
+                    SidePanelSectionTitle(title: "Prompt")
+                        .padding(.top, allReferencePreviewAssets.isEmpty ? 6 : 12)
 
                     GeometryReader { proxy in
                         createPromptPreviewBox(maxHeight: proxy.size.height)
@@ -1229,20 +1207,8 @@ struct PromptComposerOverlay: View {
     }
 
     private var createPreviewReferenceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("参考资产")
-                .font(StudioFont.caption(12))
-                .foregroundStyle(StudioColor.secondaryText)
-                .tracking(1.2)
-
-            LazyVGrid(columns: previewReferenceColumns, alignment: .leading, spacing: 8) {
-                ForEach(allReferencePreviewAssets) { reference in
-                    ReferenceAssetPreview(reference: reference)
-                        .frame(width: 62, height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-            }
-        }
+        SidePanelReferenceSection(references: allReferencePreviewAssets)
+        .padding(.bottom, 4)
     }
 
     private var hasTitle: Bool {
@@ -1274,33 +1240,15 @@ struct PromptComposerOverlay: View {
     }
 
     private func createPromptPreviewBox(maxHeight: CGFloat) -> some View {
-        ViewThatFits(in: .vertical) {
-            createPromptPreviewText
-                .fixedSize(horizontal: false, vertical: true)
-                .promptContainer()
-
-            TransparentOverlayScrollView {
-                createPromptPreviewText
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 24)
-            }
-            .frame(height: max(72, maxHeight))
-            .promptContainer()
+        GeometryReader { _ in
+            SidePanelPromptTextBox(
+                text: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                maxHeight: maxHeight,
+                isPlaceholder: prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
         }
         .frame(maxWidth: .infinity)
     }
-
-    private var createPromptPreviewText: some View {
-        Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
-            .font(StudioFont.font(13))
-            .lineSpacing(4)
-            .foregroundStyle(StudioColor.text)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(14)
-    }
-
 
     private var header: some View {
         HStack(spacing: 14) {
@@ -1894,16 +1842,6 @@ struct PromptComposerOverlay: View {
 
     private var primaryActionTitle: String {
         isEditing ? "保存" : "创建"
-    }
-
-    private func composerPreviewChip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(12))
-            .foregroundStyle(StudioColor.secondaryText)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .background(Capsule().fill(StudioColor.control))
     }
 
     private var modelOptions: [ModelProfile] {
@@ -2721,6 +2659,7 @@ private struct PreviewDocumentBlock: View {
 private struct OverlayImagePreview: View {
     let path: String
     let scale: CGFloat
+    let offset: CGSize
     @StateObject private var loader = OverlayImageLoader()
 
     var body: some View {
@@ -2730,6 +2669,7 @@ private struct OverlayImagePreview: View {
                     .resizable()
                     .scaledToFit()
                     .scaleEffect(scale)
+                    .offset(offset)
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "photo")
@@ -3029,7 +2969,7 @@ private struct PreviewInputMonitor: NSViewRepresentable {
                     guard event.modifierFlags.contains(.command) else { return event }
                     let rawDelta = event.scrollingDeltaY == 0 ? -event.deltaY : event.scrollingDeltaY
                     guard rawDelta != 0 else { return nil }
-                    let normalized = max(-0.28, min(0.28, CGFloat(rawDelta) / 240))
+                    let normalized = max(-0.45, min(0.45, CGFloat(rawDelta) / 120))
                     self?.onZoom(normalized)
                     return nil
                 }
