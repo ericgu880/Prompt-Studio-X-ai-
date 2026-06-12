@@ -4,14 +4,17 @@ import SwiftUI
 struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     let content: Content
     let resetID: AnyHashable?
+    let minimumContentHeight: CGFloat?
     let onOffsetChange: ((CGFloat) -> Void)?
 
     init(
         resetID: AnyHashable? = nil,
+        minimumContentHeight: CGFloat? = nil,
         onOffsetChange: ((CGFloat) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.resetID = resetID
+        self.minimumContentHeight = minimumContentHeight
         self.onOffsetChange = onOffsetChange
         self.content = content()
     }
@@ -101,7 +104,7 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         hostingView.frame = NSRect(x: 0, y: 0, width: width, height: max(1, hostingView.frame.height))
         hostingView.layoutSubtreeIfNeeded()
         let fittingSize = hostingView.fittingSize
-        let contentHeight = max(1, ceil(fittingSize.height))
+        let contentHeight = max(1, ceil(max(fittingSize.height, minimumContentHeight ?? 0)))
         let documentHeight = max(scrollView.contentView.bounds.height, contentHeight)
         documentView.hostedContentHeight = contentHeight
         documentView.frame = NSRect(x: 0, y: 0, width: width, height: documentHeight)
@@ -173,8 +176,18 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
 private final class TransparentOverlayClipView: NSClipView {
     var onBoundsChange: ((CGFloat) -> Void)?
 
+    override var bounds: NSRect {
+        didSet {
+            publishOffset()
+        }
+    }
+
     override func setBoundsOrigin(_ newOrigin: NSPoint) {
         super.setBoundsOrigin(newOrigin)
+        publishOffset()
+    }
+
+    private func publishOffset() {
         onBoundsChange?(max(0, bounds.origin.y))
     }
 }

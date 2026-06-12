@@ -2243,6 +2243,7 @@ private struct MasonryGridView: View {
             let visibleThumbnailCandidateIDs = thumbnailCandidateIDs(in: renderedPlacements)
             TransparentOverlayScrollView(
                 resetID: scrollResetID,
+                minimumContentHeight: max(layout.height + 24, proxy.size.height),
                 onOffsetChange: { offsetY in
                     contentOffsetY = offsetY
                 }
