@@ -910,15 +910,19 @@ struct PromptComposerOverlay: View {
 
     private var createTypeTabs: some View {
         HStack(spacing: 14) {
-            ForEach(PromptType.allCases) { option in
+            ForEach(createTypeOptions) { option in
                 createTypeTab(option)
             }
         }
     }
 
+    private var createTypeOptions: [PromptType] {
+        [.image, .video, .audio, .text]
+    }
+
     private func createTypeTab(_ option: PromptType) -> some View {
         let active = type == option
-        let title = option.displayName.replacingOccurrences(of: " Prompt", with: "")
+        let title = createTypeTitle(option)
         return Button {
             type = option
             ensureModelMatchesType()
@@ -934,9 +938,24 @@ struct PromptComposerOverlay: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(active ? Color.clear : CreateComposerColor.border, lineWidth: 1)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help(title)
+    }
+
+    private func createTypeTitle(_ option: PromptType) -> String {
+        switch option {
+        case .image:
+            return "图片"
+        case .video:
+            return "视频"
+        case .audio:
+            return "音乐"
+        case .text:
+            return "文本"
+        }
     }
 
     private var createModelMenu: some View {

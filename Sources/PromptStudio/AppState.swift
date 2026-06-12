@@ -231,6 +231,8 @@ final class AppState: ObservableObject {
     private var itemsByID: [String: PromptItem] = [:]
     private var pendingLastUsedTask: Task<Void, Never>?
     private var activeThumbnailGenerationIDs: Set<UUID> = []
+    private var activeThumbnailGenerationBatches: [UUID: Set<String>] = [:]
+    private var activeThumbnailItemIDs: Set<String> = []
     private var isBatchingFilterUpdate = false
     private var isPreservingSelectionSet = false
     private var navigationBackStack: [NavigationSnapshot] = []
@@ -2095,8 +2097,8 @@ final class AppState: ObservableObject {
                 if item.thumbnailPath != item.assetPath {
                     invalidatedGenerated.append((item.id, item.assetPath))
                 }
+                candidates.append(item)
             }
-            candidates.append(item)
         }
         applyGeneratedThumbnails(existingGenerated + invalidatedGenerated)
         guard !candidates.isEmpty else { return }
@@ -2142,12 +2144,41 @@ final class AppState: ObservableObject {
         startThumbnailGeneration(for: [candidate])
     }
 
+    func prepareVisibleThumbnails(for itemIDs: [String]) {
+        guard !itemIDs.isEmpty else { return }
+        var candidates: [PromptItem] = []
+        var existingGenerated: [(String, String)] = []
+
+        for itemID in itemIDs {
+            guard let item = itemsByID[itemID],
+                  item.supportsGeneratedThumbnail,
+                  !item.isTextDocumentLike else {
+                continue
+            }
+
+            if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
+                if existingPath != item.thumbnailPath {
+                    existingGenerated.append((item.id, existingPath))
+                }
+            } else {
+                candidates.append(item)
+            }
+        }
+
+        applyGeneratedThumbnails(existingGenerated)
+        startThumbnailGeneration(for: candidates)
+    }
+
     private func startThumbnailGeneration(for candidates: [PromptItem]) {
-        guard !candidates.isEmpty else { return }
+        let uniqueCandidates = candidates.filter { !activeThumbnailItemIDs.contains($0.id) }
+        guard !uniqueCandidates.isEmpty else { return }
         let generationID = UUID()
+        let itemIDs = Set(uniqueCandidates.map(\.id))
         activeThumbnailGenerationIDs.insert(generationID)
+        activeThumbnailGenerationBatches[generationID] = itemIDs
+        activeThumbnailItemIDs.formUnion(itemIDs)
         ThumbnailGenerationCenter.shared.start(
-            candidates: candidates,
+            candidates: uniqueCandidates,
             libraryURL: libraryURL,
             generationID: generationID,
             receiver: self
@@ -2337,6 +2368,9 @@ final class AppState: ObservableObject {
 extension AppState: ThumbnailGenerationReceiver {
     func thumbnailGenerationDidFinish(_ generated: [(String, String)], generationID: UUID) {
         guard activeThumbnailGenerationIDs.remove(generationID) != nil else { return }
+        if let itemIDs = activeThumbnailGenerationBatches.removeValue(forKey: generationID) {
+            activeThumbnailItemIDs.subtract(itemIDs)
+        }
         applyGeneratedThumbnails(generated)
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import ImageIO
 import PromptStudioCore
 import UniformTypeIdentifiers
 
@@ -215,10 +216,26 @@ enum AppKitBridge {
         if assetKind == .video, let videoSize = videoSize(for: url) {
             return (videoSize.width, videoSize.height, fileSize, format.isEmpty ? "MOV" : format)
         }
-        if assetKind == .image, let image = NSImage(contentsOf: url), let representation = image.representations.first {
-            return (representation.pixelsWide, representation.pixelsHigh, fileSize, format)
+        if assetKind == .image, let imageSize = imageSize(for: url) {
+            return (imageSize.width, imageSize.height, fileSize, format)
         }
         return (0, 0, fileSize, format.isEmpty ? "FILE" : format)
+    }
+
+    private static func imageSize(for url: URL) -> (width: Int, height: Int)? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+            return nil
+        }
+
+        let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
+        if (5...8).contains(orientation) {
+            return (height, width)
+        }
+        return (width, height)
     }
 
     static func assetKind(for url: URL) -> AssetKind {

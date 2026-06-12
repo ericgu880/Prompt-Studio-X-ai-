@@ -4,14 +4,20 @@ import SwiftUI
 struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     let content: Content
     let resetID: AnyHashable?
+    let onOffsetChange: ((CGFloat) -> Void)?
 
-    init(resetID: AnyHashable? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        resetID: AnyHashable? = nil,
+        onOffsetChange: ((CGFloat) -> Void)? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.resetID = resetID
+        self.onOffsetChange = onOffsetChange
         self.content = content()
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(resetID: resetID)
+        Coordinator(resetID: resetID, onOffsetChange: onOffsetChange)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -32,6 +38,7 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         documentView.addSubview(hostingView)
         scrollView.documentView = documentView
 
+        context.coordinator.attach(to: scrollView)
         resizeDocumentView(in: scrollView)
         scheduleResizeAndTopScroll(for: scrollView)
 
@@ -40,6 +47,8 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         configure(scrollView)
+        context.coordinator.onOffsetChange = onOffsetChange
+        context.coordinator.attach(to: scrollView)
         if context.coordinator.resetID != resetID {
             context.coordinator.resetID = resetID
             (scrollView.documentView as? TransparentScrollDocumentView)?.pendingTopScrollPasses = 3
@@ -66,6 +75,15 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
         scrollView.scrollerInsets = NSEdgeInsetsZero
+        if !(scrollView.contentView is TransparentOverlayClipView) {
+            let clipView = TransparentOverlayClipView(frame: scrollView.contentView.frame)
+            clipView.autoresizingMask = [.width, .height]
+            clipView.drawsBackground = false
+            clipView.backgroundColor = .clear
+            clipView.wantsLayer = true
+            clipView.layer?.backgroundColor = NSColor.clear.cgColor
+            scrollView.contentView = clipView
+        }
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.backgroundColor = .clear
         scrollView.contentView.wantsLayer = true
@@ -94,6 +112,9 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     private func scrollToTop(in scrollView: NSScrollView) {
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        DispatchQueue.main.async {
+            onOffsetChange?(0)
+        }
     }
 
     private func scheduleResizeAndTopScroll(for scrollView: NSScrollView) {
@@ -110,12 +131,51 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator {
         var resetID: AnyHashable?
+        var onOffsetChange: ((CGFloat) -> Void)?
+        private weak var observedClipView: TransparentOverlayClipView?
 
-        init(resetID: AnyHashable?) {
+        init(resetID: AnyHashable?, onOffsetChange: ((CGFloat) -> Void)?) {
             self.resetID = resetID
+            self.onOffsetChange = onOffsetChange
         }
+
+        func attach(to scrollView: NSScrollView) {
+            guard let clipView = scrollView.contentView as? TransparentOverlayClipView else {
+                publishOffset(from: scrollView)
+                return
+            }
+            guard observedClipView !== clipView else {
+                publishOffset(from: clipView)
+                return
+            }
+
+            observedClipView?.onBoundsChange = nil
+            observedClipView = clipView
+            clipView.onBoundsChange = { [weak self] offsetY in
+                self?.onOffsetChange?(offsetY)
+            }
+            publishOffset(from: clipView)
+        }
+
+        private func publishOffset(from scrollView: NSScrollView) {
+            onOffsetChange?(max(0, scrollView.contentView.bounds.origin.y))
+        }
+
+        private func publishOffset(from clipView: NSClipView) {
+            onOffsetChange?(max(0, clipView.bounds.origin.y))
+        }
+    }
+}
+
+private final class TransparentOverlayClipView: NSClipView {
+    var onBoundsChange: ((CGFloat) -> Void)?
+
+    override func setBoundsOrigin(_ newOrigin: NSPoint) {
+        super.setBoundsOrigin(newOrigin)
+        onBoundsChange?(max(0, bounds.origin.y))
     }
 }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 import PromptStudioCore
 import AppKit
+import ImageIO
 import UniformTypeIdentifiers
 
 struct PromptStudioView: View {
@@ -2227,118 +2228,111 @@ private struct MasonryGridView: View {
     @State private var selectionDragCurrent: CGPoint?
     @State private var selectionDragBaseIDs: Set<String> = []
     @State private var contentOffsetY: CGFloat = 0
+    @State private var layoutCache = MasonryLayoutCache()
+    @State private var scrollResetID = UUID()
 
     var body: some View {
         GeometryReader { proxy in
             let computedColumnCount = computedColumnCount(for: proxy.size.width)
             let columnCount = lockedColumnCount ?? computedColumnCount
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
-            let layout = makeMasonryLayout(folders: folders, items: items, columnCount: columnCount, width: width)
-            let visualItemIDs = itemIDsInVisualOrder(layout)
+            let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
+            let visualItemIDs = layout.visualItemIDs
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    ZStack(alignment: .topLeading) {
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: MasonryContentOffsetPreferenceKey.self,
-                                value: geometry.frame(in: .named(Self.scrollCoordinateSpace)).minY
-                            )
+            let renderedPlacements = layout.placements.filter { $0.intersectsYRange(renderRange) }
+            let visibleThumbnailCandidateIDs = thumbnailCandidateIDs(in: renderedPlacements)
+            TransparentOverlayScrollView(
+                resetID: scrollResetID,
+                onOffsetChange: { offsetY in
+                    contentOffsetY = offsetY
+                }
+            ) {
+                ZStack(alignment: .topLeading) {
+                    SelectionDragCaptureOverlay(
+                        onBegin: { point, additive in
+                            selectionDragStart = point
+                            selectionDragCurrent = point
+                            selectionDragBaseIDs = additive ? state.selectedIDs : []
+                            selectedFolderID = nil
+                        },
+                        onChange: { point in
+                            selectionDragCurrent = point
+                            guard let selectionRect else { return }
+                            let hitIDs = itemIDs(in: selectionRect, layout: layout, width: width)
+                            let nextIDs = selectionDragBaseIDs.union(hitIDs)
+                            state.selectItems(ids: nextIDs, primaryID: hitIDs.first ?? nextIDs.first)
+                        },
+                        onEnd: {
+                            clearSelectionDrag()
                         }
-                        .frame(height: 0)
-
-                        SelectionDragCaptureOverlay(
-                            onBegin: { point, additive in
-                                selectionDragStart = point
-                                selectionDragCurrent = point
-                                selectionDragBaseIDs = additive ? state.selectedIDs : []
-                                selectedFolderID = nil
-                            },
-                            onChange: { point in
-                                selectionDragCurrent = point
-                                guard let selectionRect else { return }
-                                let hitIDs = itemIDs(in: selectionRect, layout: layout, width: width)
-                                let nextIDs = selectionDragBaseIDs.union(hitIDs)
-                                state.selectItems(ids: nextIDs, primaryID: hitIDs.first ?? nextIDs.first)
-                            },
-                            onEnd: {
-                                clearSelectionDrag()
-                            }
-                        )
-                        .frame(
-                            width: max(0, proxy.size.width - 48),
-                            height: max(layout.height, proxy.size.height)
-                        )
-
-                        ForEach(layout.placements.filter { $0.intersectsYRange(renderRange) }) { placement in
-                            switch placement.entry {
-                            case .folder(let folder):
-                                SubfolderCardView(
-                                    row: folder,
-                                    width: width,
-                                    isSelected: selectedFolderID == folder.id,
-                                    onSelect: {
-                                        selectedFolderID = folder.id
-                                        state.selectItems(ids: [])
-                                    }
-                                )
-                                    .offset(x: placement.x, y: placement.y)
-                                    .zIndex(selectedFolderID == folder.id ? 1 : 0)
-                            case .item(let item):
-                                AssetCardView(
-                                    item: item,
-                                    width: width,
-                                    draggedItemID: $draggedItemID,
-                                    selectionAction: { item, modifiers in
-                                        selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
-                                    }
-                                )
-                                .offset(x: placement.x, y: placement.y)
-                                .simultaneousGesture(TapGesture().onEnded {
-                                    selectedFolderID = nil
-                                })
-                                .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
-                            }
-                        }
-
-                        if let selectionRect {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(StudioColor.primaryAction.opacity(0.16))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(StudioColor.primaryAction.opacity(0.72), lineWidth: 1)
-                                )
-                                .frame(width: selectionRect.width, height: selectionRect.height)
-                                .offset(x: selectionRect.minX, y: selectionRect.minY)
-                                .allowsHitTesting(false)
-                                .zIndex(20)
-                        }
-                    }
-                    .id(Self.topAnchorID)
+                    )
                     .frame(
                         width: max(0, proxy.size.width - 48),
-                        height: layout.height,
-                        alignment: .topLeading
+                        height: max(layout.height, proxy.size.height)
                     )
-                    .contentShape(Rectangle())
-                    .coordinateSpace(name: Self.gridCoordinateSpace)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
-                }
-                .coordinateSpace(name: Self.scrollCoordinateSpace)
-                .contentOverlayScrollbars()
-                .onPreferenceChange(MasonryContentOffsetPreferenceKey.self) { minY in
-                    contentOffsetY = max(0, -minY)
-                }
-                .onChange(of: state.filter) { _, _ in
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        scrollProxy.scrollTo(Self.topAnchorID, anchor: .top)
+
+                    ForEach(renderedPlacements) { placement in
+                        switch placement.entry {
+                        case .folder(let folder):
+                            SubfolderCardView(
+                                row: folder,
+                                width: width,
+                                isSelected: selectedFolderID == folder.id,
+                                onSelect: {
+                                    selectedFolderID = folder.id
+                                    state.selectItems(ids: [])
+                                }
+                            )
+                                .offset(x: placement.x, y: placement.y)
+                                .zIndex(selectedFolderID == folder.id ? 1 : 0)
+                        case .item(let item):
+                            AssetCardView(
+                                item: item,
+                                width: width,
+                                draggedItemID: $draggedItemID,
+                                selectionAction: { item, modifiers in
+                                    selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
+                                }
+                            )
+                            .offset(x: placement.x, y: placement.y)
+                            .simultaneousGesture(TapGesture().onEnded {
+                                selectedFolderID = nil
+                            })
+                            .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
+                        }
                     }
-                    selectedFolderID = nil
-                    clearSelectionDrag()
+
+                    if let selectionRect {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(StudioColor.primaryAction.opacity(0.16))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(StudioColor.primaryAction.opacity(0.72), lineWidth: 1)
+                            )
+                            .frame(width: selectionRect.width, height: selectionRect.height)
+                            .offset(x: selectionRect.minX, y: selectionRect.minY)
+                            .allowsHitTesting(false)
+                            .zIndex(20)
+                    }
                 }
+                .frame(
+                    width: max(0, proxy.size.width - 48),
+                    height: layout.height,
+                    alignment: .topLeading
+                )
+                .contentShape(Rectangle())
+                .coordinateSpace(name: Self.gridCoordinateSpace)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+            .onChange(of: state.filter) { _, _ in
+                contentOffsetY = 0
+                scrollResetID = UUID()
+                selectedFolderID = nil
+                clearSelectionDrag()
+            }
+            .task(id: visibleThumbnailCandidateIDs) {
+                state.prepareVisibleThumbnails(for: visibleThumbnailCandidateIDs)
             }
             .onChange(of: isSplitResizing) { _, resizing in
                 if resizing {
@@ -2361,52 +2355,7 @@ private struct MasonryGridView: View {
         return max(2, min(6, proposed))
     }
 
-    private func makeMasonryLayout(
-        folders: [AppState.FolderRow],
-        items: [PromptItem],
-        columnCount: Int,
-        width: CGFloat
-    ) -> MasonryLayoutResult {
-        var placements: [MasonryPlacement] = []
-        guard columnCount > 0 else {
-            return MasonryLayoutResult(placements: [], height: 0)
-        }
-
-        var heights = Array(repeating: CGFloat.zero, count: columnCount)
-        let entries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
-        for entry in entries {
-            let column = shortestColumnIndex(in: heights)
-            let height = entry.totalHeight(width: width)
-            placements.append(
-                MasonryPlacement(
-                    entry: entry,
-                    x: CGFloat(column) * (width + 12),
-                    y: heights[column],
-                    height: height
-                )
-            )
-            heights[column] += height + 12
-        }
-        return MasonryLayoutResult(
-            placements: placements,
-            height: max(0, (heights.max() ?? 12) - 12)
-        )
-    }
-
-    private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
-        heights.indices.min { lhs, rhs in
-            let leftHeight = heights[lhs]
-            let rightHeight = heights[rhs]
-            if leftHeight == rightHeight {
-                return lhs < rhs
-            }
-            return leftHeight < rightHeight
-        } ?? 0
-    }
-
-    private static let topAnchorID = "masonry-grid-top"
     private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
-    private static let scrollCoordinateSpace = "masonry-scroll-coordinate-space"
 
     private func renderedYRange(viewportHeight: CGFloat) -> ClosedRange<CGFloat> {
         let buffer = max(600, viewportHeight * 1.25)
@@ -2434,21 +2383,6 @@ private struct MasonryGridView: View {
             }
         }
         return ids
-    }
-
-    private func itemIDsInVisualOrder(_ layout: MasonryLayoutResult) -> [String] {
-        layout.placements
-            .compactMap { placement -> (id: String, x: CGFloat, y: CGFloat)? in
-                guard case .item(let item) = placement.entry else { return nil }
-                return (item.id, placement.x, placement.y)
-            }
-            .sorted { lhs, rhs in
-                if abs(lhs.y - rhs.y) > 0.5 {
-                    return lhs.y < rhs.y
-                }
-                return lhs.x < rhs.x
-            }
-            .map(\.id)
     }
 
     private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags, visualItemIDs: [String]) {
@@ -2480,11 +2414,157 @@ private struct MasonryGridView: View {
         selectionDragCurrent = nil
         selectionDragBaseIDs = []
     }
+
+    private func thumbnailCandidateIDs(in placements: [MasonryPlacement]) -> [String] {
+        placements.compactMap { placement in
+            guard case .item(let item) = placement.entry,
+                  item.supportsGeneratedThumbnail,
+                  !item.isTextDocumentLike,
+                  item.thumbnailPath.isEmpty
+                      || item.thumbnailPath == item.assetPath
+                      || !FileManager.default.fileExists(atPath: item.thumbnailPath) else {
+                return nil
+            }
+            return item.id
+        }
+    }
+}
+
+private final class MasonryLayoutCache {
+    private var cachedKey: MasonryLayoutCacheKey?
+    private var cachedResult: MasonryLayoutResult?
+
+    func layout(
+        folders: [AppState.FolderRow],
+        items: [PromptItem],
+        columnCount: Int,
+        width: CGFloat
+    ) -> MasonryLayoutResult {
+        let key = MasonryLayoutCacheKey(folders: folders, items: items, columnCount: columnCount, width: width)
+        if key == cachedKey, let cachedResult {
+            return cachedResult
+        }
+
+        let result = makeMasonryLayout(folders: folders, items: items, columnCount: columnCount, width: width)
+        cachedKey = key
+        cachedResult = result
+        return result
+    }
+
+    private func makeMasonryLayout(
+        folders: [AppState.FolderRow],
+        items: [PromptItem],
+        columnCount: Int,
+        width: CGFloat
+    ) -> MasonryLayoutResult {
+        var placements: [MasonryPlacement] = []
+        guard columnCount > 0 else {
+            return MasonryLayoutResult(placements: [], height: 0, visualItemIDs: [])
+        }
+
+        var heights = Array(repeating: CGFloat.zero, count: columnCount)
+        let entries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
+        for entry in entries {
+            let column = shortestColumnIndex(in: heights)
+            let height = entry.totalHeight(width: width)
+            placements.append(
+                MasonryPlacement(
+                    entry: entry,
+                    x: CGFloat(column) * (width + 12),
+                    y: heights[column],
+                    height: height
+                )
+            )
+            heights[column] += height + 12
+        }
+        return MasonryLayoutResult(
+            placements: placements,
+            height: max(0, (heights.max() ?? 12) - 12),
+            visualItemIDs: Self.itemIDsInVisualOrder(placements)
+        )
+    }
+
+    private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
+        heights.indices.min { lhs, rhs in
+            let leftHeight = heights[lhs]
+            let rightHeight = heights[rhs]
+            if leftHeight == rightHeight {
+                return lhs < rhs
+            }
+            return leftHeight < rightHeight
+        } ?? 0
+    }
+
+    private static func itemIDsInVisualOrder(_ placements: [MasonryPlacement]) -> [String] {
+        placements
+            .compactMap { placement -> (id: String, x: CGFloat, y: CGFloat)? in
+                guard case .item(let item) = placement.entry else { return nil }
+                return (item.id, placement.x, placement.y)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.y - rhs.y) > 0.5 {
+                    return lhs.y < rhs.y
+                }
+                return lhs.x < rhs.x
+            }
+            .map(\.id)
+    }
+}
+
+private struct MasonryLayoutCacheKey: Equatable {
+    let folderKeys: [MasonryFolderLayoutKey]
+    let itemKeys: [MasonryItemLayoutKey]
+    let columnCount: Int
+    let widthBucket: Int
+
+    init(folders: [AppState.FolderRow], items: [PromptItem], columnCount: Int, width: CGFloat) {
+        self.folderKeys = folders.map(MasonryFolderLayoutKey.init)
+        self.itemKeys = items.map(MasonryItemLayoutKey.init)
+        self.columnCount = columnCount
+        self.widthBucket = Int((width * 100).rounded())
+    }
+}
+
+private struct MasonryFolderLayoutKey: Equatable {
+    let id: String
+    let name: String
+    let count: Int
+
+    init(row: AppState.FolderRow) {
+        id = row.folder.id
+        name = row.folder.name
+        count = row.count
+    }
+}
+
+private struct MasonryItemLayoutKey: Equatable {
+    let id: String
+    let assetKind: AssetKind
+    let previewMode: AssetPreviewMode
+    let width: Int
+    let height: Int
+    let aspectRatio: String
+    let thumbnailPath: String
+    let title: String
+    let updatedAt: TimeInterval
+
+    init(item: PromptItem) {
+        id = item.id
+        assetKind = item.assetKind
+        previewMode = item.previewMode
+        width = item.width
+        height = item.height
+        aspectRatio = item.displayAspectRatio
+        thumbnailPath = item.thumbnailPath
+        title = item.title
+        updatedAt = item.updatedAt.timeIntervalSinceReferenceDate
+    }
 }
 
 private struct MasonryLayoutResult {
     let placements: [MasonryPlacement]
     let height: CGFloat
+    let visualItemIDs: [String]
 }
 
 private struct MasonryPlacement: Identifiable {
@@ -2497,14 +2577,6 @@ private struct MasonryPlacement: Identifiable {
 
     func intersectsYRange(_ range: ClosedRange<CGFloat>) -> Bool {
         y + height >= range.lowerBound && y <= range.upperBound
-    }
-}
-
-private struct MasonryContentOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -3370,7 +3442,7 @@ private struct TextAssetCardCover: View {
             TextDocumentCardPalette.background
             VStack(alignment: .leading, spacing: 10) {
                 Text(cardData.title)
-                    .font(StudioFont.font(15, weight: .semibold))
+                    .font(StudioFont.font(15, weight: .medium))
                     .foregroundStyle(StudioColor.text)
                     .lineLimit(2)
                     .truncationMode(.tail)
@@ -3410,7 +3482,6 @@ private struct TextAssetCardCover: View {
     private var previewReloadID: String {
         "\(item.assetPath)|\(item.updatedAt.timeIntervalSince1970)"
     }
-
 }
 
 private struct TextAssetCardSnapshot: Sendable {
@@ -3769,11 +3840,10 @@ struct AssetMediaView: View {
     }
 
     private var thumbnailPath: String? {
-        if item.thumbnailPath != item.assetPath, !item.thumbnailPath.isEmpty {
+        if item.thumbnailPath != item.assetPath,
+           !item.thumbnailPath.isEmpty,
+           FileManager.default.fileExists(atPath: item.thumbnailPath) {
             return item.thumbnailPath
-        }
-        if item.assetKind == .image || item.assetKind == .video {
-            return item.assetPath
         }
         return nil
     }
@@ -3835,29 +3905,39 @@ private struct FileKindPlaceholder: View {
 struct ThumbnailImage: View {
     let path: String
     var contentMode: ContentMode = .fill
+    @Environment(\.displayScale) private var displayScale
     @StateObject private var loader = CachedImageLoader()
 
     var body: some View {
-        let cachedImage = CachedImageLoader.cachedImage(for: path)
-        Group {
-            if let image = loader.image ?? cachedImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-            } else {
-                ZStack {
-                    StudioColor.panelRaised
-                    Image(systemName: "photo")
-                        .font(StudioFont.symbol(24))
-                        .foregroundStyle(StudioColor.secondaryText)
+        GeometryReader { proxy in
+            let maxPixelSize = Self.maxPixelSize(for: proxy.size, displayScale: displayScale)
+            let cachedImage = CachedImageLoader.cachedImage(for: path, maxPixelSize: maxPixelSize)
+            Group {
+                if let image = loader.image ?? cachedImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                } else {
+                    ZStack {
+                        StudioColor.panelRaised
+                        Image(systemName: "photo")
+                            .font(StudioFont.symbol(24))
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
                 }
             }
+            .clipped()
+            .background(StudioColor.panelRaised)
+            .task(id: "\(path)|\(maxPixelSize)") {
+                await loader.load(path, maxPixelSize: maxPixelSize)
+            }
         }
-        .clipped()
-        .background(StudioColor.panelRaised)
-        .task(id: path) {
-            await loader.load(path)
-        }
+    }
+
+    private static func maxPixelSize(for size: CGSize, displayScale: CGFloat) -> Int {
+        let longestSide = max(size.width, size.height)
+        guard longestSide > 0 else { return 900 }
+        return max(240, min(1024, Int((longestSide * displayScale).rounded(.up))))
     }
 }
 
@@ -3865,41 +3945,90 @@ struct ThumbnailImage: View {
 private final class CachedImageLoader: ObservableObject {
     @Published var image: NSImage?
 
-    private static let cache = NSCache<NSString, NSImage>()
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 360
+        cache.totalCostLimit = 160 * 1024 * 1024
+        return cache
+    }()
+    private static var inFlightLoads: [NSString: Task<NSImage?, Never>] = [:]
     private var path: String = ""
+    private var maxPixelSize: Int = 0
     private var task: Task<Void, Never>?
 
-    static func cachedImage(for path: String) -> NSImage? {
-        cache.object(forKey: path as NSString)
+    static func cachedImage(for path: String, maxPixelSize: Int) -> NSImage? {
+        cache.object(forKey: cacheKey(path: path, maxPixelSize: maxPixelSize))
     }
 
-    func load(_ path: String) async {
+    func load(_ path: String, maxPixelSize: Int) async {
         task?.cancel()
         self.path = path
+        self.maxPixelSize = maxPixelSize
         guard !path.isEmpty else {
             image = nil
             return
         }
 
-        if let cached = Self.cache.object(forKey: path as NSString) {
+        let key = Self.cacheKey(path: path, maxPixelSize: maxPixelSize)
+        if let cached = Self.cache.object(forKey: key) {
             image = cached
             return
         }
 
         image = nil
         task = Task {
-            let loaded = await Self.loadImage(at: path)
-            guard !Task.isCancelled, self.path == path else { return }
+            let loaded = await Self.loadImage(at: path, maxPixelSize: maxPixelSize, cacheKey: key)
+            guard !Task.isCancelled, self.path == path, self.maxPixelSize == maxPixelSize else { return }
             if let loaded {
-                Self.cache.setObject(loaded, forKey: path as NSString)
+                Self.cache.setObject(loaded, forKey: key, cost: Self.cacheCost(for: loaded))
             }
             image = loaded
         }
     }
 
-    private nonisolated static func loadImage(at path: String) async -> NSImage? {
-        await Task.detached(priority: .utility) {
-            NSImage(contentsOfFile: path)
-        }.value
+    private static func loadImage(at path: String, maxPixelSize: Int, cacheKey: NSString) async -> NSImage? {
+        if let task = inFlightLoads[cacheKey] {
+            return await task.value
+        }
+
+        let task = Task.detached(priority: .utility) {
+            decodeThumbnail(at: path, maxPixelSize: maxPixelSize)
+        }
+        inFlightLoads[cacheKey] = task
+        let image = await task.value
+        inFlightLoads[cacheKey] = nil
+        return image
+    }
+
+    private nonisolated static func decodeThumbnail(at path: String, maxPixelSize: Int) -> NSImage? {
+        let url = URL(fileURLWithPath: path)
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return nil
+        }
+
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    private static func cacheKey(path: String, maxPixelSize: Int) -> NSString {
+        let modification = ((try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date)?
+            .timeIntervalSinceReferenceDate ?? 0
+        return "\(path)|\(maxPixelSize)|\(modification)" as NSString
+    }
+
+    private static func cacheCost(for image: NSImage) -> Int {
+        if let representation = image.representations.first {
+            return max(1, representation.pixelsWide * representation.pixelsHigh * 4)
+        }
+        return max(1, Int(image.size.width * image.size.height * 4))
     }
 }
