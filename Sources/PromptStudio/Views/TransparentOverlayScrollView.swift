@@ -134,11 +134,11 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         }
     }
 
-    @MainActor
     final class Coordinator {
         var resetID: AnyHashable?
         var onOffsetChange: ((CGFloat) -> Void)?
         private weak var observedClipView: TransparentOverlayClipView?
+        private var boundsObserver: NSObjectProtocol?
 
         init(resetID: AnyHashable?, onOffsetChange: ((CGFloat) -> Void)?) {
             self.resetID = resetID
@@ -156,9 +156,22 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
             }
 
             observedClipView?.onBoundsChange = nil
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+                self.boundsObserver = nil
+            }
             observedClipView = clipView
+            clipView.postsBoundsChangedNotifications = true
             clipView.onBoundsChange = { [weak self] offsetY in
                 self?.onOffsetChange?(offsetY)
+            }
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: clipView,
+                queue: .main
+            ) { [weak self, weak clipView] _ in
+                guard let clipView else { return }
+                self?.publishOffset(from: clipView)
             }
             publishOffset(from: clipView)
         }
@@ -169,6 +182,12 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
 
         private func publishOffset(from clipView: NSClipView) {
             onOffsetChange?(max(0, clipView.bounds.origin.y))
+        }
+
+        deinit {
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+            }
         }
     }
 }
@@ -205,7 +224,7 @@ private final class TransparentScrollDocumentView: NSView {
             x: 0,
             y: 0,
             width: bounds.width,
-            height: min(bounds.height, max(1, hostedContentHeight))
+            height: max(1, hostedContentHeight)
         )
     }
 }
