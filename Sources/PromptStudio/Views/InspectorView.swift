@@ -351,13 +351,22 @@ struct InspectorView: View {
 
     private func mediaPreviewThumbnail(_ item: PromptItem) -> some View {
         let size = mediaPreviewSize(for: item)
-        return AssetMediaView(item: item, contentMode: .fit)
-            .frame(width: size.width, height: size.height)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(StudioColor.hairline, lineWidth: 1)
-            )
+        return ZStack(alignment: .leading) {
+            Color.clear
+                .frame(width: 260, height: 80)
+
+            AssetMediaView(item: item, contentMode: .fit)
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(StudioColor.hairline, lineWidth: 1)
+                )
+        }
+        .frame(width: 260, height: 80, alignment: .leading)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 
     private func mediaPreviewSize(for item: PromptItem) -> CGSize {

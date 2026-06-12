@@ -13,6 +13,20 @@ struct ExportOptions {
     }
 }
 
+struct ExternalFileOpenRequest: Identifiable, Equatable {
+    let id = UUID()
+    let urls: [URL]
+}
+
+struct TemporaryTextPreviewRequest: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    let title: String
+    let format: String
+    let fileSize: Int64
+    let text: String
+}
+
 enum PromptStudioExportFormat: String, CaseIterable, Identifiable {
     case imagePNG
     case imageJPEG
@@ -149,6 +163,8 @@ final class AppState: ObservableObject {
         case modelFilterManager
         case folderEditor(FolderEditorRequest)
         case folderDeleteConfirmation(FolderDeleteRequest)
+        case externalFileOpen(ExternalFileOpenRequest)
+        case temporaryTextPreview(TemporaryTextPreviewRequest)
         case preview
         case error(String)
 
@@ -166,6 +182,8 @@ final class AppState: ObservableObject {
             case .modelFilterManager: "modelFilterManager"
             case .folderEditor(let request): "folderEditor-\(request.id)"
             case .folderDeleteConfirmation(let request): "folderDelete-\(request.id)"
+            case .externalFileOpen(let request): "externalFileOpen-\(request.id)"
+            case .temporaryTextPreview(let request): "temporaryTextPreview-\(request.id)"
             case .preview: "preview"
             case .error(let message): "error-\(message)"
             }
@@ -331,6 +349,51 @@ final class AppState: ObservableObject {
         isPreviewPresented = false
         promptComposerMode = nil
         markdownEditorItemID = target.id
+    }
+
+    func handleExternalFileOpen(_ urls: [URL]) {
+        if repository == nil {
+            load()
+        }
+        let supportedURLs = urls.filter(Self.isSupportedExternalTextURL)
+        guard !supportedURLs.isEmpty else {
+            showToast("暂不支持打开这些文件")
+            return
+        }
+        let matchedItems = supportedURLs.compactMap(itemMatchingExternalURL)
+        if let item = matchedItems.first {
+            revealAndOpenTextItem(item)
+            return
+        }
+        previewExternalFileTemporarily(ExternalFileOpenRequest(urls: supportedURLs))
+    }
+
+    func importExternalFiles(_ request: ExternalFileOpenRequest) {
+        modal = nil
+        importFiles(request.urls)
+    }
+
+    func previewExternalFileTemporarily(_ request: ExternalFileOpenRequest) {
+        guard let url = request.urls.first else {
+            modal = nil
+            return
+        }
+        let text = Self.readExternalText(from: url)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            modal = .error("无法读取该文本文档")
+            return
+        }
+        let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
+        let fileSize = attributes[.size] as? Int64 ?? 0
+        modal = .temporaryTextPreview(
+            TemporaryTextPreviewRequest(
+                url: url,
+                title: Self.cleanedTitle(from: url),
+                format: url.pathExtension.uppercased(),
+                fileSize: fileSize,
+                text: text
+            )
+        )
     }
 
     func closeMarkdownEditor(returnToPreview: Bool = false) {
@@ -1845,6 +1908,51 @@ final class AppState: ObservableObject {
             }
         }
         return files
+    }
+
+    private static func isSupportedExternalTextURL(_ url: URL) -> Bool {
+        supportedExternalTextExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static let supportedExternalTextExtensions: Set<String> = [
+        "md", "txt", "json", "yaml", "yml", "toml", "xml", "csv", "tsv",
+        "log", "plist", "rtf", "doc", "docx"
+    ]
+
+    private static func readExternalText(from url: URL) -> String {
+        if let documentText = AppKitBridge.readDocumentText(from: url) {
+            return documentText
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            return text
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf16) {
+            return text
+        }
+        return ""
+    }
+
+    private static func cleanedTitle(from url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        let pattern = #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-"#
+        return name.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    }
+
+    private func itemMatchingExternalURL(_ url: URL) -> PromptItem? {
+        let externalPath = url.standardizedFileURL.path
+        return items.first { item in
+            guard !item.assetPath.isEmpty else { return false }
+            return URL(fileURLWithPath: item.assetPath).standardizedFileURL.path == externalPath
+        }
+    }
+
+    private func revealAndOpenTextItem(_ item: PromptItem) {
+        isBatchingFilterUpdate = true
+        filter = PromptFilter()
+        isBatchingFilterUpdate = false
+        refreshFilteredItems(selecting: item.id, preserveExistingSelection: false)
+        openMarkdownEditor(for: item)
+        showToast("已打开文档")
     }
 
     private func reload(selecting id: String? = nil) {

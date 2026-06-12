@@ -260,6 +260,12 @@ struct PromptStudioView: View {
         case .folderDeleteConfirmation(let request):
             FolderDeleteConfirmationSheet(request: request)
                 .environmentObject(state)
+        case .externalFileOpen(let request):
+            ExternalFileOpenSheet(request: request)
+                .environmentObject(state)
+        case .temporaryTextPreview(let request):
+            TemporaryTextPreviewSheet(request: request)
+                .environmentObject(state)
         case .preview:
             PreviewSheet()
                 .environmentObject(state)
@@ -2220,6 +2226,7 @@ private struct MasonryGridView: View {
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDragCurrent: CGPoint?
     @State private var selectionDragBaseIDs: Set<String> = []
+    @State private var contentOffsetY: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -2228,9 +2235,18 @@ private struct MasonryGridView: View {
             let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
             let layout = makeMasonryLayout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = itemIDsInVisualOrder(layout)
+            let renderRange = renderedYRange(viewportHeight: proxy.size.height)
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     ZStack(alignment: .topLeading) {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: MasonryContentOffsetPreferenceKey.self,
+                                value: geometry.frame(in: .named(Self.scrollCoordinateSpace)).minY
+                            )
+                        }
+                        .frame(height: 0)
+
                         SelectionDragCaptureOverlay(
                             onBegin: { point, additive in
                                 selectionDragStart = point
@@ -2254,7 +2270,7 @@ private struct MasonryGridView: View {
                             height: max(layout.height, proxy.size.height)
                         )
 
-                        ForEach(layout.placements) { placement in
+                        ForEach(layout.placements.filter { $0.intersectsYRange(renderRange) }) { placement in
                             switch placement.entry {
                             case .folder(let folder):
                                 SubfolderCardView(
@@ -2309,7 +2325,11 @@ private struct MasonryGridView: View {
                     .padding(.horizontal, 24)
                     .padding(.bottom, 24)
                 }
-                .scrollIndicators(.hidden)
+                .coordinateSpace(name: Self.scrollCoordinateSpace)
+                .contentOverlayScrollbars()
+                .onPreferenceChange(MasonryContentOffsetPreferenceKey.self) { minY in
+                    contentOffsetY = max(0, -minY)
+                }
                 .onChange(of: state.filter) { _, _ in
                     var transaction = Transaction(animation: nil)
                     transaction.disablesAnimations = true
@@ -2386,6 +2406,13 @@ private struct MasonryGridView: View {
 
     private static let topAnchorID = "masonry-grid-top"
     private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
+    private static let scrollCoordinateSpace = "masonry-scroll-coordinate-space"
+
+    private func renderedYRange(viewportHeight: CGFloat) -> ClosedRange<CGFloat> {
+        let buffer = max(600, viewportHeight * 1.25)
+        let lowerBound = max(0, contentOffsetY - buffer)
+        return lowerBound...(contentOffsetY + viewportHeight + buffer)
+    }
 
     private var selectionRect: CGRect? {
         guard let selectionDragStart, let selectionDragCurrent else { return nil }
@@ -2467,6 +2494,18 @@ private struct MasonryPlacement: Identifiable {
     let height: CGFloat
 
     var id: String { entry.id }
+
+    func intersectsYRange(_ range: ClosedRange<CGFloat>) -> Bool {
+        y + height >= range.lowerBound && y <= range.upperBound
+    }
+}
+
+private struct MasonryContentOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 private enum MasonryGridEntry {
@@ -2746,7 +2785,7 @@ private enum AssetCardMetrics {
 
     static func contentHeight(for item: PromptItem, width: CGFloat) -> CGFloat {
         if item.isTextDocumentLike {
-            return width * 9 / 16
+            return width
         }
         switch item.previewMode {
         case .audio, .document, .reference, .generic:
@@ -2848,15 +2887,8 @@ private struct AssetCardView: View {
 
     @ViewBuilder
     private var cardContent: some View {
-        if item.isTextDocumentLike {
-            if item.hasGeneratedThumbnailFile {
-                AssetMediaView(item: item)
-            } else {
-                TextDocumentCardPreview(item: item)
-            }
-        } else {
-            AssetMediaView(item: item)
-        }
+        AssetCardContentView(item: item)
+            .equatable()
     }
 
     private var selectedCardOverlay: some View {
@@ -3069,8 +3101,8 @@ private struct AssetCardView: View {
         let previewWidth = min(138, max(88, width * 0.46))
         let previewHeight = min(156, max(72, AssetCardMetrics.contentHeight(for: item, width: previewWidth)))
         return Group {
-            if item.isTextDocumentLike && !item.hasGeneratedThumbnailFile {
-                TextDocumentCardPreview(item: item)
+            if item.isTextDocumentLike {
+                TextAssetCardCover(item: item)
             } else {
                 AssetMediaView(item: item)
             }
@@ -3113,6 +3145,22 @@ private struct AssetCardView: View {
         }
     }
 
+}
+
+private struct AssetCardContentView: View, Equatable {
+    let item: PromptItem
+
+    var body: some View {
+        if item.isTextDocumentLike {
+            TextAssetCardCover(item: item)
+        } else {
+            AssetMediaView(item: item)
+        }
+    }
+
+    nonisolated static func == (lhs: AssetCardContentView, rhs: AssetCardContentView) -> Bool {
+        lhs.item == rhs.item
+    }
 }
 
 private extension PromptItem {
@@ -3186,6 +3234,73 @@ private struct PromptListView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
+        .contentOverlayScrollbars()
+    }
+}
+
+private extension View {
+    func contentOverlayScrollbars() -> some View {
+        background(ContentOverlayScrollbarConfigurator())
+    }
+}
+
+private struct ContentOverlayScrollbarConfigurator: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.isHidden = true
+        configureLater(from: view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configureLater(from: nsView, coordinator: context.coordinator)
+    }
+
+    final class Coordinator {
+        weak var configuredScrollView: NSScrollView?
+    }
+
+    private func configureLater(from view: NSView, coordinator: Coordinator) {
+        DispatchQueue.main.async {
+            configureScrollView(containing: view, coordinator: coordinator)
+        }
+    }
+
+    private func configureScrollView(containing view: NSView, coordinator: Coordinator) {
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let scrollView = current as? NSScrollView {
+                guard coordinator.configuredScrollView !== scrollView else { return }
+                configure(scrollView)
+                coordinator.configuredScrollView = scrollView
+                return
+            }
+            candidate = current.superview
+        }
+    }
+
+    private func configure(_ scrollView: NSScrollView) {
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.contentView.drawsBackground = false
+        scrollView.contentView.backgroundColor = .clear
+        if !(scrollView.verticalScroller is TransparentOverlayScroller) {
+            scrollView.verticalScroller = TransparentOverlayScroller()
+        }
     }
 }
 
@@ -3225,62 +3340,68 @@ private struct EmptyStateView: View {
     }
 }
 
-private struct TextDocumentCardPreview: View {
+private struct TextAssetCardCover: View {
     let item: PromptItem
-    @State private var text = ""
+    @State private var cardData: TextAssetCardData
 
-    private var allPreviewLines: [String] {
-        let source = text.isEmpty ? item.currentVersion?.prompt ?? "" : text
-        return source
-            .components(separatedBy: .newlines)
-            .map { line in
-                let limit = 160
-                guard line.count > limit else { return line }
-                return String(line.prefix(limit)) + "..."
-            }
+    init(item: PromptItem) {
+        self.item = item
+        _cardData = State(initialValue: TextAssetCardData.placeholder(snapshot: TextAssetCardSnapshot(item: item)))
     }
 
     var body: some View {
         GeometryReader { proxy in
-            previewContent(size: proxy.size)
+            cardContent(size: proxy.size)
         }
         .overlay(
             RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous)
                 .stroke(TextDocumentCardPalette.border, lineWidth: 1)
         )
         .task(id: previewReloadID) {
-            text = Self.loadText(for: item)
+            let loadedData = await TextAssetCardDataCache.shared.data(snapshot: TextAssetCardSnapshot(item: item))
+            guard !Task.isCancelled else { return }
+            cardData = loadedData
         }
     }
 
     @ViewBuilder
-    private func previewContent(size: CGSize) -> some View {
-        let lines = visibleLines(for: size)
+    private func cardContent(size: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
             TextDocumentCardPalette.background
+            VStack(alignment: .leading, spacing: 10) {
+                Text(cardData.title)
+                    .font(StudioFont.font(15, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            if allPreviewLines.isEmpty || allPreviewLines.allSatisfy({ $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
-                VStack(spacing: 8) {
-                    Image(systemName: item.assetKind == .json ? "curlybraces" : "doc.text")
-                        .font(StudioFont.symbol(26))
-                    Text(item.format.isEmpty ? item.assetKind.displayName.uppercased() : item.format.uppercased())
-                        .font(StudioFont.caption(10))
-                }
-                .foregroundStyle(TextDocumentCardPalette.mutedText)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                        TextDocumentPreviewLine(line: line)
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(cardData.summaryLines, id: \.self) { line in
+                        Text(line)
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.text.opacity(0.76))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Spacer(minLength: 0)
+
+                if !cardData.chips.isEmpty {
+                    TextAssetChipFlow(chips: cardData.chips)
+                }
+
+                Text(cardData.metadata)
+                    .font(StudioFont.caption(11))
+                    .foregroundStyle(TextDocumentCardPalette.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()
@@ -3290,27 +3411,281 @@ private struct TextDocumentCardPreview: View {
         "\(item.assetPath)|\(item.updatedAt.timeIntervalSince1970)"
     }
 
-    private func visibleLines(for size: CGSize) -> [String] {
-        let verticalPadding: CGFloat = 24
-        let rowHeight: CGFloat = 17
-        let maxLines = max(1, min(18, Int((size.height - verticalPadding) / rowHeight)))
-        return Array(allPreviewLines.prefix(maxLines))
+}
+
+private struct TextAssetCardSnapshot: Sendable {
+    let title: String
+    let assetPath: String
+    let format: String
+    let assetKindName: String
+    let version: String
+    let fileSize: Int64
+    let tags: [String]
+    let updatedAt: Date
+    let fallbackText: String
+
+    init(item: PromptItem) {
+        title = item.title
+        assetPath = item.assetPath
+        format = item.format
+        assetKindName = item.assetKind.displayName
+        version = item.currentVersion?.version ?? "V1.0"
+        fileSize = item.fileSize
+        tags = item.tags
+        updatedAt = item.updatedAt
+        fallbackText = item.currentVersion?.prompt ?? ""
+    }
+}
+
+private actor TextAssetCardDataCache {
+    static let shared = TextAssetCardDataCache()
+
+    private static let previewByteLimit = 32 * 1024
+    private static let previewCharacterLimit = 8_000
+    private var cachedDataByKey: [String: TextAssetCardData] = [:]
+
+    func data(snapshot: TextAssetCardSnapshot) -> TextAssetCardData {
+        let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        if let cached = cachedDataByKey[key] {
+            return cached
+        }
+        let loadedText = Self.loadPreviewText(path: snapshot.assetPath, fallback: snapshot.fallbackText)
+        let data = TextAssetCardData(snapshot: snapshot, text: loadedText)
+        cachedDataByKey[key] = data
+        if cachedDataByKey.count > 160 {
+            cachedDataByKey.removeAll(keepingCapacity: true)
+            cachedDataByKey[key] = data
+        }
+        return data
     }
 
-    private static func loadText(for item: PromptItem) -> String {
-        if !item.assetPath.isEmpty,
-           let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: item.assetPath)) {
-            return text
+    private static func loadPreviewText(path: String, fallback: String) -> String {
+        guard !path.isEmpty else { return capped(fallback) }
+        let url = URL(fileURLWithPath: path)
+        let documentExtensions: Set<String> = ["doc", "docx", "rtf"]
+        if documentExtensions.contains(url.pathExtension.lowercased()),
+           let text = AppKitBridge.readDocumentText(from: url) {
+            return capped(text)
         }
-        if !item.assetPath.isEmpty,
-           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf8) {
-            return text
+        if let handle = try? FileHandle(forReadingFrom: url) {
+            defer { try? handle.close() }
+            let data = handle.readData(ofLength: previewByteLimit)
+            if let text = String(data: data, encoding: .utf8) {
+                return capped(text)
+            }
+            if let text = String(data: data, encoding: .utf16) {
+                return capped(text)
+            }
         }
-        if !item.assetPath.isEmpty,
-           let text = try? String(contentsOf: URL(fileURLWithPath: item.assetPath), encoding: .utf16) {
-            return text
+        return capped(fallback)
+    }
+
+    private static func capped(_ text: String) -> String {
+        guard text.count > previewCharacterLimit else { return text }
+        return String(text.prefix(previewCharacterLimit))
+    }
+}
+
+private struct TextAssetCardData: Equatable, Sendable {
+    let title: String
+    let summaryLines: [String]
+    let chips: [String]
+    let metadata: String
+
+    static func placeholder(snapshot: TextAssetCardSnapshot) -> TextAssetCardData {
+        let cleanedTitle = cleanedFileTitle(path: snapshot.assetPath, title: snapshot.title)
+        let title = snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? cleanedTitle
+            : snapshot.title
+        return TextAssetCardData(
+            title: title,
+            summaryLines: ["正在生成摘要..."],
+            chips: chips(
+                format: snapshot.format,
+                assetKindName: snapshot.assetKindName,
+                tags: snapshot.tags,
+                text: "",
+                title: title
+            ),
+            metadata: metadata(
+                format: snapshot.format,
+                assetKindName: snapshot.assetKindName,
+                version: snapshot.version,
+                fileSize: snapshot.fileSize,
+                text: ""
+            )
+        )
+    }
+
+    init(snapshot: TextAssetCardSnapshot, text: String) {
+        let source = text
+        let cleanedTitle = Self.cleanedFileTitle(path: snapshot.assetPath, title: snapshot.title)
+        let headingTitle = Self.firstMarkdownTitle(in: source)
+        title = headingTitle ?? (!snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? snapshot.title : cleanedTitle)
+        summaryLines = Self.summaryLines(from: source, excludingTitle: title)
+        chips = Self.chips(
+            format: snapshot.format,
+            assetKindName: snapshot.assetKindName,
+            tags: snapshot.tags,
+            text: source,
+            title: title
+        )
+        metadata = Self.metadata(
+            format: snapshot.format,
+            assetKindName: snapshot.assetKindName,
+            version: snapshot.version,
+            fileSize: snapshot.fileSize,
+            text: source
+        )
+    }
+
+    private init(title: String, summaryLines: [String], chips: [String], metadata: String) {
+        self.title = title
+        self.summaryLines = summaryLines
+        self.chips = chips
+        self.metadata = metadata
+    }
+
+    private static func firstMarkdownTitle(in text: String) -> String? {
+        text.components(separatedBy: .newlines).compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("# "), !trimmed.hasPrefix("## ") else { return nil }
+            return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return item.currentVersion?.prompt ?? ""
+        .first { !$0.isEmpty }
+    }
+
+    private static func summaryLines(from text: String, excludingTitle title: String) -> [String] {
+        let titleNormalized = normalized(title)
+        let lines = text.components(separatedBy: .newlines).compactMap { rawLine -> String? in
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return nil }
+            guard !isFrontMatter(line), !isTableSeparator(line), !isLongPath(line) else { return nil }
+            line = line.replacingOccurrences(of: #"^#{1,6}\s*"#, with: "", options: .regularExpression)
+            line = line.replacingOccurrences(of: #"^[-*+]\s+"#, with: "", options: .regularExpression)
+            line = line.replacingOccurrences(of: #"^\d+[\.)]\s+"#, with: "", options: .regularExpression)
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, normalized(line) != titleNormalized else { return nil }
+            return line.truncated(to: 86)
+        }
+        var result = Array(lines.prefix(3))
+        if result.count == 3 {
+            result[2] = result[2].trimmingCharacters(in: .whitespacesAndNewlines).truncated(to: 82)
+            if !result[2].hasSuffix("...") {
+                result[2] += "..."
+            }
+        }
+        return result.isEmpty ? ["暂无文档摘要"] : result
+    }
+
+    private static func chips(format: String, assetKindName: String, tags: [String], text: String, title: String) -> [String] {
+        let format = format.isEmpty ? assetKindName.uppercased() : format.uppercased()
+        var chips: [String] = [format]
+        let haystack = "\(title)\n\(text.prefix(2_000))".lowercased()
+        let purposeCandidates: [(String, [String])] = [
+            ("视频分镜", ["分镜", "镜头", "seedance", "kling", "可灵"]),
+            ("角色设定", ["角色", "人物", "人设"]),
+            ("规则", ["规则", "约束", "检查", "规范"]),
+            ("Agent handoff", ["agent", "handoff", "schema_version", "writers_room"]),
+            ("Prompt", ["prompt", "提示词"])
+        ]
+        for candidate in purposeCandidates where candidate.1.contains(where: { haystack.contains($0.lowercased()) }) {
+            if chips.count < 4 {
+                chips.append(candidate.0)
+            }
+        }
+        let tagLimit = max(0, 5 - chips.count)
+        chips.append(contentsOf: tags.prefix(tagLimit))
+        let remaining = tags.count - min(tags.count, tagLimit)
+        if remaining > 0 {
+            chips.append("+\(remaining)")
+        }
+        return Array(chips.prefix(6))
+    }
+
+    private static func metadata(format: String, assetKindName: String, version: String, fileSize: Int64, text: String) -> String {
+        let format = format.isEmpty ? assetKindName.uppercased() : format.uppercased()
+        let lineCount = text.isEmpty ? 0 : text.components(separatedBy: .newlines).count
+        if lineCount > 0 {
+            return "\(format) · \(lineCount) 行 · \(version)"
+        }
+        return "\(format) · \(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)) · \(version)"
+    }
+
+    private static func cleanedFileTitle(path: String, title: String) -> String {
+        let pathTitle = path.isEmpty
+            ? title
+            : URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let pattern = #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-"#
+        let cleaned = pathTitle.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        return cleaned.isEmpty ? "未命名文档" : cleaned
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func isFrontMatter(_ line: String) -> Bool {
+        line == "---" || line == "==="
+    }
+
+    private static func isTableSeparator(_ line: String) -> Bool {
+        let stripped = line.replacingOccurrences(of: "|", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return stripped.isEmpty && line.contains("-")
+    }
+
+    private static func isLongPath(_ line: String) -> Bool {
+        guard line.count > 48 else { return false }
+        return line.hasPrefix("/") || line.contains("/Volumes/") || line.contains("://")
+    }
+}
+
+private struct TextAssetChipFlow: View {
+    let chips: [String]
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            HStack(spacing: 6) {
+                ForEach(chips.prefix(3), id: \.self) { chip in
+                    chipView(chip)
+                }
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    ForEach(chips.prefix(3), id: \.self) { chip in
+                        chipView(chip)
+                    }
+                }
+                if chips.count > 3 {
+                    HStack(spacing: 6) {
+                        ForEach(chips.dropFirst(3).prefix(3), id: \.self) { chip in
+                            chipView(chip)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func chipView(_ title: String) -> some View {
+        Text(title)
+            .font(StudioFont.caption(10))
+            .foregroundStyle(StudioColor.text.opacity(0.82))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(Capsule().fill(StudioColor.panelRaised.opacity(0.92)))
+            .overlay(Capsule().stroke(StudioColor.hairline.opacity(0.7), lineWidth: 1))
+    }
+}
+
+private extension String {
+    func truncated(to maxCount: Int) -> String {
+        guard count > maxCount else { return self }
+        return String(prefix(maxCount)) + "..."
     }
 }
 
@@ -3463,8 +3838,9 @@ struct ThumbnailImage: View {
     @StateObject private var loader = CachedImageLoader()
 
     var body: some View {
+        let cachedImage = CachedImageLoader.cachedImage(for: path)
         Group {
-            if let image = loader.image {
+            if let image = loader.image ?? cachedImage {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
@@ -3492,6 +3868,10 @@ private final class CachedImageLoader: ObservableObject {
     private static let cache = NSCache<NSString, NSImage>()
     private var path: String = ""
     private var task: Task<Void, Never>?
+
+    static func cachedImage(for path: String) -> NSImage? {
+        cache.object(forKey: path as NSString)
+    }
 
     func load(_ path: String) async {
         task?.cancel()

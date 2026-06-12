@@ -4,15 +4,19 @@ import SwiftUI
 @main
 struct PromptStudioApp: App {
     @StateObject private var appState = AppState()
+    @NSApplicationDelegateAdaptor(PromptStudioAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        Window("PromptStudio", id: "main") {
             PromptStudioView()
                 .environmentObject(appState)
                 .environment(\.font, StudioFont.body())
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1180, minHeight: 720)
                 .background(WindowStartupConfigurator())
+                .onAppear {
+                    appDelegate.appState = appState
+                }
                 .task {
                     if appState.items.isEmpty {
                         appState.load()
@@ -110,9 +114,44 @@ struct PromptStudioApp: App {
     }
 }
 
+private final class PromptStudioAppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor weak var appState: AppState? {
+        didSet {
+            flushPendingURLs()
+        }
+    }
+
+    private var pendingURLs: [URL] = []
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let urls = filenames.map { URL(fileURLWithPath: $0) }
+        Task { @MainActor in
+            WindowStartupConfigurator.showMainWindow()
+            if let appState {
+                appState.handleExternalFileOpen(urls)
+            } else {
+                pendingURLs.append(contentsOf: urls)
+            }
+            WindowStartupConfigurator.closeDuplicateMainWindows()
+        }
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    @MainActor
+    private func flushPendingURLs() {
+        guard let appState, !pendingURLs.isEmpty else { return }
+        let urls = pendingURLs
+        pendingURLs.removeAll()
+        WindowStartupConfigurator.showMainWindow()
+        appState.handleExternalFileOpen(urls)
+        WindowStartupConfigurator.closeDuplicateMainWindows()
+    }
+}
+
 private struct WindowStartupConfigurator: NSViewRepresentable {
     static let defaultContentSize = NSSize(width: 1440, height: 900)
     static let minimumContentSize = NSSize(width: 1180, height: 720)
+    @MainActor private static weak var mainWindow: NSWindow?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -138,6 +177,7 @@ private struct WindowStartupConfigurator: NSViewRepresentable {
         @MainActor
         func configure(window: NSWindow?) {
             guard !didConfigure, let window else { return }
+            guard WindowStartupConfigurator.registerMainWindow(window) else { return }
             didConfigure = true
             window.isRestorable = false
             applyDefaultWindowFrame(to: window)
@@ -159,5 +199,44 @@ private struct WindowStartupConfigurator: NSViewRepresentable {
             window.setContentSize(WindowStartupConfigurator.defaultContentSize)
             window.center()
         }
+    }
+
+    @MainActor
+    private static func registerMainWindow(_ window: NSWindow) -> Bool {
+        if let mainWindow, mainWindow !== window {
+            window.close()
+            showMainWindow()
+            return false
+        }
+        mainWindow = window
+        return true
+    }
+
+    @MainActor
+    static func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        closeDuplicateMainWindows()
+        if let mainWindow {
+            mainWindow.makeKeyAndOrderFront(nil)
+        } else {
+            NSApp.windows.first { !$0.isMiniaturized }?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @MainActor
+    static func closeDuplicateMainWindows() {
+        guard let mainWindow else { return }
+        for window in NSApp.windows where window !== mainWindow && isPromptStudioMainWindow(window) {
+            window.close()
+        }
+    }
+
+    @MainActor
+    private static func isPromptStudioMainWindow(_ window: NSWindow) -> Bool {
+        window.sheetParent == nil
+            && !window.isMiniaturized
+            && window.contentView != nil
+            && window.styleMask.contains(.closable)
+            && window.styleMask.contains(.resizable)
     }
 }

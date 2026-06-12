@@ -12,6 +12,34 @@
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.creatigo.promptstudio</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>md</string>
+                <string>txt</string>
+                <string>json</string>
+                <string>yaml</string>
+                <string>yml</string>
+                <string>toml</string>
+                <string>xml</string>
+                <string>csv</string>
+                <string>tsv</string>
+                <string>log</string>
+                <string>plist</string>
+                <string>rtf</string>
+                <string>doc</string>
+                <string>docx</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PromptStudio Text Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

@@ -67,6 +67,9 @@ struct SidePanelReferenceSection: View {
                         .frame(width: 62, height: 40)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,7 +129,7 @@ struct SidePanelPromptTextBox: View {
             let width = proxy.size.width
             let height = measuredHeight(width: width)
             let availableHeight = max(72, maxHeight)
-            let usesScroll = height > availableHeight
+            let usesScroll = height > availableHeight - 32
             let boxHeight = usesScroll ? availableHeight : height
 
             Group {
@@ -185,14 +188,15 @@ struct SidePanelPromptTextBox: View {
     }
 
     private func measuredHeight(width: CGFloat) -> CGFloat {
-        PromptTextMetrics.height(
+        let measurementWidth = max(1, width - 36)
+        return PromptTextMetrics.height(
             for: text,
-            width: width,
+            width: measurementWidth,
             font: NSFont.systemFont(ofSize: 13, weight: .regular),
             lineSpacing: 4,
             horizontalPadding: 14,
             verticalPadding: 14
-        )
+        ) + 24
     }
 }
 
@@ -479,7 +483,7 @@ private final class SidePanelCopyingPromptTextView: NSTextView {
     }
 
     override func autoscroll(with event: NSEvent) -> Bool {
-        usesCopyInteraction ? false : super.autoscroll(with: event)
+        super.autoscroll(with: event)
     }
 
     override func scrollWheel(with event: NSEvent) {

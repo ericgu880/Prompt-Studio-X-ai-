@@ -1,6 +1,9 @@
 import AppKit
 
+@MainActor
 enum PromptTextMetrics {
+    private static let cache = NSCache<NSString, NSNumber>()
+
     static func height(
         for text: String,
         width: CGFloat,
@@ -11,6 +14,20 @@ enum PromptTextMetrics {
         minHeight: CGFloat = 44
     ) -> CGFloat {
         let textWidth = max(1, width - horizontalPadding * 2)
+        let cacheKey = [
+            text.count.description,
+            text.hashValue.description,
+            Int(textWidth.rounded()).description,
+            font.fontName,
+            font.pointSize.description,
+            lineSpacing.description,
+            verticalPadding.description,
+            minHeight.description
+        ].joined(separator: "|") as NSString
+        if let cached = cache.object(forKey: cacheKey) {
+            return CGFloat(truncating: cached)
+        }
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         let storage = NSTextStorage(
@@ -27,6 +44,8 @@ enum PromptTextMetrics {
         layoutManager.addTextContainer(textContainer)
         storage.addLayoutManager(layoutManager)
         layoutManager.ensureLayout(for: textContainer)
-        return max(minHeight, ceil(layoutManager.usedRect(for: textContainer).height) + verticalPadding * 2)
+        let height = max(minHeight, ceil(layoutManager.usedRect(for: textContainer).height) + verticalPadding * 2)
+        cache.setObject(NSNumber(value: Double(height)), forKey: cacheKey)
+        return height
     }
 }

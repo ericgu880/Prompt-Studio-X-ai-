@@ -1591,6 +1591,115 @@ private struct PromptTypeSegment: View {
     }
 }
 
+struct ExternalFileOpenSheet: View {
+    @EnvironmentObject private var state: AppState
+    let request: ExternalFileOpenRequest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(StudioFont.font(18, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                Text("这个文件还不在 PromptStudio 资料库中。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(request.urls.prefix(3), id: \.path) { url in
+                    Text(url.lastPathComponent)
+                        .font(StudioFont.font(13))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if request.urls.count > 3 {
+                    Text("+\(request.urls.count - 3) 个文件")
+                        .font(StudioFont.caption(12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .studioPanel(radius: 8)
+
+            HStack(spacing: 10) {
+                Button("取消") {
+                    state.modal = nil
+                }
+                .buttonStyle(CapsuleButtonStyle())
+
+                Button("仅临时预览") {
+                    state.previewExternalFileTemporarily(request)
+                }
+                .buttonStyle(CapsuleButtonStyle())
+
+                Button("导入到资料库") {
+                    state.importExternalFiles(request)
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+        .background(StudioColor.appBackground)
+    }
+
+    private var title: String {
+        request.urls.count == 1 ? "打开外部文本文档" : "打开 \(request.urls.count) 个外部文本文档"
+    }
+}
+
+struct TemporaryTextPreviewSheet: View {
+    @EnvironmentObject private var state: AppState
+    let request: TemporaryTextPreviewRequest
+    @State private var text: String
+
+    init(request: TemporaryTextPreviewRequest) {
+        self.request = request
+        _text = State(initialValue: request.text)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(request.title)
+                        .font(StudioFont.font(14, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("\(request.format.isEmpty ? "TEXT" : request.format) · \(fileSizeText(request.fileSize)) · 临时预览")
+                        .font(StudioFont.caption(12))
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+                Spacer()
+                Button("关闭") { state.modal = nil }
+                    .buttonStyle(TextHoverButtonStyle())
+            }
+            .padding()
+
+            Divider().overlay(StudioColor.hairline)
+
+            MarkdownDocumentEditor(
+                text: $text,
+                isEditable: false,
+                scrollResetID: request.id.uuidString,
+                contentFontSize: 13,
+                syntaxMode: TextSyntaxMode.infer(assetPath: request.url.path, format: request.format)
+            )
+            .padding(18)
+        }
+        .frame(width: 920, height: 680)
+        .background(StudioColor.appBackground)
+    }
+
+    private func fileSizeText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
 struct PreviewSheet: View {
     @EnvironmentObject private var state: AppState
 
