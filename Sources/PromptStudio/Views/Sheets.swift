@@ -570,7 +570,7 @@ struct ReferencesSheet: View {
                             ReferenceAssetCard(reference: reference)
                         }
                         AddReferenceCard {
-                            state.modal = .importAssets
+                            state.openImportAssets()
                         }
                     }
                 }
@@ -776,6 +776,13 @@ struct SettingsSheet: View {
         .foregroundStyle(StudioColor.text)
         .background(StudioColor.appBackground)
         .frame(width: 1180, height: 760)
+        .onAppear {
+            if let pageID = state.preferredSettingsPageID,
+               let page = SettingsPage(rawValue: pageID) {
+                selectedPage = page
+                state.preferredSettingsPageID = nil
+            }
+        }
     }
 
     private var settingsSidebar: some View {
@@ -891,6 +898,9 @@ struct SettingsSheet: View {
                 settingsValueRow("数据保存", value: "本机资料库")
                 settingsValueRow("附件策略", value: "保存和引用，不进入 Prompt 编辑流程")
             }
+        case .license:
+            LicenseSettingsView()
+                .environmentObject(state)
         }
     }
 
@@ -1127,6 +1137,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     case displayPreview
     case promptWorkflow
     case shortcutsPrivacy
+    case license
 
     enum Section: CaseIterable, Identifiable {
         case storage
@@ -1152,6 +1163,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .displayPreview: "显示与预览"
         case .promptWorkflow: "Prompt 工作流"
         case .shortcutsPrivacy: "快捷键与隐私"
+        case .license: "授权"
         }
     }
 
@@ -1161,6 +1173,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .displayPreview: "调整素材浏览方式、瀑布流密度和缩略图尺寸。"
         case .promptWorkflow: "确认主格式范围，并管理首页筛选标签。"
         case .shortcutsPrivacy: "查看常用快捷键和当前本地数据策略。"
+        case .license: "激活、刷新或停用当前设备授权。"
         }
     }
 
@@ -1170,6 +1183,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .displayPreview: "rectangle.grid.2x2"
         case .promptWorkflow: "slider.horizontal.3"
         case .shortcutsPrivacy: "keyboard"
+        case .license: "key"
         }
     }
 
@@ -1179,6 +1193,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .displayPreview: "界面"
         case .promptWorkflow: "核心"
         case .shortcutsPrivacy: "效率"
+        case .license: "Pro"
         }
     }
 
@@ -1196,7 +1211,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
             .storage
         case .displayPreview, .promptWorkflow:
             .workflow
-        case .shortcutsPrivacy:
+        case .shortcutsPrivacy, .license:
             .system
         }
     }

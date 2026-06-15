@@ -18,6 +18,8 @@
             <key>CFBundleTypeExtensions</key>
             <array>
                 <string>md</string>
+                <string>markdown</string>
+                <string>mdown</string>
                 <string>txt</string>
                 <string>json</string>
                 <string>yaml</string>
@@ -33,11 +35,162 @@
                 <string>docx</string>
             </array>
             <key>CFBundleTypeName</key>
-            <string>PromptStudio Text Document</string>
+            <string>PromptStudio Text Prompt Document</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.text</string>
+                <string>public.plain-text</string>
+                <string>com.creatigo.promptstudio.markdown</string>
+                <string>public.markdown</string>
+                <string>net.daringfireball.markdown</string>
+                <string>public.json</string>
+                <string>public.yaml</string>
+                <string>public.xml</string>
+                <string>public.comma-separated-values-text</string>
+                <string>public.tab-separated-values-text</string>
+                <string>com.apple.property-list</string>
+                <string>public.rtf</string>
+                <string>com.microsoft.word.doc</string>
+                <string>org.openxmlformats.wordprocessingml.document</string>
+            </array>
             <key>LSHandlerRank</key>
             <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>png</string>
+                <string>jpg</string>
+                <string>jpeg</string>
+                <string>jpe</string>
+                <string>jfif</string>
+                <string>webp</string>
+                <string>gif</string>
+                <string>heic</string>
+                <string>heif</string>
+                <string>hif</string>
+                <string>tif</string>
+                <string>tiff</string>
+                <string>bmp</string>
+                <string>avif</string>
+                <string>svg</string>
+                <string>ico</string>
+                <string>icns</string>
+                <string>jxl</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PromptStudio Image Prompt Asset</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+                <string>public.png</string>
+                <string>public.jpeg</string>
+                <string>public.heic</string>
+                <string>public.heif</string>
+                <string>public.tiff</string>
+                <string>com.compuserve.gif</string>
+                <string>com.microsoft.bmp</string>
+                <string>public.svg-image</string>
+                <string>com.microsoft.ico</string>
+                <string>com.apple.icns</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mp4</string>
+                <string>mov</string>
+                <string>m4v</string>
+                <string>webm</string>
+                <string>mkv</string>
+                <string>flv</string>
+                <string>f4v</string>
+                <string>ts</string>
+                <string>mts</string>
+                <string>m2ts</string>
+                <string>3gp</string>
+                <string>avi</string>
+                <string>hevc</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PromptStudio Video Prompt Asset</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+                <string>public.video</string>
+                <string>public.mpeg-4</string>
+                <string>com.apple.quicktime-movie</string>
+                <string>org.webmproject.webm</string>
+                <string>public.avi</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mp3</string>
+                <string>m4a</string>
+                <string>wav</string>
+                <string>aac</string>
+                <string>aiff</string>
+                <string>aif</string>
+                <string>flac</string>
+                <string>ogg</string>
+                <string>opus</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>PromptStudio Audio Prompt Asset</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.mp3</string>
+                <string>public.mpeg-4-audio</string>
+                <string>com.apple.m4a-audio</string>
+                <string>com.microsoft.waveform-audio</string>
+                <string>public.aifc-audio</string>
+                <string>org.xiph.flac</string>
+                <string>org.xiph.ogg</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Markdown Document</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.creatigo.promptstudio.markdown</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>md</string>
+                    <string>markdown</string>
+                    <string>mdown</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>text/markdown</string>
+                    <string>text/x-markdown</string>
+                </array>
+            </dict>
         </dict>
     </array>
     <key>CFBundleInfoDictionaryVersion</key>

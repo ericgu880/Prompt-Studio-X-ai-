@@ -3,3 +3,6 @@
 .swiftpm/
 prompt-studio-ui-exports/
 awesome-design-md/
+license-server/.env
+license-server/dist/
+license-server/node_modules/

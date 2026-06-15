@@ -278,6 +278,9 @@ struct PromptStudioView: View {
         case .preview:
             PreviewSheet()
                 .environmentObject(state)
+        case .featureDenied(let decision):
+            FeatureDeniedSheet(decision: decision)
+                .environmentObject(state)
         case .error(let message):
             ErrorSheet(message: message)
         }
@@ -829,7 +832,7 @@ private struct SidebarView: View {
             }
 
             Button {
-                state.modal = .settings
+                state.openSettings()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")
@@ -1622,11 +1625,12 @@ private struct MainContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
+    private static let contentHorizontalInset: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
             TopToolbarView()
-                .padding(.horizontal, 24)
+                .padding(.horizontal, Self.contentHorizontalInset)
                 .padding(.top, StudioLayout.contentTopPadding)
                 .padding(.bottom, 8)
                 .contentShape(Rectangle())
@@ -1635,7 +1639,7 @@ private struct MainContentView: View {
                 }
 
             ModelTabsView()
-                .padding(.horizontal, 24)
+                .padding(.horizontal, Self.contentHorizontalInset)
                 .padding(.bottom, 12)
 
             Group {
@@ -1650,6 +1654,7 @@ private struct MainContentView: View {
                         items: state.filteredItems,
                         isSplitResizing: isSplitResizing
                     )
+                    .padding(.horizontal, Self.contentHorizontalInset)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2297,7 +2302,8 @@ private struct MasonryGridView: View {
         GeometryReader { proxy in
             let computedColumnCount = computedColumnCount(for: proxy.size.width)
             let columnCount = lockedColumnCount ?? computedColumnCount
-            let width = (proxy.size.width - CGFloat(columnCount - 1) * 12 - 48) / CGFloat(columnCount)
+            let gridContentWidth = gridContentWidth(for: proxy.size.width)
+            let width = (gridContentWidth - CGFloat(columnCount - 1) * 12) / CGFloat(columnCount)
             let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = layout.visualItemIDs
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
@@ -2306,7 +2312,7 @@ private struct MasonryGridView: View {
             TransparentOverlayScrollView(
                 resetID: scrollResetID,
                 minimumContentHeight: max(layout.height + 24, proxy.size.height),
-                verticalScrollerRightInset: Self.scrollerResizeHandleAvoidance,
+                verticalScrollerRightInset: -Self.scrollbarLaneWidth,
                 onOffsetChange: { offsetY in
                     contentOffsetY = offsetY
                 }
@@ -2331,7 +2337,7 @@ private struct MasonryGridView: View {
                         }
                     )
                     .frame(
-                        width: max(0, proxy.size.width - 48),
+                        width: max(0, proxy.size.width),
                         height: max(layout.height, proxy.size.height)
                     )
 
@@ -2380,13 +2386,12 @@ private struct MasonryGridView: View {
                     }
                 }
                 .frame(
-                    width: max(0, proxy.size.width - 48),
+                    width: max(0, proxy.size.width),
                     height: layout.height,
                     alignment: .topLeading
                 )
                 .contentShape(Rectangle())
                 .coordinateSpace(name: Self.gridCoordinateSpace)
-                .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
             .onChange(of: state.filter) { _, _ in
@@ -2413,14 +2418,18 @@ private struct MasonryGridView: View {
     }
 
     private func computedColumnCount(for availableWidth: CGFloat) -> Int {
-        let contentWidth = max(0, availableWidth - 48)
+        let contentWidth = gridContentWidth(for: availableWidth)
         let targetWidth = 250 * CGFloat(thumbnailScale)
         let proposed = Int((contentWidth + 12) / (targetWidth + 12))
         return max(2, min(6, proposed))
     }
 
     private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
-    private static let scrollerResizeHandleAvoidance: CGFloat = 18
+    private static let scrollbarLaneWidth: CGFloat = 18
+
+    private func gridContentWidth(for availableWidth: CGFloat) -> CGFloat {
+        max(0, availableWidth)
+    }
 
     private func renderedYRange(viewportHeight: CGFloat) -> ClosedRange<CGFloat> {
         let buffer = max(600, viewportHeight * 1.25)
@@ -2442,7 +2451,12 @@ private struct MasonryGridView: View {
         var ids = Set<String>()
         for placement in layout.placements {
             guard case .item(let item) = placement.entry else { continue }
-            let itemRect = CGRect(x: placement.x, y: placement.y, width: width, height: placement.height)
+            let itemRect = CGRect(
+                x: placement.x,
+                y: placement.y,
+                width: width,
+                height: placement.height
+            )
             if itemRect.intersects(rect) {
                 ids.insert(item.id)
             }
@@ -3463,7 +3477,7 @@ private struct EmptyStateView: View {
                 Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
                     .foregroundStyle(StudioColor.secondaryText)
                 Button("导入素材") {
-                    state.modal = .importAssets
+                    state.openImportAssets()
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
             }

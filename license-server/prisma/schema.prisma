@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LicenseStatus {
+  unused
+  active
+  limited
+  refunded
+  revoked
+  disabled
+}
+
+enum LicenseType {
+  lifetime
+  subscription
+  trial
+  education
+  team
+  beta
+}
+
+enum ActivationStatus {
+  active
+  deactivated
+  revoked
+  stale
+}
+
+enum EventSource {
+  api
+  cli
+  system
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  emailHash   String   @unique
+  emailMasked String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  licenses License[]
+}
+
+model License {
+  id            String        @id @default(cuid())
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id])
+  codePrefix    String
+  codeHash      String        @unique
+  codeMasked    String
+  plan          String        @default("pro_lifetime")
+  licenseType   LicenseType   @default(lifetime)
+  status        LicenseStatus @default(unused)
+  seatLimit     Int           @default(2)
+  majorVersion  Int           @default(1)
+  updatesUntil  DateTime?
+  orderProvider String?
+  orderId       String?
+  createdAt     DateTime      @default(now())
+  activatedAt   DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+  refundedAt    DateTime?
+  notes         String?
+
+  activations  Activation[]
+  certificates LicenseCertificate[]
+  events       LicenseEvent[]
+
+  @@index([customerId])
+  @@index([codePrefix])
+  @@index([status])
+}
+
+model Activation {
+  id                     String           @id @default(cuid())
+  licenseId              String
+  license                License          @relation(fields: [licenseId], references: [id])
+  installIdHash           String
+  devicePublicKey         String
+  deviceKeyThumbprint     String
+  deviceLabel             String
+  platform                String           @default("macos")
+  osVersion               String?
+  appVersion              String?
+  status                  ActivationStatus @default(active)
+  activatedAt             DateTime         @default(now())
+  lastSeenAt              DateTime?
+  deactivatedAt           DateTime?
+  deactivatedReason       String?
+  replacedByActivationId  String?
+
+  certificates LicenseCertificate[]
+  challenges   RefreshChallenge[]
+  events       LicenseEvent[]
+
+  @@index([licenseId, installIdHash])
+  @@index([licenseId, installIdHash, status])
+  @@index([licenseId, status])
+  @@index([deviceKeyThumbprint])
+}
+
+model ActivateProofNonce {
+  id                  String    @id @default(cuid())
+  nonceHash           String
+  deviceKeyThumbprint String
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  createdAt           DateTime  @default(now())
+
+  @@unique([nonceHash, deviceKeyThumbprint])
+  @@index([expiresAt])
+}
+
+model RefreshChallenge {
+  id           String     @id @default(cuid())
+  activationId String
+  activation   Activation @relation(fields: [activationId], references: [id])
+  nonce        String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime   @default(now())
+
+  @@index([activationId])
+  @@index([expiresAt])
+}
+
+model LicenseCertificate {
+  id              String     @id @default(cuid())
+  licenseId       String
+  license         License    @relation(fields: [licenseId], references: [id])
+  activationId    String
+  activation      Activation @relation(fields: [activationId], references: [id])
+  kid             String
+  certificateHash String
+  issuedAt        DateTime
+  expiresAt       DateTime
+  graceUntil      DateTime
+  createdAt       DateTime   @default(now())
+
+  @@index([licenseId])
+  @@index([activationId])
+}
+
+model LicenseEvent {
+  id            String      @id @default(cuid())
+  licenseId     String?
+  license       License?    @relation(fields: [licenseId], references: [id])
+  activationId  String?
+  activation    Activation? @relation(fields: [activationId], references: [id])
+  eventType     String
+  eventSource   EventSource @default(api)
+  emailHash     String?
+  codePrefix    String?
+  ipHash        String?
+  userAgentHash String?
+  metadataJson  Json?
+  createdAt     DateTime    @default(now())
+
+  @@index([licenseId])
+  @@index([activationId])
+  @@index([eventType])
+  @@index([createdAt])
+}

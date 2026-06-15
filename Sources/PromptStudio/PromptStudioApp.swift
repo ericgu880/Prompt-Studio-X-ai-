@@ -21,6 +21,13 @@ struct PromptStudioApp: App {
                     if appState.items.isEmpty {
                         appState.load()
                     }
+                    await appState.licenseManager.refreshIfNeeded()
+                }
+                .onOpenURL { url in
+                    appDelegate.appState = appState
+                    WindowStartupConfigurator.showMainWindow()
+                    appState.handleExternalFileOpen([url])
+                    WindowStartupConfigurator.closeDuplicateMainWindows()
                 }
         }
         .defaultSize(width: WindowStartupConfigurator.defaultContentSize.width, height: WindowStartupConfigurator.defaultContentSize.height)
@@ -43,7 +50,7 @@ struct PromptStudioApp: App {
             CommandGroup(after: .newItem) {
                 Button("新建 Prompt") { appState.openNewPromptComposer() }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("导入素材") { appState.modal = .importAssets }
+                Button("导入素材") { appState.openImportAssets() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
@@ -82,7 +89,7 @@ struct PromptStudioApp: App {
             }
 
             CommandGroup(after: .sidebar) {
-                Button("高级筛选") { appState.modal = .filters }
+                Button("高级筛选") { appState.openAdvancedFilters() }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
                 Button("网格视图") { appState.isListView = false }
                     .keyboardShortcut("1", modifiers: .command)
@@ -99,15 +106,16 @@ struct PromptStudioApp: App {
             }
 
             CommandGroup(after: .appSettings) {
-                Button("设置") { appState.modal = .settings }
+                Button("设置") { appState.openSettings() }
                     .keyboardShortcut(",", modifiers: .command)
             }
         }
     }
 }
 
+@MainActor
 private final class PromptStudioAppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor weak var appState: AppState? {
+    weak var appState: AppState? {
         didSet {
             flushPendingURLs()
         }
@@ -115,21 +123,62 @@ private final class PromptStudioAppDelegate: NSObject, NSApplicationDelegate {
 
     private var pendingURLs: [URL] = []
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleOpenDocuments(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEOpenDocuments)
+        )
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        enqueueExternalOpen(urls: [URL(fileURLWithPath: filename)])
+        return true
+    }
+
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         let urls = filenames.map { URL(fileURLWithPath: $0) }
-        Task { @MainActor in
-            WindowStartupConfigurator.showMainWindow()
-            if let appState {
-                appState.handleExternalFileOpen(urls)
-            } else {
-                pendingURLs.append(contentsOf: urls)
-            }
-            WindowStartupConfigurator.closeDuplicateMainWindows()
-        }
+        enqueueExternalOpen(urls: urls)
         sender.reply(toOpenOrPrint: .success)
     }
 
-    @MainActor
+    @objc private func handleOpenDocuments(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        guard let directObject = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
+        enqueueExternalOpen(urls: fileURLs(from: directObject))
+    }
+
+    private func fileURLs(from descriptor: NSAppleEventDescriptor) -> [URL] {
+        if descriptor.numberOfItems > 0 {
+            return (1...descriptor.numberOfItems).compactMap { index in
+                guard let item = descriptor.atIndex(index) else { return nil }
+                return fileURL(from: item)
+            }
+        }
+        return fileURL(from: descriptor).map { [$0] } ?? []
+    }
+
+    private func fileURL(from descriptor: NSAppleEventDescriptor) -> URL? {
+        if let url = descriptor.fileURLValue {
+            return url
+        }
+        if let path = descriptor.stringValue, !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
+    }
+
+    private func enqueueExternalOpen(urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        WindowStartupConfigurator.showMainWindow()
+        if let appState {
+            appState.handleExternalFileOpen(urls)
+        } else {
+            pendingURLs.append(contentsOf: urls)
+        }
+        WindowStartupConfigurator.closeDuplicateMainWindows()
+    }
+
     private func flushPendingURLs() {
         guard let appState, !pendingURLs.isEmpty else { return }
         let urls = pendingURLs
@@ -201,12 +250,16 @@ private struct WindowStartupConfigurator: NSViewRepresentable {
             return false
         }
         mainWindow = window
+        closeDuplicateMainWindows()
         return true
     }
 
     @MainActor
     static func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
+        if mainWindow == nil {
+            mainWindow = NSApp.windows.first { isPromptStudioMainWindow($0) }
+        }
         closeDuplicateMainWindows()
         if let mainWindow {
             mainWindow.makeKeyAndOrderFront(nil)

@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import PromptStudioCore
 import UniformTypeIdentifiers
+import Combine
 
 struct ExportOptions {
     var promptMarkdown: Bool
@@ -166,6 +167,7 @@ final class AppState: ObservableObject {
         case externalFileOpen(ExternalFileOpenRequest)
         case temporaryTextPreview(TemporaryTextPreviewRequest)
         case preview
+        case featureDenied(FeatureDecision)
         case error(String)
 
         var id: String {
@@ -185,10 +187,13 @@ final class AppState: ObservableObject {
             case .externalFileOpen(let request): "externalFileOpen-\(request.id)"
             case .temporaryTextPreview(let request): "temporaryTextPreview-\(request.id)"
             case .preview: "preview"
+            case .featureDenied(let decision): "featureDenied-\(decision.feature.rawValue)-\(decision.reason.map(String.init(describing:)) ?? "unknown")"
             case .error(let message): "error-\(message)"
             }
         }
     }
+
+    let licenseManager = LicenseManager()
 
     @Published var items: [PromptItem] = [] {
         didSet {
@@ -223,6 +228,7 @@ final class AppState: ObservableObject {
     @Published var markdownEditorItemID: String?
     @Published var inlineRenamingFolderID: String?
     @Published var inspectorEditRequest: InspectorEditRequest?
+    @Published var preferredSettingsPageID: String?
     @Published var expandedFolderIDs: Set<String> = []
     @Published private(set) var canNavigateBack = false
     @Published private(set) var canNavigateForward = false
@@ -233,13 +239,26 @@ final class AppState: ObservableObject {
     private var activeThumbnailGenerationIDs: Set<UUID> = []
     private var activeThumbnailGenerationBatches: [UUID: Set<String>] = [:]
     private var activeThumbnailItemIDs: Set<String> = []
+    private var cancellables: Set<AnyCancellable> = []
     private var isBatchingFilterUpdate = false
     private var isPreservingSelectionSet = false
     private var navigationBackStack: [NavigationSnapshot] = []
     private var navigationForwardStack: [NavigationSnapshot] = []
+    private var lastExternalOpenSignature: String?
+    private var lastExternalOpenAt: Date?
 
     var libraryURL: URL {
         repository?.libraryURL ?? PromptRepository.defaultLibraryURL()
+    }
+
+    init() {
+        licenseManager.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.objectWillChange.send()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     var selectedItem: PromptItem? {
@@ -318,7 +337,22 @@ final class AppState: ObservableObject {
         isPreservingSelectionSet = false
     }
 
+    @discardableResult
+    func requireFeature(_ feature: FeatureKey) -> Bool {
+        let decision = licenseManager.featureGate.evaluate(feature)
+        guard decision.allowed else {
+            presentFeatureDenied(decision)
+            return false
+        }
+        return true
+    }
+
+    func presentFeatureDenied(_ decision: FeatureDecision) {
+        modal = .featureDenied(decision)
+    }
+
     func openNewPromptComposer() {
+        guard requireFeature(.proCreatePrompt) else { return }
         modal = nil
         isPreviewPresented = false
         markdownEditorItemID = nil
@@ -326,6 +360,7 @@ final class AppState: ObservableObject {
     }
 
     func openEditPromptComposer(for item: PromptItem? = nil) {
+        guard requireFeature(.proEditPrompt) else { return }
         let target = item ?? selectedItem
         guard let target, !target.isTextDocumentLike else { return }
         if selectedID != target.id {
@@ -342,6 +377,7 @@ final class AppState: ObservableObject {
     }
 
     func openMarkdownEditor(for item: PromptItem? = nil) {
+        guard requireFeature(.proEditPrompt) else { return }
         let target = item ?? selectedItem
         guard let target, target.isTextDocumentLike else { return }
         if selectedID != target.id {
@@ -354,17 +390,22 @@ final class AppState: ObservableObject {
     }
 
     func handleExternalFileOpen(_ urls: [URL]) {
-        if repository == nil {
-            load()
-        }
-        let supportedURLs = urls.filter(Self.isSupportedExternalTextURL)
+        let supportedURLs = urls.filter(Self.isSupportedExternalMainAssetURL)
         guard !supportedURLs.isEmpty else {
             showToast("暂不支持打开这些文件")
             return
         }
+        guard shouldHandleExternalOpen(supportedURLs) else { return }
+        if repository == nil {
+            load()
+        }
         let matchedItems = supportedURLs.compactMap(itemMatchingExternalURL)
         if let item = matchedItems.first {
-            revealAndOpenTextItem(item)
+            revealAndOpenExternalItem(item)
+            return
+        }
+        guard supportedURLs.allSatisfy(Self.isSupportedExternalTextPreviewURL) else {
+            importFiles(supportedURLs)
             return
         }
         previewExternalFileTemporarily(ExternalFileOpenRequest(urls: supportedURLs))
@@ -373,6 +414,26 @@ final class AppState: ObservableObject {
     func importExternalFiles(_ request: ExternalFileOpenRequest) {
         modal = nil
         importFiles(request.urls)
+    }
+
+    func openImportAssets() {
+        guard requireFeature(.proSingleImport) else { return }
+        modal = .importAssets
+    }
+
+    func openAdvancedFilters() {
+        guard requireFeature(.proAdvancedSearch) else { return }
+        modal = .filters
+    }
+
+    func openSettings() {
+        preferredSettingsPageID = nil
+        modal = .settings
+    }
+
+    func openLicenseSettings() {
+        preferredSettingsPageID = "license"
+        modal = .settings
     }
 
     func previewExternalFileTemporarily(_ request: ExternalFileOpenRequest) {
@@ -639,6 +700,7 @@ final class AppState: ObservableObject {
     }
 
     func toggleFavorite(_ item: PromptItem) {
+        guard requireFeature(.proEditPrompt) else { return }
         var updated = item
         updated.favorite.toggle()
         updated.updatedAt = Date()
@@ -720,6 +782,7 @@ final class AppState: ObservableObject {
         saveAsNewVersion: Bool,
         referenceURLs: [URL] = []
     ) {
+        guard requireFeature(.proEditPrompt) else { return }
         guard var item = selectedItem else { return }
         do {
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
@@ -771,6 +834,7 @@ final class AppState: ObservableObject {
     }
 
     func saveMarkdownDocument(_ text: String, for item: PromptItem) {
+        guard requireFeature(.proEditPrompt) else { return }
         guard var current = selectedItem, current.id == item.id else { return }
         do {
             if !current.assetPath.isEmpty {
@@ -819,6 +883,7 @@ final class AppState: ObservableObject {
         previewImageURL: URL? = nil,
         referenceURLs: [URL] = []
     ) {
+        guard requireFeature(.proCreatePrompt) else { return }
         let model = models.first(where: { $0.id == modelId })
             ?? ModelProfile(id: "local_asset", name: "Local Asset", type: type, parameters: [])
         let id = UUID().uuidString
@@ -891,10 +956,15 @@ final class AppState: ObservableObject {
 
     func importFiles(_ urls: [URL], targetFolderID: String? = nil, acceptedType: PromptType? = nil) {
         guard let repository else { return }
+        let sourceFiles = expandedImportURLs(urls)
+        guard !sourceFiles.isEmpty else {
+            showToast("未导入素材")
+            return
+        }
+        guard requireFeature(sourceFiles.count > 1 ? .proBatchImport : .proSingleImport) else { return }
         isImporting = true
         defer { isImporting = false }
         do {
-            let sourceFiles = expandedImportURLs(urls)
             var importedIDs: [String] = []
             var skippedCount = 0
             var nextSortOrder = nextSortOrderForNewItem() - max(0, sourceFiles.count - 1)
@@ -965,6 +1035,9 @@ final class AppState: ObservableObject {
             showToast("请选择导出内容")
             return
         }
+        if options.pngImage || options.jpegImage {
+            guard requireFeature(.proAdvancedExport) else { return }
+        }
         guard let item = selectedItem, let directory = AppKitBridge.chooseExportDirectory() else { return }
         do {
             let source = URL(fileURLWithPath: item.assetPath)
@@ -1013,6 +1086,12 @@ final class AppState: ObservableObject {
         guard !format.requiresImage || item.assetKind == .image else {
             showToast("当前素材不是图片")
             return
+        }
+        switch format {
+        case .promptText, .promptMarkdown:
+            break
+        case .imagePNG, .imageJPEG, .imagePDF, .promptWord:
+            guard requireFeature(.proAdvancedExport) else { return }
         }
 
         let defaultName = defaultExportName(for: item, format: format)
@@ -1074,6 +1153,7 @@ final class AppState: ObservableObject {
     }
 
     func moveFilteredItem(draggedID: String, before targetID: String) {
+        guard requireFeature(.proManageCollections) else { return }
         guard draggedID != targetID else { return }
         guard filteredItems.contains(where: { $0.id == draggedID }),
               filteredItems.contains(where: { $0.id == targetID }) else {
@@ -1115,6 +1195,7 @@ final class AppState: ObservableObject {
     }
 
     func moveItem(_ itemID: String, toFolderID folderID: String) {
+        guard requireFeature(.proManageCollections) else { return }
         guard var item = itemsByID[itemID], !item.isDeleted else { return }
         guard let folder = folder(withID: folderID) else { return }
         guard item.folderId != folder.id else {
@@ -1222,6 +1303,7 @@ final class AppState: ObservableObject {
     }
 
     func reorderFolders(parentId: String?, orderedIDs: [String]) {
+        guard requireFeature(.proManageCollections) else { return }
         let siblings = folders
             .filter { $0.parentId == parentId }
             .sorted {
@@ -1284,6 +1366,7 @@ final class AppState: ObservableObject {
     }
 
     func swapFolderOrder(draggedID: String, targetID: String) {
+        guard requireFeature(.proManageCollections) else { return }
         guard draggedID != targetID,
               let dragged = folder(withID: draggedID),
               let target = folder(withID: targetID),
@@ -1316,6 +1399,7 @@ final class AppState: ObservableObject {
     }
 
     func beginCreateFolder(parentId: String? = nil) {
+        guard requireFeature(.proManageCollections) else { return }
         let parentName = parentId.flatMap(folder(withID:))?.name
         modal = .folderEditor(
             FolderEditorRequest(
@@ -1332,15 +1416,18 @@ final class AppState: ObservableObject {
     }
 
     func beginCreateSiblingFolder(_ folder: LibraryFolder) {
+        guard requireFeature(.proManageCollections) else { return }
         createInlineEditableFolder(parentId: folder.parentId, afterFolderID: folder.id)
     }
 
     func beginCreateChildFolder(_ folder: LibraryFolder) {
+        guard requireFeature(.proManageCollections) else { return }
         expandedFolderIDs.insert(folder.id)
         createInlineEditableFolder(parentId: folder.id, insertAtTop: true)
     }
 
     func moveFolder(_ folder: LibraryFolder, toParentID parentID: String?) {
+        guard requireFeature(.proManageCollections) else { return }
         guard folder.parentId != parentID else { return }
         if let parentID, descendantFolderIDs(of: folder.id, includingSelf: true).contains(parentID) {
             showToast("不能移动到自身或子文件夹")
@@ -1373,6 +1460,7 @@ final class AppState: ObservableObject {
     }
 
     func beginRenameFolder(_ folder: LibraryFolder) {
+        guard requireFeature(.proManageCollections) else { return }
         selectFolder(folder)
         modal = .folderEditor(
             FolderEditorRequest(
@@ -1407,6 +1495,7 @@ final class AppState: ObservableObject {
 
     @discardableResult
     func createFolder(parentId: String?, name: String) -> Bool {
+        guard requireFeature(.proManageCollections) else { return false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             showToast("文件夹名称不能为空")
@@ -1441,6 +1530,7 @@ final class AppState: ObservableObject {
 
     @discardableResult
     func createInlineEditableFolder(parentId: String?, insertAtTop: Bool = false, afterFolderID: String? = nil) -> Bool {
+        guard requireFeature(.proManageCollections) else { return false }
         let name = nextDefaultFolderName(parentId: parentId)
         let siblingOrders = folders.filter { $0.parentId == parentId }.map(\.sortOrder)
         let sortOrder = insertAtTop
@@ -1517,6 +1607,7 @@ final class AppState: ObservableObject {
 
     @discardableResult
     func renameFolder(id: String, name: String) -> Bool {
+        guard requireFeature(.proManageCollections) else { return false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             showToast("文件夹名称不能为空")
@@ -1577,6 +1668,7 @@ final class AppState: ObservableObject {
     }
 
     func exportFolder(_ folderID: String) {
+        guard requireFeature(.proAdvancedExport) else { return }
         guard let folder = folders.first(where: { $0.id == folderID }) else { return }
         let folderIDs = descendantFolderIDs(of: folder.id, includingSelf: true)
         let folderItems = items.filter { !$0.isDeleted && folderIDs.contains($0.folderId) }
@@ -1615,6 +1707,7 @@ final class AppState: ObservableObject {
     }
 
     func saveModelFilterLabel(id: String, name: String, type: PromptType) {
+        guard requireFeature(.proAdvancedSearch) else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             showToast("筛选标签名称不能为空")
@@ -1628,6 +1721,7 @@ final class AppState: ObservableObject {
     }
 
     func createModelFilterLabel(name: String, type: PromptType) {
+        guard requireFeature(.proAdvancedSearch) else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             showToast("筛选标签名称不能为空")
@@ -1648,6 +1742,7 @@ final class AppState: ObservableObject {
     }
 
     func generateTextVariant() {
+        guard requireFeature(.proAIAssist) else { return }
         guard var item = selectedItem, let current = item.currentVersion else { return }
         item.versions.append(
             PromptVersion(
@@ -1663,6 +1758,7 @@ final class AppState: ObservableObject {
     }
 
     func restoreVersion(_ version: PromptVersion) {
+        guard requireFeature(.proEditPrompt) else { return }
         guard var item = selectedItem else { return }
         item.versions.append(
             PromptVersion(
@@ -1912,14 +2008,18 @@ final class AppState: ObservableObject {
         return files
     }
 
-    private static func isSupportedExternalTextURL(_ url: URL) -> Bool {
-        supportedExternalTextExtensions.contains(url.pathExtension.lowercased())
+    private static func isSupportedExternalMainAssetURL(_ url: URL) -> Bool {
+        switch AssetFormatCatalog.support(forFileExtension: url.pathExtension).previewMode {
+        case .image, .video, .audio, .textDocument:
+            return true
+        case .document, .reference, .generic:
+            return false
+        }
     }
 
-    private static let supportedExternalTextExtensions: Set<String> = [
-        "md", "txt", "json", "yaml", "yml", "toml", "xml", "csv", "tsv",
-        "log", "plist", "rtf", "doc", "docx"
-    ]
+    private static func isSupportedExternalTextPreviewURL(_ url: URL) -> Bool {
+        AssetFormatCatalog.support(forFileExtension: url.pathExtension).previewMode == .textDocument
+    }
 
     private static func readExternalText(from url: URL) -> String {
         if let documentText = AppKitBridge.readDocumentText(from: url) {
@@ -1940,6 +2040,24 @@ final class AppState: ObservableObject {
         return name.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
     }
 
+    private func shouldHandleExternalOpen(_ urls: [URL]) -> Bool {
+        let signature = urls
+            .map { $0.standardizedFileURL.path }
+            .sorted()
+            .joined(separator: "\n")
+        let now = Date()
+        defer {
+            lastExternalOpenSignature = signature
+            lastExternalOpenAt = now
+        }
+        guard lastExternalOpenSignature == signature,
+              let lastExternalOpenAt,
+              now.timeIntervalSince(lastExternalOpenAt) < 1.0 else {
+            return true
+        }
+        return false
+    }
+
     private func itemMatchingExternalURL(_ url: URL) -> PromptItem? {
         let externalPath = url.standardizedFileURL.path
         return items.first { item in
@@ -1948,13 +2066,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func revealAndOpenTextItem(_ item: PromptItem) {
+    private func revealAndOpenExternalItem(_ item: PromptItem) {
         isBatchingFilterUpdate = true
         filter = PromptFilter()
         isBatchingFilterUpdate = false
         refreshFilteredItems(selecting: item.id, preserveExistingSelection: false)
-        openMarkdownEditor(for: item)
-        showToast("已打开文档")
+        previewSelected()
+        showToast(item.isTextDocumentLike ? "已打开文档" : "已打开素材")
     }
 
     private func reload(selecting id: String? = nil) {

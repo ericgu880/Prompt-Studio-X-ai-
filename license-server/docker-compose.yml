@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: promptstudio
+      POSTGRES_PASSWORD: promptstudio
+      POSTGRES_DB: promptstudio_license
+    ports:
+      - "5432:5432"
+    volumes:
+      - promptstudio_license_pg:/var/lib/postgresql/data
+
+volumes:
+  promptstudio_license_pg:
