@@ -5,16 +5,19 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     let content: Content
     let resetID: AnyHashable?
     let minimumContentHeight: CGFloat?
+    let verticalScrollerRightInset: CGFloat
     let onOffsetChange: ((CGFloat) -> Void)?
 
     init(
         resetID: AnyHashable? = nil,
         minimumContentHeight: CGFloat? = nil,
+        verticalScrollerRightInset: CGFloat = 0,
         onOffsetChange: ((CGFloat) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.resetID = resetID
         self.minimumContentHeight = minimumContentHeight
+        self.verticalScrollerRightInset = verticalScrollerRightInset
         self.onOffsetChange = onOffsetChange
         self.content = content()
     }
@@ -77,7 +80,7 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
-        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: verticalScrollerRightInset)
         if !(scrollView.contentView is TransparentOverlayClipView) {
             let clipView = TransparentOverlayClipView(frame: scrollView.contentView.frame)
             clipView.autoresizingMask = [.width, .height]

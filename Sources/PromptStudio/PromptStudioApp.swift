@@ -28,24 +28,16 @@ struct PromptStudioApp: App {
         .commands {
             CommandGroup(replacing: .undoRedo) {
                 Button("返回上一步") {
-                    if AppKitBridge.isTextInputActive() {
-                        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
-                    } else {
-                        appState.navigateBack()
-                    }
+                    AppShortcutRouter.performUndoOrBack(appState)
                 }
                     .keyboardShortcut("z", modifiers: .command)
-                    .disabled(!AppKitBridge.isTextInputActive() && !appState.canNavigateBack)
+                    .disabled(!AppShortcutRouter.canPerformUndoOrBack(appState))
 
                 Button("前进一步") {
-                    if AppKitBridge.isTextInputActive() {
-                        NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
-                    } else {
-                        appState.navigateForward()
-                    }
+                    AppShortcutRouter.performRedoOrForward(appState)
                 }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!AppKitBridge.isTextInputActive() && !appState.canNavigateForward)
+                    .disabled(!AppShortcutRouter.canPerformRedoOrForward(appState))
             }
 
             CommandGroup(after: .newItem) {

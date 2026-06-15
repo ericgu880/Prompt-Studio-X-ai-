@@ -169,6 +169,14 @@ struct PromptStudioView: View {
                 SpacePreviewKeyMonitor {
                     state.togglePreview()
                 }
+                AppShortcutKeyMonitor(
+                    onBack: {
+                        state.navigateBack()
+                    },
+                    onForward: {
+                        state.navigateForward()
+                    }
+                )
                 GlobalTextFocusMonitor()
             }
         }
@@ -383,6 +391,60 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
         @MainActor
         private static var isTextInputActive: Bool {
             AppKitBridge.isTextInputActive()
+        }
+    }
+}
+
+struct AppShortcutKeyMonitor: NSViewRepresentable {
+    let onBack: () -> Void
+    let onForward: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onBack: onBack, onForward: onForward)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onBack = onBack
+        context.coordinator.onForward = onForward
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        var onBack: () -> Void
+        var onForward: () -> Void
+        private var monitor: Any?
+
+        init(onBack: @escaping () -> Void, onForward: @escaping () -> Void) {
+            self.onBack = onBack
+            self.onForward = onForward
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let shortcut = AppShortcutRouter.undoRedoShortcut(for: event) else { return event }
+                let useAppHistory = MainActor.assumeIsolated {
+                    AppShortcutRouter.shouldUseAppHistoryForUndoRedo()
+                }
+                guard useAppHistory else { return event }
+
+                if shortcut == .redo {
+                    self?.onForward()
+                } else {
+                    self?.onBack()
+                }
+                return nil
+            }
         }
     }
 }
@@ -2244,6 +2306,7 @@ private struct MasonryGridView: View {
             TransparentOverlayScrollView(
                 resetID: scrollResetID,
                 minimumContentHeight: max(layout.height + 24, proxy.size.height),
+                verticalScrollerRightInset: Self.scrollerResizeHandleAvoidance,
                 onOffsetChange: { offsetY in
                     contentOffsetY = offsetY
                 }
@@ -2357,6 +2420,7 @@ private struct MasonryGridView: View {
     }
 
     private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
+    private static let scrollerResizeHandleAvoidance: CGFloat = 18
 
     private func renderedYRange(viewportHeight: CGFloat) -> ClosedRange<CGFloat> {
         let buffer = max(600, viewportHeight * 1.25)
