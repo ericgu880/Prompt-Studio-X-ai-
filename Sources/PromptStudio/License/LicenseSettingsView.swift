@@ -175,78 +175,367 @@ struct ActivationSheetView: View {
     @StateObject private var viewModel = ActivationViewModel()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("激活 PromptStudio Pro")
-                    .font(StudioFont.font(18, weight: .semibold))
-                Text("输入购买邮箱和激活码。")
-                    .font(StudioFont.font(13))
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                VStack(spacing: 18) {
+                    hero
+                    header
+                    fields
+                    primaryAction
+                    recoveryRow
+                }
+                .padding(.horizontal, 38)
+                .padding(.top, 42)
+                .padding(.bottom, 18)
+
+                Rectangle()
+                    .fill(StudioColor.hairline)
+                    .frame(height: 1)
+
+                statusPanel
+                    .padding(.horizontal, 38)
+                    .padding(.top, 18)
+
+                Text("授权只绑定当前设备，不会上传或改变你的本地素材数据。")
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(StudioColor.mutedText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 14)
+                    .padding(.bottom, 20)
+            }
+            .frame(width: 560)
+            .background(
+                LinearGradient(
+                    colors: [Color(hex: 0x202124), Color(hex: 0x17191D)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.white.opacity(0.34), lineWidth: 1)
+            )
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(StudioFont.symbol(13, weight: .medium))
                     .foregroundStyle(StudioColor.secondaryText)
+                    .frame(width: 30, height: 30)
             }
-
-            VStack(alignment: .leading, spacing: 12) {
-                labeledField("购买邮箱") {
-                    TextField("name@example.com", text: $viewModel.email)
-                        .textContentType(.emailAddress)
-                }
-                labeledField("激活码") {
-                    TextField("PS-XXXX-XXXX-XXXX-XXXX-XXXX", text: $viewModel.licenseCode)
-                        .textContentType(.oneTimeCode)
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                }
-            }
-
-            if let message = viewModel.message {
-                Text(message)
-                    .font(StudioFont.font(12))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                Button("找回激活码") {
-                    Task { await viewModel.recover(using: state.licenseManager) }
-                }
-                .buttonStyle(TextHoverButtonStyle())
-                .disabled(viewModel.isLoading || viewModel.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Spacer()
-
-                Button("取消") { dismiss() }
-                    .buttonStyle(CapsuleButtonStyle())
-
-                Button(viewModel.isLoading ? "激活中" : "激活") {
-                    Task {
-                        if await viewModel.activate(using: state.licenseManager) {
-                            dismiss()
-                        }
-                    }
-                }
-                .buttonStyle(CapsuleButtonStyle(filled: true))
-                .disabled(!viewModel.canSubmit)
-            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isLoading)
+            .padding(20)
         }
-        .padding(24)
-        .frame(width: 480)
+        .padding(1)
         .background(StudioColor.appBackground)
         .foregroundStyle(StudioColor.text)
     }
 
-    private func labeledField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private var hero: some View {
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.06))
+                .frame(width: 80, height: 80)
+                .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
+            Image(systemName: "bolt.fill")
+                .font(StudioFont.symbol(30, weight: .semibold))
+                .foregroundStyle(.white)
+            Image(systemName: "sparkle")
+                .font(StudioFont.symbol(11, weight: .semibold))
+                .foregroundStyle(StudioColor.mutedText)
+                .offset(x: -58, y: -12)
+            Image(systemName: "sparkle")
+                .font(StudioFont.symbol(11, weight: .semibold))
+                .foregroundStyle(StudioColor.mutedText)
+                .offset(x: 58, y: -8)
+            Image(systemName: "sparkles")
+                .font(StudioFont.symbol(10, weight: .semibold))
+                .foregroundStyle(StudioColor.mutedText.opacity(0.72))
+                .offset(x: -76, y: 10)
+            Image(systemName: "sparkles")
+                .font(StudioFont.symbol(10, weight: .semibold))
+                .foregroundStyle(StudioColor.mutedText.opacity(0.72))
+                .offset(x: 78, y: 12)
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 8) {
+            Text("激活 PromptStudio")
+                .font(StudioFont.font(26, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+            Text("输入购买邮箱与激活码，完成授权后解锁 Pro 功能。")
+                .font(StudioFont.font(14))
+                .foregroundStyle(StudioColor.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var fields: some View {
+        VStack(spacing: 16) {
+            ActivationInputField(
+                title: "购买邮箱",
+                placeholder: "请输入购买时使用的邮箱",
+                systemImage: "envelope",
+                text: $viewModel.email,
+                textContentType: .emailAddress,
+                disabled: inputsDisabled
+            )
+
+            ActivationInputField(
+                title: "激活码",
+                placeholder: "请输入激活码",
+                systemImage: "key",
+                text: $viewModel.licenseCode,
+                textContentType: .oneTimeCode,
+                disabled: inputsDisabled,
+                monospaced: true
+            )
+        }
+        .padding(.top, 8)
+    }
+
+    private var primaryAction: some View {
+        Button {
+            Task {
+                if await viewModel.activate(using: state.licenseManager) {
+                    try? await Task.sleep(for: .milliseconds(800))
+                    dismiss()
+                }
+            }
+        } label: {
+            HStack(spacing: 9) {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.74)
+                }
+                Text(primaryButtonTitle)
+                    .font(StudioFont.font(15, weight: .semibold))
+            }
+            .foregroundStyle(primaryButtonTextColor)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(Capsule().fill(primaryButtonColor))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(primaryButtonDisabled)
+        .padding(.top, 4)
+    }
+
+    private var recoveryRow: some View {
+        HStack(spacing: 8) {
+            Button {
+                Task { await viewModel.recover(using: state.licenseManager) }
+            } label: {
+                Label("找回激活码", systemImage: "arrow.counterclockwise")
+                    .font(StudioFont.font(13, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(viewModel.canRecover ? StudioColor.secondaryText : StudioColor.mutedText)
+            .disabled(!viewModel.canRecover)
+
+            Spacer()
+
+            Text("忘记激活码？可通过购买邮箱提交恢复请求。")
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.mutedText)
+        }
+        .frame(height: 24)
+    }
+
+    private var statusPanel: some View {
+        HStack(alignment: .center, spacing: 12) {
+            statusIcon
+                .frame(width: 18, height: 18)
+            Text(statusMessage)
+                .font(StudioFont.font(13, weight: statusWeight))
+                .foregroundStyle(statusForeground)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 54)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(statusBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(statusBorder, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch viewModel.feedback {
+        case .loading:
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.7)
+        case .success:
+            Image(systemName: "checkmark.circle")
+                .font(StudioFont.symbol(17, weight: .medium))
+        case .error:
+            Image(systemName: "xmark.circle")
+                .font(StudioFont.symbol(17, weight: .medium))
+        case .info:
+            Image(systemName: "info.circle")
+                .font(StudioFont.symbol(17, weight: .medium))
+        case .idle:
+            Image(systemName: "info")
+                .font(StudioFont.symbol(15, weight: .medium))
+        }
+    }
+
+    private var statusMessage: String {
+        switch viewModel.feedback {
+        case .idle:
+            return "输入购买邮箱和激活码后即可激活。"
+        case .loading(let message), .success(let message), .info(let message):
+            return message
+        case .error(let message):
+            return message
+        }
+    }
+
+    private var statusWeight: Font.Weight {
+        switch viewModel.feedback {
+        case .success:
+            .semibold
+        default:
+            .regular
+        }
+    }
+
+    private var statusForeground: Color {
+        switch viewModel.feedback {
+        case .success:
+            return Color(hex: 0xE6F8EB)
+        case .error:
+            return Color(hex: 0xFFBBB5)
+        case .loading:
+            return Color(hex: 0xB8D2FF)
+        case .info:
+            return StudioColor.secondaryText
+        case .idle:
+            return StudioColor.secondaryText
+        }
+    }
+
+    private var statusBackground: Color {
+        switch viewModel.feedback {
+        case .success:
+            return Color(hex: 0x13271B)
+        case .error:
+            return Color(hex: 0x2A1717)
+        case .loading:
+            return Color(hex: 0x17202B)
+        case .info, .idle:
+            return Color(hex: 0x15181E)
+        }
+    }
+
+    private var statusBorder: Color {
+        switch viewModel.feedback {
+        case .success:
+            return Color(hex: 0x2E6F43)
+        case .error:
+            return Color(hex: 0x7A3630)
+        case .loading:
+            return Color(hex: 0x31445C)
+        case .info, .idle:
+            return Color(hex: 0x2B323C)
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        switch viewModel.feedback {
+        case .loading:
+            "激活中..."
+        case .success:
+            "正在进入 PromptStudio..."
+        case .error:
+            "重新激活"
+        case .idle, .info:
+            "立即激活"
+        }
+    }
+
+    private var primaryButtonColor: Color {
+        switch viewModel.feedback {
+        case .loading:
+            return Color(hex: 0x3A414B)
+        case .success:
+            return Color(hex: 0xE9F8EF)
+        case .idle, .error, .info:
+            return primaryButtonDisabled ? Color(hex: 0x4A4E55) : StudioColor.primaryAction
+        }
+    }
+
+    private var primaryButtonTextColor: Color {
+        switch viewModel.feedback {
+        case .loading:
+            return Color(hex: 0xD8DEE8)
+        case .success:
+            return Color(hex: 0x17351F)
+        case .idle, .error, .info:
+            return primaryButtonDisabled ? Color(hex: 0xAEB4BD) : StudioColor.primaryActionText
+        }
+    }
+
+    private var primaryButtonDisabled: Bool {
+        viewModel.isActivated || !viewModel.canSubmit
+    }
+
+    private var inputsDisabled: Bool {
+        viewModel.isLoading || viewModel.isActivated
+    }
+}
+
+private struct ActivationInputField: View {
+    let title: String
+    let placeholder: String
+    let systemImage: String
+    @Binding var text: String
+    let textContentType: NSTextContentType?
+    let disabled: Bool
+    var monospaced = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(StudioFont.font(12, weight: .medium))
+                .font(StudioFont.font(13, weight: .medium))
                 .foregroundStyle(StudioColor.secondaryText)
-            content()
-                .textFieldStyle(.plain)
-                .font(StudioFont.font(13))
-                .foregroundStyle(StudioColor.text)
-                .padding(.horizontal, 12)
-                .frame(height: 38)
-                .background(StudioColor.control)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(StudioFont.symbol(16, weight: .medium))
+                    .foregroundStyle(disabled ? StudioColor.mutedText : StudioColor.secondaryText)
+                    .frame(width: 18)
+
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.plain)
+                    .textContentType(textContentType)
+                    .font(monospaced ? .system(size: 14, weight: .regular, design: .monospaced) : StudioFont.font(14))
+                    .foregroundStyle(StudioColor.text)
+                    .disabled(disabled)
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 50)
+            .background(disabled ? Color(hex: 0x111419) : Color(hex: 0x15181D))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color(hex: 0x3B414B), lineWidth: 1)
+            )
         }
+        .opacity(disabled ? 0.82 : 1)
     }
 }
 
