@@ -22,7 +22,34 @@ LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64=$(cat tests/fixtures/ed25519_dev_public.
 LICENSE_SIGNING_KEY_ID=dev-key-1
 ```
 
+Enable the web admin by setting strong random values in `.env`:
+
+```bash
+ADMIN_TOKEN=$(openssl rand -base64 32)
+ADMIN_SESSION_SECRET=$(openssl rand -base64 32)
+```
+
 Use `npm run cli -- keys:generate-dev` only when rotating development keys. If you generate a new key, launch the macOS app with `PROMPTSTUDIO_LICENSE_PUBLIC_KEY_RAW_B64URL` set to the generated raw public key or replace the embedded app public key before building.
+
+## Web Admin
+
+Open the admin portal after the server starts:
+
+```text
+http://localhost:8787/admin
+```
+
+Phase 1 admin supports:
+
+- create a license and show the plaintext activation code once
+- search/list licenses
+- view license detail, devices, and recent audit events
+- add seats
+- revoke a license
+- deactivate a device
+- rotate an activation code and show the new code once
+
+The admin portal uses `ADMIN_TOKEN` login plus an HttpOnly signed session cookie. Put it behind HTTPS and do not expose it without a reverse proxy or access control in production.
 
 ## Create A Test License
 

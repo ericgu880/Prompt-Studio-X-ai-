@@ -341,6 +341,117 @@ export class ActivationService {
     });
   }
 
+  async listDevices(input: {
+    activationId: string;
+    challengeId: string;
+    signature: string;
+  }): Promise<{
+    seatLimit: number;
+    activeDeviceCount: number;
+    devices: Array<{
+      activationId: string;
+      label: string;
+      status: string;
+      platform: string;
+      appVersion: string | null;
+      osVersion: string | null;
+      activatedAt: string;
+      lastSeenAt: string | null;
+      isCurrent: boolean;
+    }>;
+  }> {
+    return this.withDeviceChallenge(input, "devices_list", async (tx, activation) => {
+      const license = await tx.license.findUnique({
+        where: { id: activation.licenseId },
+        include: {
+          activations: {
+            where: { status: "active" },
+            orderBy: [{ lastSeenAt: "desc" }, { activatedAt: "desc" }]
+          }
+        }
+      });
+      if (!license || ["refunded", "revoked", "disabled"].includes(license.status)) {
+        throw new LicenseAPIError("LICENSE_REVOKED", 403, "该授权当前不可用。");
+      }
+      await tx.activation.update({
+        where: { id: activation.id },
+        data: { lastSeenAt: new Date() }
+      });
+      return {
+        seatLimit: license.seatLimit,
+        activeDeviceCount: license.activations.length,
+        devices: license.activations.map((device) => ({
+          activationId: device.id,
+          label: device.deviceLabel,
+          status: device.status,
+          platform: device.platform,
+          appVersion: device.appVersion,
+          osVersion: device.osVersion,
+          activatedAt: device.activatedAt.toISOString(),
+          lastSeenAt: device.lastSeenAt?.toISOString() ?? null,
+          isCurrent: device.id === activation.id
+        }))
+      };
+    });
+  }
+
+  async renameDevice(input: {
+    activationId: string;
+    challengeId: string;
+    signature: string;
+    targetActivationId: string;
+    label: string;
+  }): Promise<void> {
+    await this.withDeviceChallenge(input, "device_rename", async (tx, activation) => {
+      const label = input.label.trim();
+      const target = await tx.activation.findUnique({ where: { id: input.targetActivationId } });
+      if (!target || target.licenseId !== activation.licenseId || target.status !== "active") {
+        throw new LicenseAPIError("DEVICE_NOT_FOUND", 404, "设备不存在或已停用。");
+      }
+      await tx.activation.update({
+        where: { id: target.id },
+        data: { deviceLabel: label }
+      });
+      await tx.licenseEvent.create({
+        data: {
+          licenseId: activation.licenseId,
+          activationId: target.id,
+          eventType: "device_renamed",
+          eventSource: "api",
+          metadataJson: { byActivationId: activation.id } as Prisma.InputJsonValue
+        }
+      });
+    });
+  }
+
+  async deactivateDeviceById(input: {
+    activationId: string;
+    challengeId: string;
+    signature: string;
+    targetActivationId: string;
+    reason: string;
+  }): Promise<void> {
+    await this.withDeviceChallenge(input, "device_deactivate", async (tx, activation) => {
+      const target = await tx.activation.findUnique({ where: { id: input.targetActivationId } });
+      if (!target || target.licenseId !== activation.licenseId || target.status !== "active") {
+        throw new LicenseAPIError("DEVICE_NOT_FOUND", 404, "设备不存在或已停用。");
+      }
+      await tx.activation.update({
+        where: { id: target.id },
+        data: { status: "deactivated", deactivatedAt: new Date(), deactivatedReason: input.reason }
+      });
+      await tx.licenseEvent.create({
+        data: {
+          licenseId: activation.licenseId,
+          activationId: target.id,
+          eventType: "device_deactivated",
+          eventSource: "api",
+          metadataJson: { reason: input.reason, byActivationId: activation.id } as Prisma.InputJsonValue
+        }
+      });
+    });
+  }
+
   async recover(email: string): Promise<void> {
     const emailHash = hashEmail(this.config.licenseCodePepper, normalizeEmail(email));
     await this.audit.record({ eventType: "license_recover_requested", emailHash });
@@ -348,7 +459,7 @@ export class ActivationService {
 
   private async withDeviceChallenge<T>(
     input: { activationId: string; challengeId: string; signature: string },
-    purpose: "refresh" | "deactivate",
+    purpose: "refresh" | "deactivate" | "devices_list" | "device_rename" | "device_deactivate",
     work: (tx: Prisma.TransactionClient, activation: Activation) => Promise<T>
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {

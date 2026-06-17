@@ -4,6 +4,7 @@ import SwiftUI
 struct LicenseSettingsView: View {
     @EnvironmentObject private var state: AppState
     @State private var isActivationPresented = false
+    @State private var isDeviceManagementPresented = false
     @State private var isRefreshing = false
     @State private var isDeactivating = false
     @State private var message: String?
@@ -16,6 +17,10 @@ struct LicenseSettingsView: View {
         }
         .sheet(isPresented: $isActivationPresented) {
             ActivationSheetView()
+                .environmentObject(state)
+        }
+        .sheet(isPresented: $isDeviceManagementPresented) {
+            LicenseDeviceManagementSheet()
                 .environmentObject(state)
         }
     }
@@ -81,6 +86,13 @@ struct LicenseSettingsView: View {
                 }
                 .buttonStyle(CapsuleButtonStyle())
                 .disabled(isDeactivating || currentCertificate == nil)
+            }
+            licenseActionRow("激活设备", detail: "查看、重命名或移除已激活设备。") {
+                Button("管理设备") {
+                    isDeviceManagementPresented = true
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+                .disabled(currentCertificate == nil)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -536,6 +548,321 @@ private struct ActivationInputField: View {
             )
         }
         .opacity(disabled ? 0.82 : 1)
+    }
+}
+
+@MainActor
+final class LicenseDeviceManagementViewModel: ObservableObject {
+    @Published private(set) var deviceList: LicenseDeviceList?
+    @Published private(set) var isLoading = false
+    @Published private(set) var busyDeviceID: String?
+    @Published var editingDeviceID: String?
+    @Published var editingLabel = ""
+    @Published var message: String?
+
+    var activeDeviceCount: Int {
+        deviceList?.activeDeviceCount ?? 0
+    }
+
+    var seatLimit: Int {
+        deviceList?.seatLimit ?? 0
+    }
+
+    func load(using manager: LicenseManager) async {
+        isLoading = true
+        message = nil
+        defer { isLoading = false }
+        do {
+            deviceList = try await manager.listDevices()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func beginEditing(_ device: LicenseDevice) {
+        editingDeviceID = device.activationId
+        editingLabel = device.label
+        message = nil
+    }
+
+    func cancelEditing() {
+        editingDeviceID = nil
+        editingLabel = ""
+    }
+
+    func renameEditingDevice(using manager: LicenseManager) async {
+        guard let editingDeviceID else { return }
+        let label = editingLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else {
+            message = "设备名称不能为空。"
+            return
+        }
+        busyDeviceID = editingDeviceID
+        message = nil
+        defer { busyDeviceID = nil }
+        do {
+            try await manager.renameDevice(activationId: editingDeviceID, label: label)
+            cancelEditing()
+            await load(using: manager)
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func deactivate(_ device: LicenseDevice, using manager: LicenseManager) async -> Bool {
+        busyDeviceID = device.activationId
+        message = nil
+        defer { busyDeviceID = nil }
+        do {
+            try await manager.deactivateDevice(activationId: device.activationId)
+            if device.isCurrent {
+                return true
+            }
+            await load(using: manager)
+            return false
+        } catch {
+            message = error.localizedDescription
+            return false
+        }
+    }
+
+    func isBusy(_ device: LicenseDevice) -> Bool {
+        isLoading || busyDeviceID == device.activationId
+    }
+}
+
+struct LicenseDeviceManagementSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var viewModel = LicenseDeviceManagementViewModel()
+    @State private var pendingRemoval: LicenseDevice?
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                header
+                    .padding(.top, 36)
+                    .padding(.horizontal, 42)
+                    .padding(.bottom, 24)
+
+                deviceListContent
+                    .padding(.horizontal, 42)
+                    .padding(.bottom, 30)
+            }
+            .frame(width: 820, height: 620)
+            .background(Color(hex: 0x32363A))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(StudioFont.symbol(20, weight: .light))
+                    .foregroundStyle(Color.white.opacity(0.76))
+                    .frame(width: 42, height: 42)
+            }
+            .buttonStyle(.plain)
+            .padding(22)
+        }
+        .background(StudioColor.appBackground)
+        .foregroundStyle(StudioColor.text)
+        .task {
+            await viewModel.load(using: state.licenseManager)
+        }
+        .confirmationDialog(
+            "移除设备？",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingRemoval = nil
+                    }
+                }
+            )
+        ) {
+            if let device = pendingRemoval {
+                Button("移除设备", role: .destructive) {
+                    Task {
+                        let removedCurrent = await viewModel.deactivate(device, using: state.licenseManager)
+                        pendingRemoval = nil
+                        if removedCurrent {
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if pendingRemoval?.isCurrent == true {
+                Text("移除当前设备后，本机会退出授权状态。")
+            } else {
+                Text("移除后该设备会释放一个授权席位。")
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 18) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "desktopcomputer")
+                    .font(StudioFont.symbol(100, weight: .ultraLight))
+                    .foregroundStyle(Color.white.opacity(0.22))
+                Image(systemName: "laptopcomputer")
+                    .font(StudioFont.symbol(70, weight: .ultraLight))
+                    .foregroundStyle(Color.white.opacity(0.28))
+                    .offset(x: 56, y: 18)
+            }
+            .frame(height: 118)
+            .padding(.trailing, 40)
+
+            Text("激活设备管理 (\(viewModel.activeDeviceCount)/\(viewModel.seatLimit))")
+                .font(StudioFont.font(30, weight: .semibold))
+
+            HStack(spacing: 0) {
+                Text("当前序列号可以授权 \(viewModel.seatLimit) 台设备，如需扩增你原购买的序列号授权数，请 ")
+                    .foregroundStyle(Color.white.opacity(0.62))
+                Button("扩增授权数") {
+                    openPurchasePage()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StudioColor.blue)
+                Text("。")
+                    .foregroundStyle(Color.white.opacity(0.62))
+            }
+            .font(StudioFont.font(17))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var deviceListContent: some View {
+        if viewModel.isLoading && viewModel.deviceList == nil {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在加载设备...")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let devices = viewModel.deviceList?.devices, !devices.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(devices) { device in
+                    deviceRow(device)
+                    if device.id != devices.last?.id {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.10))
+                            .frame(height: 1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .overlay(alignment: .bottomLeading) {
+                if let message = viewModel.message {
+                    Text(message)
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(Color(hex: 0xFFBBB5))
+                        .padding(.top, 12)
+                        .offset(y: 26)
+                }
+            }
+        } else {
+            VStack(spacing: 10) {
+                Text("暂无激活设备")
+                    .font(StudioFont.font(15, weight: .semibold))
+                if let message = viewModel.message {
+                    Text(message)
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(Color(hex: 0xFFBBB5))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func deviceRow(_ device: LicenseDevice) -> some View {
+        HStack(spacing: 16) {
+            Circle()
+                .fill(device.isCurrent ? Color(hex: 0x4AE06D) : Color.white.opacity(0.28))
+                .frame(width: 12, height: 12)
+
+            Image(systemName: "apple.logo")
+                .font(StudioFont.symbol(24, weight: .regular))
+                .foregroundStyle(Color.white.opacity(device.isCurrent ? 0.78 : 0.52))
+
+            VStack(alignment: .leading, spacing: 6) {
+                if viewModel.editingDeviceID == device.activationId {
+                    TextField("设备名称", text: $viewModel.editingLabel)
+                        .textFieldStyle(.plain)
+                        .font(StudioFont.font(19, weight: .medium))
+                        .foregroundStyle(StudioColor.text)
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .background(Color.black.opacity(0.16))
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                } else {
+                    Text(device.label)
+                        .font(StudioFont.font(19, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(device.isCurrent ? 0.94 : 0.68))
+                        .lineLimit(1)
+                }
+                Text(deviceSubtitle(device))
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.48))
+            }
+
+            Spacer()
+
+            if viewModel.editingDeviceID == device.activationId {
+                Button("取消") {
+                    viewModel.cancelEditing()
+                }
+                .buttonStyle(TextHoverButtonStyle())
+                Button("保存") {
+                    Task { await viewModel.renameEditingDevice(using: state.licenseManager) }
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+                .disabled(viewModel.isBusy(device))
+            } else {
+                Button {
+                    viewModel.beginEditing(device)
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(StudioFont.symbol(19, weight: .regular))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.white.opacity(0.56))
+                .disabled(viewModel.isBusy(device))
+
+                Button {
+                    pendingRemoval = device
+                } label: {
+                    Image(systemName: "trash")
+                        .font(StudioFont.symbol(20, weight: .regular))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.white.opacity(0.56))
+                .disabled(viewModel.isBusy(device))
+            }
+        }
+        .frame(height: 72)
+    }
+
+    private func deviceSubtitle(_ device: LicenseDevice) -> String {
+        let date = device.lastSeenAt ?? device.activatedAt
+        let prefix = device.lastSeenAt == nil ? "激活" : "最近在线"
+        return "\(prefix) \(date.formatted(date: .numeric, time: .shortened))"
+    }
+
+    private func openPurchasePage() {
+        if let url = URL(string: "https://promptstudio.app/pricing") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { AppConfig } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { licenseRoutes } from "./routes/licenses.js";
+import { adminRoutes } from "./routes/admin.js";
 import { AuditEventService } from "./services/AuditEventService.js";
 import { RateLimitService } from "./services/RateLimitService.js";
 import { CertificateService } from "./services/CertificateService.js";
@@ -49,5 +50,6 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   app.decorate("licenseServices", buildServices(prisma, config));
   await app.register(healthRoutes);
   await app.register(licenseRoutes);
+  await app.register(adminRoutes, config);
   return app;
 }

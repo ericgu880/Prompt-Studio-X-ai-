@@ -109,6 +109,43 @@ final class LicenseAPIClient {
         )
     }
 
+    func listDevices(activationId: String, challengeId: String, signature: String) async throws -> LicenseDeviceList {
+        try await post(
+            "/v1/licenses/devices/list",
+            body: [
+                "activationId": activationId,
+                "challengeId": challengeId,
+                "signature": signature
+            ]
+        )
+    }
+
+    func renameDevice(activationId: String, challengeId: String, signature: String, targetActivationId: String, label: String) async throws {
+        let _: EmptyResponse = try await post(
+            "/v1/licenses/devices/rename",
+            body: [
+                "activationId": activationId,
+                "challengeId": challengeId,
+                "signature": signature,
+                "targetActivationId": targetActivationId,
+                "label": label
+            ]
+        )
+    }
+
+    func deactivateDevice(activationId: String, challengeId: String, signature: String, targetActivationId: String, reason: String) async throws {
+        let _: EmptyResponse = try await post(
+            "/v1/licenses/devices/deactivate",
+            body: [
+                "activationId": activationId,
+                "challengeId": challengeId,
+                "signature": signature,
+                "targetActivationId": targetActivationId,
+                "reason": reason
+            ]
+        )
+    }
+
     func recover(email: String) async throws {
         let _: EmptyResponse = try await post("/v1/licenses/recover", body: ["email": email])
     }

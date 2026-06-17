@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct PromptStudioView: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var shortcutStore: AppShortcutStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("promptStudio.sidebarWidth") private var sidebarWidth = 220.0
     @AppStorage("promptStudio.inspectorWidth") private var inspectorWidth = 330.0
@@ -166,10 +167,13 @@ struct PromptStudioView: View {
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: state.toast)
         .background {
             ZStack {
-                SpacePreviewKeyMonitor {
+                StandardTextEditingShortcutMonitor()
+                SpacePreviewKeyMonitor(shortcut: shortcutStore.binding(for: .preview)) {
                     state.togglePreview()
                 }
                 AppShortcutKeyMonitor(
+                    backShortcut: shortcutStore.binding(for: .navigateBack),
+                    forwardShortcut: shortcutStore.binding(for: .navigateForward),
                     onBack: {
                         state.navigateBack()
                     },
@@ -260,6 +264,7 @@ struct PromptStudioView: View {
         case .settings:
             SettingsSheet()
                 .environmentObject(state)
+                .environmentObject(shortcutStore)
         case .modelFilterManager:
             ModelFilterManagerSheet()
                 .environmentObject(state)
@@ -278,6 +283,7 @@ struct PromptStudioView: View {
         case .preview:
             PreviewSheet()
                 .environmentObject(state)
+                .environmentObject(shortcutStore)
         case .featureDenied(let decision):
             FeatureDeniedSheet(decision: decision)
                 .environmentObject(state)
@@ -346,10 +352,11 @@ private struct SplitResizeHotZone: View {
 }
 
 struct SpacePreviewKeyMonitor: NSViewRepresentable {
+    let shortcut: AppShortcutBinding
     let onSpace: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSpace: onSpace)
+        Coordinator(shortcut: shortcut, onSpace: onSpace)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -358,14 +365,17 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.shortcut = shortcut
         context.coordinator.onSpace = onSpace
     }
 
     final class Coordinator: @unchecked Sendable {
+        var shortcut: AppShortcutBinding
         var onSpace: () -> Void
         private var monitor: Any?
 
-        init(onSpace: @escaping () -> Void) {
+        init(shortcut: AppShortcutBinding, onSpace: @escaping () -> Void) {
+            self.shortcut = shortcut
             self.onSpace = onSpace
         }
 
@@ -381,9 +391,7 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
                 let textInputActive = MainActor.assumeIsolated {
                     Self.isTextInputActive
                 }
-                guard event.keyCode == 49,
-                      event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-                      !textInputActive else {
+                guard !textInputActive, self?.shortcut.matches(event) == true else {
                     return event
                 }
                 self?.onSpace()
@@ -399,11 +407,13 @@ struct SpacePreviewKeyMonitor: NSViewRepresentable {
 }
 
 struct AppShortcutKeyMonitor: NSViewRepresentable {
+    let backShortcut: AppShortcutBinding
+    let forwardShortcut: AppShortcutBinding
     let onBack: () -> Void
     let onForward: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBack: onBack, onForward: onForward)
+        Coordinator(backShortcut: backShortcut, forwardShortcut: forwardShortcut, onBack: onBack, onForward: onForward)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -412,16 +422,22 @@ struct AppShortcutKeyMonitor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.backShortcut = backShortcut
+        context.coordinator.forwardShortcut = forwardShortcut
         context.coordinator.onBack = onBack
         context.coordinator.onForward = onForward
     }
 
     final class Coordinator: @unchecked Sendable {
+        var backShortcut: AppShortcutBinding
+        var forwardShortcut: AppShortcutBinding
         var onBack: () -> Void
         var onForward: () -> Void
         private var monitor: Any?
 
-        init(onBack: @escaping () -> Void, onForward: @escaping () -> Void) {
+        init(backShortcut: AppShortcutBinding, forwardShortcut: AppShortcutBinding, onBack: @escaping () -> Void, onForward: @escaping () -> Void) {
+            self.backShortcut = backShortcut
+            self.forwardShortcut = forwardShortcut
             self.onBack = onBack
             self.onForward = onForward
         }
@@ -435,18 +451,75 @@ struct AppShortcutKeyMonitor: NSViewRepresentable {
         func install() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let shortcut = AppShortcutRouter.undoRedoShortcut(for: event) else { return event }
                 let useAppHistory = MainActor.assumeIsolated {
                     AppShortcutRouter.shouldUseAppHistoryForUndoRedo()
                 }
                 guard useAppHistory else { return event }
 
-                if shortcut == .redo {
+                if self?.forwardShortcut.matches(event) == true {
                     self?.onForward()
-                } else {
-                    self?.onBack()
+                    return nil
                 }
-                return nil
+                if self?.backShortcut.matches(event) == true {
+                    self?.onBack()
+                    return nil
+                }
+                return event
+            }
+        }
+    }
+}
+
+struct StandardTextEditingShortcutMonitor: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Coordinator: @unchecked Sendable {
+        private var monitor: Any?
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                let textInputActive = MainActor.assumeIsolated {
+                    AppKitBridge.isTextInputActive()
+                }
+                guard textInputActive else { return event }
+                let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                guard flags.contains(.command), !flags.contains(.option), !flags.contains(.control),
+                      let key = event.charactersIgnoringModifiers?.lowercased() else {
+                    return event
+                }
+                if key == "c", !flags.contains(.shift) {
+                    _ = MainActor.assumeIsolated {
+                        NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+                    }
+                    return nil
+                }
+                if key == "z" {
+                    _ = MainActor.assumeIsolated {
+                        if flags.contains(.shift) {
+                            NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                        } else {
+                            NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                        }
+                    }
+                    return nil
+                }
+                return event
             }
         }
     }
@@ -1657,7 +1730,7 @@ private struct MainContentView: View {
                     .padding(.horizontal, Self.contentHorizontalInset)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: contentFrameAlignment)
             .background(StudioColor.previewBackground)
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded {
@@ -1668,6 +1741,13 @@ private struct MainContentView: View {
         }
         .background(StudioColor.previewBackground)
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
+    }
+
+    private var contentFrameAlignment: Alignment {
+        if state.filteredItems.isEmpty && state.childFolderRowsForCurrentCollection().isEmpty {
+            return .center
+        }
+        return .topLeading
     }
 
     private var contentStateKey: String {
@@ -2309,9 +2389,11 @@ private struct MasonryGridView: View {
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
             let renderedPlacements = layout.placements.filter { $0.intersectsYRange(renderRange) }
             let visibleThumbnailCandidateIDs = thumbnailCandidateIDs(in: renderedPlacements)
+            let scrollContentHeight = max(layout.height + Self.contentBottomPadding, proxy.size.height)
+            let gridContentHeight = max(1, scrollContentHeight - Self.contentBottomPadding)
             TransparentOverlayScrollView(
                 resetID: scrollResetID,
-                minimumContentHeight: max(layout.height + 24, proxy.size.height),
+                minimumContentHeight: scrollContentHeight,
                 verticalScrollerRightInset: -Self.scrollbarLaneWidth,
                 onOffsetChange: { offsetY in
                     contentOffsetY = offsetY
@@ -2338,7 +2420,7 @@ private struct MasonryGridView: View {
                     )
                     .frame(
                         width: max(0, proxy.size.width),
-                        height: max(layout.height, proxy.size.height)
+                        height: gridContentHeight
                     )
 
                     ForEach(renderedPlacements) { placement in
@@ -2387,12 +2469,12 @@ private struct MasonryGridView: View {
                 }
                 .frame(
                     width: max(0, proxy.size.width),
-                    height: layout.height,
+                    height: gridContentHeight,
                     alignment: .topLeading
                 )
                 .contentShape(Rectangle())
                 .coordinateSpace(name: Self.gridCoordinateSpace)
-                .padding(.bottom, 24)
+                .padding(.bottom, Self.contentBottomPadding)
             }
             .onChange(of: state.filter) { _, _ in
                 contentOffsetY = 0
@@ -2426,6 +2508,7 @@ private struct MasonryGridView: View {
 
     private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
     private static let scrollbarLaneWidth: CGFloat = 18
+    private static let contentBottomPadding: CGFloat = 24
 
     private func gridContentWidth(for availableWidth: CGFloat) -> CGFloat {
         max(0, availableWidth)

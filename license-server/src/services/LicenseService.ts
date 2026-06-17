@@ -97,6 +97,91 @@ export class LicenseService {
     }));
   }
 
+  async getLicenseDetail(licenseId: string): Promise<{
+    id: string;
+    email: string;
+    code: string;
+    codePrefix: string;
+    plan: string;
+    type: string;
+    status: string;
+    seats: number;
+    majorVersion: number;
+    updatesUntil: Date | null;
+    orderProvider: string | null;
+    orderId: string | null;
+    createdAt: Date;
+    activatedAt: Date | null;
+    revokedAt: Date | null;
+    revokedReason: string | null;
+    devices: Array<{
+      id: string;
+      label: string;
+      status: string;
+      platform: string;
+      appVersion: string | null;
+      osVersion: string | null;
+      activatedAt: Date;
+      lastSeenAt: Date | null;
+      deactivatedAt: Date | null;
+      deactivatedReason: string | null;
+    }>;
+    events: Array<{
+      id: string;
+      eventType: string;
+      eventSource: string;
+      activationId: string | null;
+      createdAt: Date;
+    }>;
+  } | null> {
+    const license = await this.prisma.license.findUnique({
+      where: { id: licenseId },
+      include: {
+        customer: true,
+        activations: { orderBy: { activatedAt: "desc" } },
+        events: { orderBy: { createdAt: "desc" }, take: 30 }
+      }
+    });
+    if (!license) return null;
+    return {
+      id: license.id,
+      email: license.customer.emailMasked,
+      code: license.codeMasked,
+      codePrefix: license.codePrefix,
+      plan: license.plan,
+      type: license.licenseType,
+      status: license.status,
+      seats: license.seatLimit,
+      majorVersion: license.majorVersion,
+      updatesUntil: license.updatesUntil,
+      orderProvider: license.orderProvider,
+      orderId: license.orderId,
+      createdAt: license.createdAt,
+      activatedAt: license.activatedAt,
+      revokedAt: license.revokedAt,
+      revokedReason: license.revokedReason,
+      devices: license.activations.map((activation) => ({
+        id: activation.id,
+        label: activation.deviceLabel,
+        status: activation.status,
+        platform: activation.platform,
+        appVersion: activation.appVersion,
+        osVersion: activation.osVersion,
+        activatedAt: activation.activatedAt,
+        lastSeenAt: activation.lastSeenAt,
+        deactivatedAt: activation.deactivatedAt,
+        deactivatedReason: activation.deactivatedReason
+      })),
+      events: license.events.map((event) => ({
+        id: event.id,
+        eventType: event.eventType,
+        eventSource: event.eventSource,
+        activationId: event.activationId,
+        createdAt: event.createdAt
+      }))
+    };
+  }
+
   async addSeats(licenseId: string, seats: number): Promise<void> {
     const license = await this.prisma.license.update({
       where: { id: licenseId },

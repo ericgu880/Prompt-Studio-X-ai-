@@ -1,4 +1,5 @@
 import AVKit
+import AppKit
 import SwiftUI
 import PromptStudioCore
 import UniformTypeIdentifiers
@@ -747,8 +748,10 @@ struct ExportSheet: View {
 
 struct SettingsSheet: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var shortcutStore: AppShortcutStore
     @State private var selectedPage: SettingsPage = .library
-    @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
+    @State private var shortcutDraft = AppShortcutStore.defaultBindings()
+    @State private var shortcutRecorderAction: AppShortcutAction?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -771,12 +774,14 @@ struct SettingsSheet: View {
                 }
                 .transparentScrollArea()
                 .background(StudioColor.appBackground)
+                settingsBottomBar
             }
         }
         .foregroundStyle(StudioColor.text)
         .background(StudioColor.appBackground)
         .frame(width: 1180, height: 760)
         .onAppear {
+            shortcutDraft = shortcutStore.bindings
             if let pageID = state.preferredSettingsPageID,
                let page = SettingsPage(rawValue: pageID) {
                 selectedPage = page
@@ -815,16 +820,6 @@ struct SettingsSheet: View {
     private var settingsTopBar: some View {
         HStack(spacing: 12) {
             Spacer()
-            Button("恢复本页默认") {
-                resetCurrentPage()
-            }
-            .buttonStyle(CapsuleButtonStyle())
-            .disabled(!selectedPage.supportsReset)
-            .opacity(selectedPage.supportsReset ? 1 : 0.52)
-            Button("完成") {
-                state.modal = nil
-            }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
             Button {
                 state.modal = nil
             } label: {
@@ -842,6 +837,31 @@ struct SettingsSheet: View {
         .frame(height: 58)
         .background(StudioColor.appBackground)
         .overlay(alignment: .bottom) {
+            Rectangle().fill(StudioColor.hairline).frame(height: 1)
+        }
+    }
+
+    private var settingsBottomBar: some View {
+        HStack(spacing: 12) {
+            Spacer()
+            Button("恢复本页默认") {
+                resetCurrentPage()
+            }
+            .buttonStyle(CapsuleButtonStyle())
+            .disabled(!selectedPage.supportsReset)
+            .opacity(selectedPage.supportsReset ? 1 : 0.52)
+
+            Button("保存") {
+                saveSettings()
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+            .disabled(!canSave)
+            .opacity(canSave ? 1 : 0.56)
+        }
+        .padding(.horizontal, 28)
+        .frame(height: 64)
+        .background(StudioColor.appBackground)
+        .overlay(alignment: .top) {
             Rectangle().fill(StudioColor.hairline).frame(height: 1)
         }
     }
@@ -867,36 +887,14 @@ struct SettingsSheet: View {
                 settingsPathRow("本地数据库", path: databasePath, revealPath: databasePath)
                 settingsPathRow("资产目录", path: assetsPath, revealPath: assetsPath)
             }
-        case .displayPreview:
-            settingsGroup("显示方式", detail: "这些设置会立即影响主界面的素材浏览体验。") {
-                ViewModeSettingsRow(isListView: $state.isListView)
-                thumbnailScaleRow
-            }
-        case .promptWorkflow:
-            settingsGroup("主 Prompt 格式", detail: "PromptStudio 当前只把图片、视频、文本和声音作为主 Prompt 资产。") {
-                formatRow("图片 Prompt", count: imageCount, detail: "png · jpg · jpeg · webp · heic · gif · tiff · svg")
-                formatRow("视频 Prompt", count: videoCount, detail: "mp4 · mov · m4v · webm · mkv · avi")
-                formatRow("文本 Prompt", count: textDocumentCount, detail: "md · txt · json · yaml · toml · xml · csv · log · docx")
-                formatRow("声音 Prompt", count: audioCount, detail: "mp3 · wav · m4a · aac · flac · ogg · opus · aiff")
-            }
-            settingsGroup("筛选标签", detail: "首页顶部只突出高频入口，低频格式统一进入附件/其他。") {
-                settingsValueRow("筛选模型数量", value: "\(max(0, state.models.count - 1))")
-                settingsAction("管理首页筛选标签", detail: "选择哪些筛选项显示在主界面顶部，并调整排序。", button: "管理", filled: true) {
-                    state.modal = .modelFilterManager
+        case .shortcuts:
+            settingsGroup("常用快捷键", detail: "点击快捷键后按下新的组合键，保存后立即生效。") {
+                ForEach(AppShortcutAction.allCases) { action in
+                    shortcutEditorRow(action)
                 }
             }
-            .transparentScrollArea()
-        case .shortcutsPrivacy:
-            settingsGroup("快捷键", detail: "当前快捷键由 App 提供，设置页只展示已可用的操作。") {
-                shortcutRow("新建 Prompt", value: "⌘N")
-                shortcutRow("复制内容", value: "⌘C")
-                shortcutRow("沉浸预览", value: "Space")
-                shortcutRow("返回上一步", value: "⌘Z")
-                shortcutRow("前进一步", value: "⇧⌘Z")
-            }
-            settingsGroup("本地数据", detail: "不提供云端同步、API Key 和自动上传设置，避免把本地 Prompt 管理工具做成 API 控制台。") {
-                settingsValueRow("数据保存", value: "本机资料库")
-                settingsValueRow("附件策略", value: "保存和引用，不进入 Prompt 编辑流程")
+            if !shortcutValidationMessages.isEmpty {
+                shortcutValidationPanel
             }
         case .license:
             LicenseSettingsView()
@@ -904,27 +902,19 @@ struct SettingsSheet: View {
         }
     }
 
-    private var thumbnailScaleRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                settingText("缩略图大小", "控制瀑布流卡片的目标宽度。")
-                Spacer()
-                Text("\(Int((thumbnailScale * 100).rounded()))%")
-                    .font(StudioFont.font(12, weight: .medium))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .padding(.horizontal, 10)
-                    .frame(height: 26)
-                    .background(Capsule().fill(StudioColor.control))
-                    .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+    private var shortcutValidationPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(shortcutValidationMessages, id: \.self) { message in
+                Label(message, systemImage: "exclamationmark.circle")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(Color(hex: 0xFFBBB5))
             }
-            Slider(value: $thumbnailScale, in: 0.72...1.36)
-                .controlSize(.small)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(StudioColor.panel)
+        .background(Color(hex: 0x2A1717))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0x7A3630), lineWidth: 1))
     }
 
     private func settingsNavRow(_ page: SettingsPage) -> some View {
@@ -1033,16 +1023,15 @@ struct SettingsSheet: View {
         .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
     }
 
-    private func shortcutRow(_ title: String, value: String) -> some View {
+    private func shortcutEditorRow(_ action: AppShortcutAction) -> some View {
         HStack {
-            settingText(title, "当前快捷键")
+            settingText(action.title, action.detail)
             Spacer()
-            Text(value)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(Capsule().fill(StudioColor.control))
-                .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
+            ShortcutRecorderButton(
+                action: action,
+                binding: shortcutBinding(for: action),
+                recordingAction: $shortcutRecorderAction
+            )
         }
         .padding(16)
         .overlay(alignment: .top) { Rectangle().fill(StudioColor.hairline).frame(height: 1) }
@@ -1078,26 +1067,6 @@ struct SettingsSheet: View {
         }
     }
 
-    private var activeItems: [PromptItem] {
-        state.items.filter { !$0.isDeleted }
-    }
-
-    private var imageCount: Int {
-        activeItems.filter { $0.assetKind == .image }.count
-    }
-
-    private var videoCount: Int {
-        activeItems.filter { $0.assetKind == .video }.count
-    }
-
-    private var audioCount: Int {
-        activeItems.filter { $0.assetKind == .audio }.count
-    }
-
-    private var textDocumentCount: Int {
-        activeItems.filter { $0.isTextDocumentLike }.count
-    }
-
     private var libraryPath: String {
         state.libraryURL.path
     }
@@ -1123,25 +1092,47 @@ struct SettingsSheet: View {
 
     private func resetCurrentPage() {
         switch selectedPage {
-        case .displayPreview:
-            thumbnailScale = 1.0
-            state.isListView = false
+        case .shortcuts:
+            shortcutDraft = AppShortcutStore.defaultBindings()
+            shortcutRecorderAction = nil
         default:
             break
         }
+    }
+
+    private func saveSettings() {
+        guard canSave else { return }
+        shortcutStore.save(shortcutDraft)
+        state.modal = nil
+    }
+
+    private var shortcutValidationMessages: [String] {
+        AppShortcutStore.validationMessages(for: shortcutDraft)
+    }
+
+    private var canSave: Bool {
+        shortcutValidationMessages.isEmpty
+    }
+
+    private func shortcutBinding(for action: AppShortcutAction) -> Binding<AppShortcutBinding> {
+        Binding(
+            get: {
+                shortcutDraft[action] ?? AppShortcutBinding.defaultBinding(for: action)
+            },
+            set: { newValue in
+                shortcutDraft[action] = newValue
+            }
+        )
     }
 }
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
     case library
-    case displayPreview
-    case promptWorkflow
-    case shortcutsPrivacy
+    case shortcuts
     case license
 
     enum Section: CaseIterable, Identifiable {
         case storage
-        case workflow
         case system
 
         var id: String { title }
@@ -1149,7 +1140,6 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         var title: String {
             switch self {
             case .storage: "资料库"
-            case .workflow: "PROMPT"
             case .system: "系统"
             }
         }
@@ -1160,9 +1150,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .library: "资料库"
-        case .displayPreview: "显示与预览"
-        case .promptWorkflow: "Prompt 工作流"
-        case .shortcutsPrivacy: "快捷键与隐私"
+        case .shortcuts: "快捷键"
         case .license: "授权"
         }
     }
@@ -1170,9 +1158,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .library: "查看并复制当前本地资料库、数据库和资产目录路径。"
-        case .displayPreview: "调整素材浏览方式、瀑布流密度和缩略图尺寸。"
-        case .promptWorkflow: "确认主格式范围，并管理首页筛选标签。"
-        case .shortcutsPrivacy: "查看常用快捷键和当前本地数据策略。"
+        case .shortcuts: "自定义常用操作快捷键。"
         case .license: "激活、刷新或停用当前设备授权。"
         }
     }
@@ -1180,9 +1166,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .library: "externaldrive"
-        case .displayPreview: "rectangle.grid.2x2"
-        case .promptWorkflow: "slider.horizontal.3"
-        case .shortcutsPrivacy: "keyboard"
+        case .shortcuts: "keyboard"
         case .license: "key"
         }
     }
@@ -1190,15 +1174,13 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
     var badge: String {
         switch self {
         case .library: "本地"
-        case .displayPreview: "界面"
-        case .promptWorkflow: "核心"
-        case .shortcutsPrivacy: "效率"
+        case .shortcuts: "效率"
         case .license: "Pro"
         }
     }
 
     var supportsReset: Bool {
-        self == .displayPreview
+        self == .shortcuts
     }
 
     var searchText: String {
@@ -1209,10 +1191,105 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .library:
             .storage
-        case .displayPreview, .promptWorkflow:
-            .workflow
-        case .shortcutsPrivacy, .license:
+        case .shortcuts, .license:
             .system
+        }
+    }
+}
+
+private struct ShortcutRecorderButton: View {
+    let action: AppShortcutAction
+    @Binding var binding: AppShortcutBinding
+    @Binding var recordingAction: AppShortcutAction?
+
+    private var isRecording: Bool {
+        recordingAction == action
+    }
+
+    var body: some View {
+        Button {
+            recordingAction = isRecording ? nil : action
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isRecording ? "record.circle" : "keyboard")
+                    .font(StudioFont.symbol(12, weight: .medium))
+                Text(isRecording ? "按下新的快捷键" : binding.displayText)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+            }
+            .foregroundStyle(isRecording ? StudioColor.primaryActionText : StudioColor.secondaryText)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(Capsule().fill(isRecording ? StudioColor.primaryAction : StudioColor.control))
+            .overlay(Capsule().stroke(isRecording ? StudioColor.primaryAction : StudioColor.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .background {
+            ShortcutCaptureMonitor(
+                isActive: isRecording,
+                onCapture: { shortcut in
+                    binding = shortcut
+                    recordingAction = nil
+                },
+                onCancel: {
+                    recordingAction = nil
+                }
+            )
+        }
+    }
+}
+
+private struct ShortcutCaptureMonitor: NSViewRepresentable {
+    let isActive: Bool
+    let onCapture: (AppShortcutBinding) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isActive: isActive, onCapture: onCapture, onCancel: onCancel)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isActive = isActive
+        context.coordinator.onCapture = onCapture
+        context.coordinator.onCancel = onCancel
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        var isActive: Bool
+        var onCapture: (AppShortcutBinding) -> Void
+        var onCancel: () -> Void
+        private var monitor: Any?
+
+        init(isActive: Bool, onCapture: @escaping (AppShortcutBinding) -> Void, onCancel: @escaping () -> Void) {
+            self.isActive = isActive
+            self.onCapture = onCapture
+            self.onCancel = onCancel
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, isActive else { return event }
+                if event.keyCode == 53 {
+                    onCancel()
+                    return nil
+                }
+                guard let shortcut = AppShortcutBinding.from(event: event) else {
+                    return event
+                }
+                onCapture(shortcut)
+                return nil
+            }
         }
     }
 }
@@ -1717,6 +1794,7 @@ struct TemporaryTextPreviewSheet: View {
 
 struct PreviewSheet: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var shortcutStore: AppShortcutStore
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1746,7 +1824,7 @@ struct PreviewSheet: View {
         .frame(width: 1040, height: 720)
         .background(StudioColor.appBackground)
         .background {
-            SpacePreviewKeyMonitor {
+            SpacePreviewKeyMonitor(shortcut: shortcutStore.binding(for: .preview)) {
                 state.togglePreview()
             }
         }

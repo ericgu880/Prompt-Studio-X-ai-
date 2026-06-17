@@ -4,12 +4,14 @@ import SwiftUI
 @main
 struct PromptStudioApp: App {
     @StateObject private var appState = AppState()
+    @StateObject private var shortcutStore = AppShortcutStore()
     @NSApplicationDelegateAdaptor(PromptStudioAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Window("PromptStudio", id: "main") {
             PromptStudioView()
                 .environmentObject(appState)
+                .environmentObject(shortcutStore)
                 .environment(\.font, StudioFont.body())
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1180, minHeight: 720)
@@ -37,19 +39,19 @@ struct PromptStudioApp: App {
                 Button("返回上一步") {
                     AppShortcutRouter.performUndoOrBack(appState)
                 }
-                    .keyboardShortcut("z", modifiers: .command)
+                    .keyboardShortcut(shortcutStore.binding(for: .navigateBack).keyEquivalent, modifiers: shortcutStore.binding(for: .navigateBack).eventModifiers)
                     .disabled(!AppShortcutRouter.canPerformUndoOrBack(appState))
 
                 Button("前进一步") {
                     AppShortcutRouter.performRedoOrForward(appState)
                 }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcutStore.binding(for: .navigateForward).keyEquivalent, modifiers: shortcutStore.binding(for: .navigateForward).eventModifiers)
                     .disabled(!AppShortcutRouter.canPerformRedoOrForward(appState))
             }
 
             CommandGroup(after: .newItem) {
                 Button("新建 Prompt") { appState.openNewPromptComposer() }
-                    .keyboardShortcut("n", modifiers: .command)
+                    .keyboardShortcut(shortcutStore.binding(for: .newPrompt).keyEquivalent, modifiers: shortcutStore.binding(for: .newPrompt).eventModifiers)
                 Button("导入素材") { appState.openImportAssets() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
             }
@@ -67,7 +69,7 @@ struct PromptStudioApp: App {
                         appState.copySelectedFileForPasteboard()
                     }
                 }
-                    .keyboardShortcut("c", modifiers: .command)
+                    .keyboardShortcut(shortcutStore.binding(for: .copyContent).keyEquivalent, modifiers: shortcutStore.binding(for: .copyContent).eventModifiers)
                 Button("粘贴导入") {
                     if AppKitBridge.isTextInputActive() {
                         NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
@@ -96,7 +98,7 @@ struct PromptStudioApp: App {
                 Button("列表视图") { appState.isListView = true }
                     .keyboardShortcut("2", modifiers: .command)
                 Button("预览") { appState.togglePreview() }
-                    .keyboardShortcut(.space, modifiers: [])
+                    .keyboardShortcut(shortcutStore.binding(for: .preview).keyEquivalent, modifiers: shortcutStore.binding(for: .preview).eventModifiers)
                 Button("移到回收站") {
                     guard !AppKitBridge.isTextInputActive() else { return }
                     appState.moveSelectedToTrash()

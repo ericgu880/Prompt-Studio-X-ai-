@@ -38,6 +38,22 @@ const deactivateSchema = z.object({
   reason: z.string().min(1).max(80).default("user_requested")
 });
 
+const devicesListSchema = z.object({
+  activationId: z.string().min(1),
+  challengeId: z.string().min(1),
+  signature: z.string().min(40)
+});
+
+const deviceRenameSchema = devicesListSchema.extend({
+  targetActivationId: z.string().min(1),
+  label: z.string().trim().min(1).max(120)
+});
+
+const deviceDeactivateSchema = devicesListSchema.extend({
+  targetActivationId: z.string().min(1),
+  reason: z.string().min(1).max(80).default("user_requested")
+});
+
 const recoverSchema = z.object({
   email: z.string().email()
 });
@@ -113,6 +129,42 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const body = deactivateSchema.parse(request.body);
       services.rateLimit.check(`deactivate:${body.activationId}`, 30, 10 * 60 * 1000);
       await services.activation.deactivate(body);
+      return { ok: true };
+    } catch (error) {
+      const mapped = mapError(error);
+      return reply.code(mapped.statusCode).send(mapped.body);
+    }
+  });
+
+  app.post("/v1/licenses/devices/list", async (request, reply) => {
+    try {
+      const body = devicesListSchema.parse(request.body);
+      services.rateLimit.check(`devices:list:${body.activationId}`, 30, 10 * 60 * 1000);
+      const response = await services.activation.listDevices(body);
+      return { ok: true, ...response };
+    } catch (error) {
+      const mapped = mapError(error);
+      return reply.code(mapped.statusCode).send(mapped.body);
+    }
+  });
+
+  app.post("/v1/licenses/devices/rename", async (request, reply) => {
+    try {
+      const body = deviceRenameSchema.parse(request.body);
+      services.rateLimit.check(`devices:rename:${body.activationId}`, 30, 10 * 60 * 1000);
+      await services.activation.renameDevice(body);
+      return { ok: true };
+    } catch (error) {
+      const mapped = mapError(error);
+      return reply.code(mapped.statusCode).send(mapped.body);
+    }
+  });
+
+  app.post("/v1/licenses/devices/deactivate", async (request, reply) => {
+    try {
+      const body = deviceDeactivateSchema.parse(request.body);
+      services.rateLimit.check(`devices:deactivate:${body.activationId}`, 30, 10 * 60 * 1000);
+      await services.activation.deactivateDeviceById(body);
       return { ok: true };
     } catch (error) {
       const mapped = mapError(error);

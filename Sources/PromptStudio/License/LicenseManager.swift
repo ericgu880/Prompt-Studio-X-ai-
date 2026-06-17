@@ -13,6 +13,12 @@ final class LicenseManager: ObservableObject {
     private let api: LicenseAPIClient
     private let formatter = ISO8601DateFormatter()
 
+    private struct SignedDeviceChallenge {
+        let activationId: String
+        let challengeId: String
+        let signature: String
+    }
+
     init(
         store: KeychainLicenseStore = KeychainLicenseStore(),
         verifier: LicenseCertificateVerifier = LicenseCertificateVerifier(),
@@ -155,8 +161,66 @@ final class LicenseManager: ObservableObject {
         state = resolveLocalState()
     }
 
+    func listDevices() async throws -> LicenseDeviceList {
+        let proof = try await makeSignedDeviceChallenge()
+        return try await api.listDevices(
+            activationId: proof.activationId,
+            challengeId: proof.challengeId,
+            signature: proof.signature
+        )
+    }
+
+    func renameDevice(activationId targetActivationId: String, label: String) async throws {
+        let proof = try await makeSignedDeviceChallenge()
+        try await api.renameDevice(
+            activationId: proof.activationId,
+            challengeId: proof.challengeId,
+            signature: proof.signature,
+            targetActivationId: targetActivationId,
+            label: label
+        )
+    }
+
+    func deactivateDevice(activationId targetActivationId: String) async throws {
+        let currentActivationId = try store.string(.activationId)
+        let proof = try await makeSignedDeviceChallenge()
+        try await api.deactivateDevice(
+            activationId: proof.activationId,
+            challengeId: proof.challengeId,
+            signature: proof.signature,
+            targetActivationId: targetActivationId,
+            reason: "user_requested"
+        )
+        if targetActivationId == currentActivationId {
+            try store.delete(.licenseCertificate)
+            try store.delete(.activationId)
+            state = resolveLocalState()
+        }
+    }
+
     func recover(email: String) async throws {
         try await api.recover(email: email)
+    }
+
+    private func makeSignedDeviceChallenge() async throws -> SignedDeviceChallenge {
+        guard let activationId = try store.string(.activationId) else {
+            throw LicenseError.invalidResponse("未检测到本机授权。")
+        }
+        let challenge = try await api.refreshChallenge(activationId: activationId)
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
+        let signature = try identityManager.sign(
+            buildDeviceProofMessage(
+                activationId: activationId,
+                challengeId: challenge.challengeId,
+                nonce: challenge.nonce,
+                bundleId: bundleId
+            )
+        )
+        return SignedDeviceChallenge(
+            activationId: activationId,
+            challengeId: challenge.challengeId,
+            signature: signature
+        )
     }
 
     private func resolveLocalState(now localNow: Date = Date()) -> LicenseState {

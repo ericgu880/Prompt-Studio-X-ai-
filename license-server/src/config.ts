@@ -16,6 +16,12 @@ function numberValue(name: string, fallback: number): number {
   return parsed;
 }
 
+function optionalSecret(name: string): string | undefined {
+  const value = process.env[name];
+  if (!value || value.startsWith("replace-with-")) return undefined;
+  return value;
+}
+
 export interface AppConfig {
   nodeEnv: string;
   port: number;
@@ -32,6 +38,8 @@ export interface AppConfig {
   graceDays: number;
   refreshAfterDays: number;
   rateLimitEnabled: boolean;
+  adminToken?: string;
+  adminSessionSecret?: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -46,10 +54,12 @@ export function loadConfig(): AppConfig {
     signingKeyId: required("LICENSE_SIGNING_KEY_ID"),
     certificateIssuer: process.env.LICENSE_CERTIFICATE_ISSUER ?? "promptstudio-license-server",
     certificateAudience: process.env.LICENSE_CERTIFICATE_AUDIENCE ?? "promptstudio-macos",
-    bundleId: process.env.LICENSE_BUNDLE_ID ?? "com.promptstudio.app",
+    bundleId: process.env.LICENSE_BUNDLE_ID ?? "com.creatigo.promptstudio",
     certificateDays: numberValue("LICENSE_CERT_DAYS", 30),
     graceDays: numberValue("LICENSE_GRACE_DAYS", 14),
     refreshAfterDays: numberValue("LICENSE_REFRESH_AFTER_DAYS", 7),
-    rateLimitEnabled: (process.env.RATE_LIMIT_ENABLED ?? "true") === "true"
+    rateLimitEnabled: (process.env.RATE_LIMIT_ENABLED ?? "true") === "true",
+    adminToken: optionalSecret("ADMIN_TOKEN"),
+    adminSessionSecret: optionalSecret("ADMIN_SESSION_SECRET")
   };
 }
