@@ -16,6 +16,7 @@ struct PromptStudioView: View {
     @State private var liveSidebarWidth: Double?
     @State private var liveInspectorWidth: Double?
     @State private var isSplitResizing = false
+    @State private var isInspectorResizeActive = false
     @State private var isFileDropTargeted = false
 
     var body: some View {
@@ -113,6 +114,7 @@ struct PromptStudioView: View {
                         liveInspectorWidth = nil
                         inspectorDragStartWidth = nil
                         isSplitResizing = false
+                        isInspectorResizeActive = false
                     } onDragChanged: { translation in
                         isSplitResizing = true
                         if inspectorDragStartWidth == nil {
@@ -125,10 +127,21 @@ struct PromptStudioView: View {
                         if liveInspectorWidth != nextWidth {
                             liveInspectorWidth = nextWidth
                         }
+                    } onActiveChanged: { active in
+                        isInspectorResizeActive = active
                     }
                     .frame(width: Self.resizeHotZoneWidth, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
                     .position(x: proxy.size.width - layout.inspector, y: proxy.size.height / 2)
                     .ignoresSafeArea(.container, edges: .vertical)
+
+                    if isInspectorResizeActive {
+                        Rectangle()
+                            .fill(StudioColor.text.opacity(isSplitResizing ? 0.16 : 0.11))
+                            .frame(width: 1, height: proxy.size.height + Self.resizeHotZoneVerticalBleed * 2)
+                            .position(x: proxy.size.width - layout.inspector, y: proxy.size.height / 2)
+                            .ignoresSafeArea(.container, edges: .vertical)
+                            .allowsHitTesting(false)
+                    }
 
                 }
             }
@@ -297,17 +310,20 @@ private struct SplitResizeHotZone: View {
     let showsInactiveLine: Bool
     let onDragEnded: () -> Void
     let onDragChanged: (CGFloat) -> Void
+    let onActiveChanged: ((Bool) -> Void)?
     @State private var isHovered = false
     @State private var isDragging = false
 
     init(
         showsInactiveLine: Bool = true,
         onDragEnded: @escaping () -> Void,
-        onDragChanged: @escaping (CGFloat) -> Void
+        onDragChanged: @escaping (CGFloat) -> Void,
+        onActiveChanged: ((Bool) -> Void)? = nil
     ) {
         self.showsInactiveLine = showsInactiveLine
         self.onDragEnded = onDragEnded
         self.onDragChanged = onDragChanged
+        self.onActiveChanged = onActiveChanged
     }
 
     var body: some View {
@@ -325,18 +341,25 @@ private struct SplitResizeHotZone: View {
             .contentShape(Rectangle())
             .onHover { hovering in
                 isHovered = hovering
+                notifyActiveChanged(hovering || isDragging)
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         isDragging = true
+                        notifyActiveChanged(true)
                         onDragChanged(value.translation.width)
                     }
                     .onEnded { _ in
                         isDragging = false
+                        notifyActiveChanged(isHovered)
                         onDragEnded()
                     }
             )
+    }
+
+    private func notifyActiveChanged(_ active: Bool) {
+        onActiveChanged?(active)
     }
 }
 
