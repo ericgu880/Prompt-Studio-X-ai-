@@ -106,7 +106,7 @@ struct PromptStudioView: View {
                         .ignoresSafeArea(.container, edges: .vertical)
                     }
 
-                    SplitResizeHotZone {
+                    SplitResizeHotZone(showsInactiveLine: false) {
                         if let liveInspectorWidth {
                             inspectorWidth = liveInspectorWidth
                         }
@@ -294,60 +294,67 @@ struct PromptStudioView: View {
 }
 
 private struct SplitResizeHotZone: View {
+    let showsInactiveLine: Bool
     let onDragEnded: () -> Void
     let onDragChanged: (CGFloat) -> Void
     @State private var isHovered = false
     @State private var isDragging = false
-    @State private var cursorIsPushed = false
+
+    init(
+        showsInactiveLine: Bool = true,
+        onDragEnded: @escaping () -> Void,
+        onDragChanged: @escaping (CGFloat) -> Void
+    ) {
+        self.showsInactiveLine = showsInactiveLine
+        self.onDragEnded = onDragEnded
+        self.onDragChanged = onDragChanged
+    }
 
     var body: some View {
         let active = isHovered || isDragging
         ZStack {
             Color.clear
 
-            Rectangle()
-                .fill(active ? StudioColor.text.opacity(isDragging ? 0.16 : 0.11) : StudioColor.hairline.opacity(0.22))
-                .frame(width: 1)
+            if active || showsInactiveLine {
+                Rectangle()
+                    .fill(active ? StudioColor.text.opacity(isDragging ? 0.16 : 0.11) : StudioColor.hairline.opacity(0.22))
+                    .frame(width: 1)
+            }
         }
+            .background(ResizeCursorArea())
             .contentShape(Rectangle())
             .onHover { hovering in
                 isHovered = hovering
-                if hovering {
-                    pushResizeCursorIfNeeded()
-                } else if !isDragging {
-                    popResizeCursorIfNeeded()
-                }
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         isDragging = true
-                        pushResizeCursorIfNeeded()
                         onDragChanged(value.translation.width)
                     }
                     .onEnded { _ in
                         isDragging = false
-                        if !isHovered {
-                            popResizeCursorIfNeeded()
-                        }
                         onDragEnded()
                     }
             )
-            .onDisappear {
-                popResizeCursorIfNeeded()
-            }
+    }
+}
+
+private struct ResizeCursorArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> CursorView {
+        CursorView()
     }
 
-    private func pushResizeCursorIfNeeded() {
-        guard !cursorIsPushed else { return }
-        NSCursor.resizeLeftRight.push()
-        cursorIsPushed = true
-    }
+    func updateNSView(_ nsView: CursorView, context: Context) {}
 
-    private func popResizeCursorIfNeeded() {
-        guard cursorIsPushed else { return }
-        NSCursor.pop()
-        cursorIsPushed = false
+    final class CursorView: NSView {
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .resizeLeftRight)
+        }
+
+        override func cursorUpdate(with event: NSEvent) {
+            NSCursor.resizeLeftRight.set()
+        }
     }
 }
 
