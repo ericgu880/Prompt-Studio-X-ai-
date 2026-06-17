@@ -390,6 +390,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var format: String
     public var fileSize: Int64
     public var favorite: Bool
+    public var pinnedAt: Date?
     public var deletedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
@@ -418,6 +419,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         format: String,
         fileSize: Int64,
         favorite: Bool = false,
+        pinnedAt: Date? = nil,
         deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -458,6 +460,7 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.format = format
         self.fileSize = fileSize
         self.favorite = favorite
+        self.pinnedAt = pinnedAt
         self.deletedAt = deletedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -821,15 +824,24 @@ public enum PromptFiltering {
             return searchable.contains(query)
         }
         .sorted { lhs, rhs in
+            if filter.collection != .trash {
+                let lhsPinned = lhs.pinnedAt != nil
+                let rhsPinned = rhs.pinnedAt != nil
+                if lhsPinned != rhsPinned {
+                    return lhsPinned
+                }
+            }
             switch filter.collection {
             case .recent:
-                lhs.lastUsedAt > rhs.lastUsedAt
+                if lhs.lastUsedAt != rhs.lastUsedAt {
+                    return lhs.lastUsedAt > rhs.lastUsedAt
+                }
+                return lhs.createdAt > rhs.createdAt
             default:
                 if lhs.sortOrder != rhs.sortOrder {
-                    lhs.sortOrder < rhs.sortOrder
-                } else {
-                    lhs.createdAt > rhs.createdAt
+                    return lhs.sortOrder < rhs.sortOrder
                 }
+                return lhs.createdAt > rhs.createdAt
             }
         }
     }

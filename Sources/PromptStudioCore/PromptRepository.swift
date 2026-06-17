@@ -77,6 +77,7 @@ public final class PromptRepository: @unchecked Sendable {
                 format TEXT NOT NULL,
                 fileSize INTEGER NOT NULL,
                 favorite INTEGER NOT NULL,
+                pinnedAt TEXT,
                 deletedAt TEXT,
                 createdAt TEXT NOT NULL,
                 updatedAt TEXT NOT NULL,
@@ -151,6 +152,7 @@ public final class PromptRepository: @unchecked Sendable {
                 format: required(row, "format"),
                 fileSize: int64(row, "fileSize"),
                 favorite: int(row, "favorite") == 1,
+                pinnedAt: date(row["pinnedAt"] ?? nil),
                 deletedAt: date(row["deletedAt"] ?? nil),
                 createdAt: date(required(row, "createdAt")) ?? Date(),
                 updatedAt: date(required(row, "updatedAt")) ?? Date(),
@@ -207,46 +209,15 @@ public final class PromptRepository: @unchecked Sendable {
 
     public func saveItem(_ item: PromptItem) throws {
         try database.transaction {
-            try database.run(
-                """
-                INSERT OR REPLACE INTO prompt_items (
-                    id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
-                    aspectRatio, width, height, format, fileSize, favorite, deletedAt, createdAt, updatedAt,
-                    lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                values: [
-                    .text(item.id),
-                    .text(item.title),
-                    .text(item.type.rawValue),
-                    .text(item.assetKind.rawValue),
-                    .text(item.modelId),
-                    .text(item.modelName),
-                    .text(item.folderId),
-                    .text(item.folderName),
-                    .text(item.category),
-                    .text(item.assetPath),
-                    .text(item.thumbnailPath),
-                    .text(item.aspectRatio),
-                    .int(Int64(item.width)),
-                    .int(Int64(item.height)),
-                    .text(item.format),
-                    .int(item.fileSize),
-                    .int(item.favorite ? 1 : 0),
-                    item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                    .text(Self.string(from: item.createdAt)),
-                    .text(Self.string(from: item.updatedAt)),
-                    .text(Self.string(from: item.lastUsedAt)),
-                    .int(Int64(item.sortOrder)),
-                    .text(encode(item.tags)),
-                    .text(encode(item.referenceAssets)),
-                    .text(item.description)
-                ]
-            )
+            try saveItemRecord(item)
+            try refreshTags(from: try loadItems())
+        }
+    }
 
-            try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
-            for version in item.versions {
-                try saveVersion(version)
+    public func saveItems(_ items: [PromptItem]) throws {
+        try database.transaction {
+            for item in items {
+                try saveItemRecord(item)
             }
             try refreshTags(from: try loadItems())
         }
@@ -452,6 +423,51 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
+    private func saveItemRecord(_ item: PromptItem) throws {
+        try database.run(
+            """
+            INSERT OR REPLACE INTO prompt_items (
+                id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
+                aspectRatio, width, height, format, fileSize, favorite, pinnedAt, deletedAt, createdAt, updatedAt,
+                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            values: [
+                .text(item.id),
+                .text(item.title),
+                .text(item.type.rawValue),
+                .text(item.assetKind.rawValue),
+                .text(item.modelId),
+                .text(item.modelName),
+                .text(item.folderId),
+                .text(item.folderName),
+                .text(item.category),
+                .text(item.assetPath),
+                .text(item.thumbnailPath),
+                .text(item.aspectRatio),
+                .int(Int64(item.width)),
+                .int(Int64(item.height)),
+                .text(item.format),
+                .int(item.fileSize),
+                .int(item.favorite ? 1 : 0),
+                item.pinnedAt.map { .text(Self.string(from: $0)) } ?? .null,
+                item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
+                .text(Self.string(from: item.createdAt)),
+                .text(Self.string(from: item.updatedAt)),
+                .text(Self.string(from: item.lastUsedAt)),
+                .int(Int64(item.sortOrder)),
+                .text(encode(item.tags)),
+                .text(encode(item.referenceAssets)),
+                .text(item.description)
+            ]
+        )
+
+        try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
+        for version in item.versions {
+            try saveVersion(version)
+        }
+    }
+
     private func loadVersions() throws -> [String: [PromptVersion]] {
         let rows = try database.query("SELECT * FROM prompt_versions ORDER BY createdAt ASC;")
         var grouped: [String: [PromptVersion]] = [:]
@@ -487,6 +503,9 @@ public final class PromptRepository: @unchecked Sendable {
         }
         if !columnNames.contains("folderId") {
             try database.execute("ALTER TABLE prompt_items ADD COLUMN folderId TEXT NOT NULL DEFAULT '';")
+        }
+        if !columnNames.contains("pinnedAt") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN pinnedAt TEXT;")
         }
         if !columnNames.contains("assetKind") {
             try database.execute("ALTER TABLE prompt_items ADD COLUMN assetKind TEXT NOT NULL DEFAULT 'image';")

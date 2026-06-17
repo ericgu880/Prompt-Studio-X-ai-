@@ -169,6 +169,7 @@ struct InspectorView: View {
 
     private func fileActionButtons(_ item: PromptItem) -> some View {
         SidePanelActionRow(actions: [
+            SidePanelAction(icon: .pin, help: item.pinnedAt == nil ? "置顶" : "取消置顶") { state.togglePinned(item) },
             SidePanelAction(icon: .externalLink, help: "打开") { state.openSelectedInDefaultApplication() },
             SidePanelAction(icon: .copy, help: "复制文件") { state.copySelectedFile() },
             SidePanelAction(icon: .link, help: "复制路径") { state.copySelectedFilePath() }
@@ -201,6 +202,7 @@ struct InspectorView: View {
                     scrollResetID: item.id,
                     contentFontSize: 13,
                     syntaxMode: TextSyntaxMode.infer(for: item),
+                    revealsScrollerOnHover: true,
                     onCopyAll: copyMarkdownPreviewText,
                     onCopySelection: copyMarkdownPreviewFragment
                 )
@@ -279,6 +281,9 @@ struct InspectorView: View {
 
     private func markdownActionButtons(_ item: PromptItem) -> some View {
         HStack(spacing: 10) {
+            mediaActionButton("pin", help: item.pinnedAt == nil ? "置顶" : "取消置顶") {
+                state.togglePinned(item)
+            }
             mediaActionButton("pencil", help: "编辑") {
                 state.openMarkdownEditor(for: item)
             }
@@ -494,6 +499,7 @@ struct InspectorView: View {
 
     private func mediaPromptActions(_ item: PromptItem) -> [SidePanelAction] {
         [
+            SidePanelAction(icon: .pin, help: item.pinnedAt == nil ? "置顶" : "取消置顶") { state.togglePinned(item) },
             SidePanelAction(icon: .pencil, help: "编辑") { state.requestInlineEdit(item) },
             SidePanelAction(icon: .copy, help: "复制提示词") { state.copySelectedPrompt() },
             SidePanelAction(icon: .circleArrowDown, help: "下载") { state.modal = .export },
@@ -525,6 +531,8 @@ struct InspectorView: View {
             .history
         case "link":
             .link
+        case "pin":
+            .pin
         default:
             .copy
         }
@@ -917,6 +925,8 @@ private struct MidjourneyPromptInfoPanel: View {
             .circleArrowDown
         case "clock":
             .history
+        case "pin":
+            .pin
         default:
             .copy
         }

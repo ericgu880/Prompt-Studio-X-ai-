@@ -63,6 +63,53 @@ func temporaryLibraryURL() throws -> URL {
     return url
 }
 
+@discardableResult
+func measurePerformance(_ label: String, threshold: TimeInterval, operation: () throws -> Void) throws -> TimeInterval {
+    let start = Date()
+    try operation()
+    let duration = Date().timeIntervalSince(start)
+    try expect(duration < threshold, "\(label) should finish under \(threshold)s, got \(String(format: "%.3f", duration))s")
+    return duration
+}
+
+func performanceItem(index: Int) -> PromptItem {
+    let targetMarker = index == 760 ? " needle-forest-target" : ""
+    var item = sampleItem(
+        title: index == 760 ? "Forest Product Shot" : "Prompt \(index)",
+        modelId: "model-\(index % 8)",
+        assetKind: index.isMultiple(of: 3) ? .markdown : .image,
+        tags: ["tag-\(index % 10)", index.isMultiple(of: 2) ? "even" : "odd"],
+        prompt: "Prompt body \(index) for campaign\(targetMarker)",
+        assetPath: "/tmp/promptstudio-performance-\(index).md",
+        format: index.isMultiple(of: 3) ? "MD" : "PNG"
+    )
+    item.folderId = "folder-\(index % 20)"
+    item.folderName = "Folder \(index % 20)"
+    item.favorite = index.isMultiple(of: 5)
+    item.lastUsedAt = Date(timeIntervalSince1970: TimeInterval(index))
+    item.sortOrder = index
+    item.description = "metadata bucket \(index % 13)"
+    if index.isMultiple(of: 17) {
+        item.deletedAt = Date()
+    }
+    if index.isMultiple(of: 11) {
+        item.referenceAssets = [
+            ReferenceAsset(type: "image", path: "/tmp/reference-\(index).png", label: "reference \(index)")
+        ]
+    }
+    item.versions.append(
+        PromptVersion(
+            promptItemId: item.id,
+            version: "V1.1",
+            prompt: "Prompt body \(index) updated\(targetMarker)",
+            negativePrompt: "watermark",
+            parameters: ["ar": "16:9", "seed": "\(index)"],
+            note: "performance fixture"
+        )
+    )
+    return item
+}
+
 func makeDocxFixture(text: String) throws -> URL {
     let directory = try temporaryLibraryURL()
     let textURL = directory.appendingPathComponent("fixture.txt")
@@ -88,6 +135,45 @@ func testSearchFiltering() throws {
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(query: "camper")).map(\.id) == [item.id], "query should match prompt body")
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(modelId: "seedream_7")).map(\.id) == [other.id], "model filter should isolate Seedream item")
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(collection: .tag("插画"))).map(\.id) == [item.id], "tag collection should isolate illustration item")
+}
+
+func testFilteringPerformanceWith1000Items() throws {
+    let items = (0..<1_000).map(performanceItem(index:))
+    let target = try expect(items.first { $0.title == "Forest Product Shot" } != nil, "performance fixture should include target")
+
+    var queryResults: [PromptItem] = []
+    var tagResults: [PromptItem] = []
+    var folderResults: [PromptItem] = []
+    var modelResults: [PromptItem] = []
+    var favoriteResults: [PromptItem] = []
+    var combinedResults: [PromptItem] = []
+
+    try measurePerformance("1000-item filtering smoke", threshold: 0.5) {
+        queryResults = PromptFiltering.apply(items, filter: PromptFilter(query: "needle-forest-target"))
+        tagResults = PromptFiltering.apply(items, filter: PromptFilter(collection: .tag("tag-7")))
+        folderResults = PromptFiltering.apply(items, filter: PromptFilter(collection: .folder("folder-0")))
+        modelResults = PromptFiltering.apply(items, filter: PromptFilter(modelId: "model-3"))
+        favoriteResults = PromptFiltering.apply(items, filter: PromptFilter(favoriteOnly: true))
+        combinedResults = PromptFiltering.apply(
+            items,
+            filter: PromptFilter(
+                query: "needle-forest-target",
+                modelId: "model-0",
+                collection: .folder("folder-0"),
+                requiredTag: "tag-0",
+                favoriteOnly: true,
+                hasPromptOnly: true
+            )
+        )
+    }
+
+    _ = target
+    try expect(queryResults.map(\.title) == ["Forest Product Shot"], "query should find the unique target prompt")
+    try expect(tagResults.allSatisfy { $0.tags.contains("tag-7") && !$0.isDeleted }, "tag filter should return live tag matches")
+    try expect(folderResults.allSatisfy { $0.folderId == "folder-0" && !$0.isDeleted }, "folder filter should return live folder matches")
+    try expect(modelResults.allSatisfy { $0.modelId == "model-3" && !$0.isDeleted }, "model filter should return live model matches")
+    try expect(favoriteResults.allSatisfy { $0.favorite && !$0.isDeleted }, "favorite filter should return live favorites")
+    try expect(combinedResults.map(\.title) == ["Forest Product Shot"], "combined filters should keep the target prompt")
 }
 
 func testTextFormatFiltering() throws {
@@ -257,6 +343,24 @@ func testSQLiteRoundTrip() throws {
     let reloaded = try repository.loadItems()
     try expect(reloaded[0].versions.count == 2, "new version should persist")
     try expect(reloaded[0].currentVersion?.prompt == "updated prompt", "current version should be latest")
+}
+
+func testRepositoryBulkSaveLoadPerformanceWith1000Items() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let items = (0..<1_000).map(performanceItem(index:))
+    var loaded: [PromptItem] = []
+
+    try measurePerformance("1000-item repository bulk save and load smoke", threshold: 5.0) {
+        try repository.saveItems(items)
+        loaded = try repository.loadItems()
+    }
+
+    try expect(loaded.count == 1_000, "repository should load every saved performance item")
+    let target = try expect(loaded.first { $0.title == "Forest Product Shot" } != nil, "loaded repository should include target")
+    _ = target
+    let sample = try expect(loaded.first { $0.modelId == "model-3" && $0.tags.contains("tag-3") } != nil, "loaded repository should include sample metadata")
+    _ = sample
+    try expect(loaded.first { $0.title == "Forest Product Shot" }?.currentVersion?.prompt.contains("needle-forest-target") == true, "loaded target should keep prompt versions")
 }
 
 func testAssetKindInferenceAndPromptParsing() throws {
@@ -452,6 +556,102 @@ func testLastUsedUpdatePersistsForRecentSorting() throws {
     try expect(recent.first?.id == older.id, "updated lastUsedAt should drive recent sorting")
 }
 
+func testPinnedItemsSortAboveNormalCollections() throws {
+    var first = sampleItem(title: "普通靠前", assetKind: .markdown, tags: ["置顶测试"], prompt: "first")
+    var pinned = sampleItem(title: "置顶靠后", assetKind: .markdown, tags: ["置顶测试"], prompt: "pinned")
+    first.sortOrder = 0
+    pinned.sortOrder = 20
+    pinned.pinnedAt = Date()
+
+    let all = PromptFiltering.apply([first, pinned], filter: PromptFilter())
+    try expect(all.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal all items")
+
+    let text = PromptFiltering.apply([first, pinned], filter: PromptFilter(assetKindFilter: .promptDocument))
+    try expect(text.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal text filter items")
+
+    let tag = PromptFiltering.apply([first, pinned], filter: PromptFilter(collection: .tag("置顶测试")))
+    try expect(tag.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal tag results")
+}
+
+func testPinnedItemsSortAboveRecentButTrashIgnoresPin() throws {
+    var pinnedOlder = sampleItem(title: "置顶较早", prompt: "pinned")
+    var normalNewer = sampleItem(title: "普通较新", prompt: "newer")
+    pinnedOlder.pinnedAt = Date()
+    pinnedOlder.lastUsedAt = Date(timeIntervalSince1970: 100)
+    normalNewer.lastUsedAt = Date(timeIntervalSince1970: 200)
+
+    let recent = PromptFiltering.apply([normalNewer, pinnedOlder], filter: PromptFilter(collection: .recent))
+    try expect(recent.map(\.id) == [pinnedOlder.id, normalNewer.id], "pinned recent item should stay above newer normal item")
+
+    pinnedOlder.deletedAt = Date()
+    normalNewer.deletedAt = Date()
+    pinnedOlder.sortOrder = 20
+    normalNewer.sortOrder = 0
+    let trash = PromptFiltering.apply([pinnedOlder, normalNewer], filter: PromptFilter(collection: .trash))
+    try expect(trash.map(\.id) == [normalNewer.id, pinnedOlder.id], "trash sorting should ignore pinned state")
+}
+
+func testPinnedAtPersistsAndMigratesFromOldSchema() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    var item = sampleItem(title: "置顶持久化", prompt: "pin")
+    let pinnedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    item.pinnedAt = pinnedAt
+    try repository.saveItem(item)
+    try expect(try repository.loadItems()[0].pinnedAt != nil, "pinnedAt should persist through repository save/load")
+
+    let oldLibraryURL = try temporaryLibraryURL()
+    try PromptRepository.createLibraryDirectories(at: oldLibraryURL)
+    let databaseURL = oldLibraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path)
+    try database.execute(
+        """
+        CREATE TABLE prompt_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            assetKind TEXT NOT NULL DEFAULT 'image',
+            modelId TEXT NOT NULL,
+            modelName TEXT NOT NULL,
+            folderId TEXT NOT NULL DEFAULT '',
+            folderName TEXT NOT NULL,
+            category TEXT NOT NULL,
+            assetPath TEXT NOT NULL,
+            thumbnailPath TEXT NOT NULL,
+            aspectRatio TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            format TEXT NOT NULL,
+            fileSize INTEGER NOT NULL,
+            favorite INTEGER NOT NULL,
+            deletedAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastUsedAt TEXT NOT NULL,
+            sortOrder INTEGER NOT NULL DEFAULT 0,
+            tagsJSON TEXT NOT NULL,
+            referencesJSON TEXT NOT NULL,
+            description TEXT NOT NULL
+        );
+        CREATE TABLE prompt_versions (
+            id TEXT PRIMARY KEY,
+            promptItemId TEXT NOT NULL,
+            version TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            negativePrompt TEXT NOT NULL,
+            parametersJSON TEXT NOT NULL,
+            note TEXT NOT NULL,
+            createdAt TEXT NOT NULL
+        );
+        """
+    )
+
+    let migratedRepository = try PromptRepository(libraryURL: oldLibraryURL)
+    let columns = try SQLiteDatabase(path: databaseURL.path).query("PRAGMA table_info(prompt_items);")
+    let columnNames = Set(columns.compactMap { $0["name"] ?? nil })
+    try expect(columnNames.contains("pinnedAt"), "migration should add pinnedAt column to old prompt_items table")
+    try expect(try migratedRepository.loadItems().isEmpty, "old empty database should still load after pinnedAt migration")
+}
+
 func testFolderSeedIsIdempotent() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let folders = [
@@ -564,6 +764,7 @@ func testAutomationServiceImportsImageMetadata() throws {
 
 do {
     try testSearchFiltering()
+    try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
     try testPrimaryPromptAssetsAndAttachments()
     try testTextSyntaxModeInference()
@@ -574,6 +775,7 @@ do {
     try testMarkdownNegativeHighlightRequiresTitle()
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
+    try testRepositoryBulkSaveLoadPerformanceWith1000Items()
     try testAssetKindInferenceAndPromptParsing()
     try testAssetFormatCatalogCoversEagleMacOSFormats()
     try testAssetFormatCatalogRepresentativeMappings()
@@ -586,6 +788,9 @@ do {
     try testSeedAssetRepairKeepsExistingUserData()
     try testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset()
     try testLastUsedUpdatePersistsForRecentSorting()
+    try testPinnedItemsSortAboveNormalCollections()
+    try testPinnedItemsSortAboveRecentButTrashIgnoresPin()
+    try testPinnedAtPersistsAndMigratesFromOldSchema()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
     try testAutomationServiceCreatesAndUpdatesPrompts()

@@ -8,6 +8,7 @@ struct LucideIcon: View {
         case externalLink
         case history
         case link
+        case pin
         case trash2
     }
 
@@ -140,6 +141,21 @@ struct LucideIcon: View {
                     control2: CGPoint(x: 9.8, y: 20.2)
                 )
                 path.addLine(to: CGPoint(x: 13, y: 17))
+            }
+        case .pin:
+            stroked { path in
+                path.move(to: CGPoint(x: 12, y: 17))
+                path.addLine(to: CGPoint(x: 12, y: 22))
+                path.move(to: CGPoint(x: 5, y: 17))
+                path.addLine(to: CGPoint(x: 19, y: 17))
+                path.move(to: CGPoint(x: 16, y: 3))
+                path.addLine(to: CGPoint(x: 21, y: 8))
+                path.move(to: CGPoint(x: 19, y: 6))
+                path.addLine(to: CGPoint(x: 12, y: 13))
+                path.move(to: CGPoint(x: 12, y: 13))
+                path.addLine(to: CGPoint(x: 7, y: 8))
+                path.move(to: CGPoint(x: 13, y: 5))
+                path.addLine(to: CGPoint(x: 18, y: 10))
             }
         case .trash2:
             stroked { path in

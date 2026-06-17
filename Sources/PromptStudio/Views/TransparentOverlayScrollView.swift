@@ -6,18 +6,21 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     let resetID: AnyHashable?
     let minimumContentHeight: CGFloat?
     let verticalScrollerRightInset: CGFloat
+    let revealsScrollerOnHover: Bool
     let onOffsetChange: ((CGFloat) -> Void)?
 
     init(
         resetID: AnyHashable? = nil,
         minimumContentHeight: CGFloat? = nil,
         verticalScrollerRightInset: CGFloat = 0,
+        revealsScrollerOnHover: Bool = false,
         onOffsetChange: ((CGFloat) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.resetID = resetID
         self.minimumContentHeight = minimumContentHeight
         self.verticalScrollerRightInset = verticalScrollerRightInset
+        self.revealsScrollerOnHover = revealsScrollerOnHover
         self.onOffsetChange = onOffsetChange
         self.content = content()
     }
@@ -27,7 +30,7 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = HoverRevealScrollView()
         configure(scrollView)
 
         let hostingView = NSHostingView(rootView: content)
@@ -97,6 +100,7 @@ struct TransparentOverlayScrollView<Content: View>: NSViewRepresentable {
         if !(scrollView.verticalScroller is TransparentOverlayScroller) {
             scrollView.verticalScroller = TransparentOverlayScroller()
         }
+        (scrollView as? HoverRevealScrollView)?.setRevealScrollerOnHover(revealsScrollerOnHover)
     }
 
     private func resizeDocumentView(in scrollView: NSScrollView) {

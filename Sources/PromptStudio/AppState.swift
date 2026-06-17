@@ -707,6 +707,14 @@ final class AppState: ObservableObject {
         save(updated, toast: updated.favorite ? "已收藏" : "已取消收藏")
     }
 
+    func togglePinned(_ item: PromptItem) {
+        guard requireFeature(.proManageCollections) else { return }
+        var updated = item
+        updated.pinnedAt = updated.pinnedAt == nil ? Date() : nil
+        updated.updatedAt = Date()
+        save(updated, toast: updated.pinnedAt == nil ? "已取消置顶" : "已置顶")
+    }
+
     func moveSelectedToTrash() {
         let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
         guard !ids.isEmpty else { return }

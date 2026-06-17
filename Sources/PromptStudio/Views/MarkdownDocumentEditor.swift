@@ -9,6 +9,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     let scrollResetID: String?
     let contentFontSize: CGFloat
     let syntaxMode: TextSyntaxMode
+    let revealsScrollerOnHover: Bool
     let onCopyAll: (() -> Void)?
     let onCopySelection: ((String) -> Void)?
 
@@ -18,6 +19,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         scrollResetID: String? = nil,
         contentFontSize: CGFloat = 14,
         syntaxMode: TextSyntaxMode = .markdown,
+        revealsScrollerOnHover: Bool = false,
         onCopyAll: (() -> Void)? = nil,
         onCopySelection: ((String) -> Void)? = nil
     ) {
@@ -26,6 +28,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         self.scrollResetID = scrollResetID
         self.contentFontSize = contentFontSize
         self.syntaxMode = syntaxMode
+        self.revealsScrollerOnHover = revealsScrollerOnHover
         self.onCopyAll = onCopyAll
         self.onCopySelection = onCopySelection
     }
@@ -35,7 +38,10 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> MarkdownEditorContainerView {
-        let containerView = MarkdownEditorContainerView(contentFontSize: contentFontSize)
+        let containerView = MarkdownEditorContainerView(
+            contentFontSize: contentFontSize,
+            revealsScrollerOnHover: revealsScrollerOnHover
+        )
         let textView = containerView.textView
         textView.delegate = context.coordinator
         textView.string = text
@@ -55,6 +61,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         let textView = containerView.textView
         textView.isEditable = isEditable
         textView.insertionPointColor = MarkdownEditorPalette.strongText
+        containerView.setRevealScrollerOnHover(revealsScrollerOnHover)
         containerView.setCopyHandlers(onCopyAll: onCopyAll, onCopySelection: onCopySelection, isEditable: isEditable)
         let fontSizeChanged = containerView.updateContentFontSize(contentFontSize)
         let syntaxModeChanged = context.coordinator.lastSyntaxMode != syntaxMode
@@ -115,11 +122,15 @@ final class MarkdownEditorContainerView: NSView {
     private let gutterWidth: CGFloat = 44
     private(set) var contentFontSize: CGFloat
 
-    init(contentFontSize: CGFloat = 14, frame frameRect: NSRect = .zero) {
+    init(
+        contentFontSize: CGFloat = 14,
+        revealsScrollerOnHover: Bool = false,
+        frame frameRect: NSRect = .zero
+    ) {
         self.contentFontSize = contentFontSize
         let textView = CopyingMarkdownTextView(frame: .zero)
         self.textView = textView
-        self.scrollView = NSScrollView(frame: .zero)
+        self.scrollView = HoverRevealScrollView(frame: .zero)
         self.gutterView = MarkdownLineNumberGutterView(textView: textView, contentFontSize: contentFontSize)
         super.init(frame: frameRect)
 
@@ -138,7 +149,6 @@ final class MarkdownEditorContainerView: NSView {
         scrollView.verticalScroller = TransparentOverlayScroller()
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
-        scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
@@ -148,6 +158,7 @@ final class MarkdownEditorContainerView: NSView {
         scrollView.contentView.wantsLayer = true
         scrollView.contentView.layer?.backgroundColor = NSColor.clear.cgColor
         scrollView.contentView.postsBoundsChangedNotifications = true
+        setRevealScrollerOnHover(revealsScrollerOnHover)
 
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -197,6 +208,10 @@ final class MarkdownEditorContainerView: NSView {
         textView.onCopySelection = isEditable ? nil : onCopySelection
         textView.usesPointingHandCursor = !isEditable && onCopyAll != nil
         textView.window?.invalidateCursorRects(for: textView)
+    }
+
+    func setRevealScrollerOnHover(_ enabled: Bool) {
+        (scrollView as? HoverRevealScrollView)?.setRevealScrollerOnHover(enabled)
     }
 
     required init?(coder: NSCoder) {

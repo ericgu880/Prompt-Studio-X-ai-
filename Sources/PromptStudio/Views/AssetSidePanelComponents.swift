@@ -235,7 +235,7 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = HoverRevealScrollView()
         configure(scrollView)
 
         let documentView = SidePanelPromptTextContainer()
@@ -288,7 +288,6 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
-        scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
@@ -300,6 +299,7 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
         if !(scrollView.verticalScroller is TransparentOverlayScroller) {
             scrollView.verticalScroller = TransparentOverlayScroller()
         }
+        (scrollView as? HoverRevealScrollView)?.setRevealScrollerOnHover(true)
     }
 
     private func resize(_ documentView: SidePanelPromptTextContainer, in scrollView: NSScrollView) {

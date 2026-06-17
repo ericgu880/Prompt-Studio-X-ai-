@@ -66,8 +66,8 @@ enum FilterBarConfiguration {
 
     static let defaultSelectedIDs = [
         "all",
-        "type-image",
-        "type-video",
+        "asset-image",
+        "asset-video",
         "asset-promptDocument",
         "asset-audio",
         "model-image_2",
@@ -83,8 +83,8 @@ enum FilterBarConfiguration {
     static func availableEntries(models: [ModelProfile], tags: [Tag]) -> [FilterQuickEntry] {
         var entries: [FilterQuickEntry] = [
             .all,
-            .type(.image, title: "图片"),
-            .type(.video, title: "视频"),
+            .assetKind(.image, title: "图片"),
+            .assetKind(.video, title: "视频"),
             .assetKind(.promptDocument, title: "文本"),
             .assetKind(.audio, title: "音频")
         ]
@@ -155,15 +155,26 @@ enum FilterBarConfiguration {
     }
 
     private static func migratedSelectedIDs(_ ids: [String], availableIDs: Set<String>) -> [String] {
-        let mainIDs = ["all", "type-image", "type-video", "asset-promptDocument", "asset-audio"]
+        let migratedIDs = ids.map { id in
+            switch id {
+            case "type-image":
+                "asset-image"
+            case "type-video":
+                "asset-video"
+            default:
+                id
+            }
+        }
+
+        let mainIDs = ["all", "asset-image", "asset-video", "asset-promptDocument", "asset-audio"]
             .filter { availableIDs.contains($0) }
-        guard mainIDs.contains(where: { ids.contains($0) }),
-              !mainIDs.allSatisfy({ ids.contains($0) }) else {
-            return ids
+        guard mainIDs.contains(where: { migratedIDs.contains($0) }),
+              !mainIDs.allSatisfy({ migratedIDs.contains($0) }) else {
+            return migratedIDs
         }
 
         var result = mainIDs
-        result.append(contentsOf: ids.filter { !result.contains($0) })
+        result.append(contentsOf: migratedIDs.filter { !result.contains($0) })
         return result
     }
 }

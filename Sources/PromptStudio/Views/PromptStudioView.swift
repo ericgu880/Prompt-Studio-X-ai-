@@ -991,14 +991,13 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = HoverRevealScrollView()
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.verticalScroller = TransparentOverlayScroller()
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
-        scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsetsZero
@@ -1056,10 +1055,10 @@ private struct SidebarOverlayScrollContainer<Content: View>: NSViewRepresentable
         scrollView.contentView.layer?.backgroundColor = NSColor.clear.cgColor
         scrollView.scrollerStyle = .overlay
         scrollView.scrollerKnobStyle = .light
-        scrollView.autohidesScrollers = true
         if !(scrollView.verticalScroller is TransparentOverlayScroller) {
             scrollView.verticalScroller = TransparentOverlayScroller()
         }
+        (scrollView as? HoverRevealScrollView)?.setRevealScrollerOnHover(true)
     }
 }
 
@@ -2402,6 +2401,7 @@ private struct MasonryGridView: View {
                 resetID: scrollResetID,
                 minimumContentHeight: scrollContentHeight,
                 verticalScrollerRightInset: -Self.scrollbarLaneWidth,
+                revealsScrollerOnHover: true,
                 onOffsetChange: { offsetY in
                     contentOffsetY = offsetY
                 }
@@ -3062,7 +3062,7 @@ private struct AssetCardView: View {
     var body: some View {
         let contentWidth = AssetCardMetrics.contentWidth(for: width)
         let contentHeight = AssetCardMetrics.contentHeight(for: item, width: contentWidth)
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .topTrailing) {
             cardContent
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
@@ -3071,6 +3071,11 @@ private struct AssetCardView: View {
                 selectedCardOverlay
                     .frame(width: contentWidth, height: contentHeight, alignment: .bottom)
                     .transition(.opacity)
+            }
+
+            if shouldShowPinToggle {
+                pinToggleButton
+                    .padding(10)
             }
 
         }
@@ -3132,7 +3137,16 @@ private struct AssetCardView: View {
             .equatable()
     }
 
+    @ViewBuilder
     private var selectedCardOverlay: some View {
+        if item.isTextDocumentLike {
+            textDocumentSelectedCardOverlay
+        } else {
+            mediaSelectedCardOverlay
+        }
+    }
+
+    private var mediaSelectedCardOverlay: some View {
         VStack {
             Spacer()
             HStack(spacing: 10) {
@@ -3144,18 +3158,7 @@ private struct AssetCardView: View {
 
                 Spacer(minLength: 8)
 
-                HStack(spacing: 8) {
-                    if item.isPromptPrimaryAsset {
-                        cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
-                        cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
-                            state.copyItemContent(item)
-                        }
-                    } else {
-                        cardAction("pencil", help: "编辑") { state.openSelectedInDefaultApplication() }
-                        cardAction("doc.on.doc", help: "复制文件") { state.copySelectedFile() }
-                    }
-                }
-                .allowsHitTesting(true)
+                selectedCardActions
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 10)
@@ -3172,6 +3175,67 @@ private struct AssetCardView: View {
                 )
             )
         }
+    }
+
+    private var textDocumentSelectedCardOverlay: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                selectedCardActions
+            }
+            .padding(.trailing, 10)
+            .padding(.bottom, 10)
+        }
+    }
+
+    private var selectedCardActions: some View {
+        HStack(spacing: 8) {
+            if item.isPromptPrimaryAsset {
+                cardAction("pencil", help: "编辑") { state.requestInlineEdit(item) }
+                cardAction("doc.on.doc", help: item.isTextDocumentLike ? "复制文档信息" : "复制提示词") {
+                    state.copyItemContent(item)
+                }
+            } else {
+                cardAction("pencil", help: "编辑") { state.openSelectedInDefaultApplication() }
+                cardAction("doc.on.doc", help: "复制文件") { state.copySelectedFile() }
+            }
+        }
+        .allowsHitTesting(true)
+    }
+
+    private var shouldShowPinToggle: Bool {
+        !item.isDeleted && (isSelected || item.pinnedAt != nil)
+    }
+
+    private var pinToggleButton: some View {
+        let isPinned = item.pinnedAt != nil
+        let pinnedFill = Color(red: 0.95, green: 0.95, blue: 0.91)
+        return Button {
+            selectImmediately()
+            state.togglePinned(item)
+        } label: {
+            LucideIcon(kind: .pin)
+                .frame(width: 14, height: 14)
+                .foregroundStyle(isPinned ? Color.black.opacity(0.92) : StudioColor.text.opacity(0.78))
+                .frame(width: 30, height: 30)
+                .background(
+                    Circle()
+                        .fill(isPinned ? pinnedFill : Color.black.opacity(0.54))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(
+                            isPinned ? Color.white.opacity(0.64) : Color.white.opacity(0.24),
+                            lineWidth: isPinned ? 1.2 : 1
+                        )
+                )
+                .shadow(color: .black.opacity(isPinned ? 0.26 : 0.24), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .help(isPinned ? "取消置顶" : "置顶")
+        .accessibilityLabel(isPinned ? "取消置顶" : "置顶")
     }
 
     private func selectImmediately() {
@@ -3301,6 +3365,16 @@ private struct AssetCardView: View {
 
         Divider()
 
+        if !item.isDeleted {
+            Button {
+                runContextAction {
+                    state.togglePinned(item)
+                }
+            } label: {
+                Label(item.pinnedAt == nil ? "置顶" : "取消置顶", systemImage: item.pinnedAt == nil ? "pin" : "pin.slash")
+            }
+        }
+
         if item.isDeleted {
             Button {
                 runContextAction {
@@ -3381,6 +3455,8 @@ private struct AssetCardView: View {
             .copy
         case "clock":
             .history
+        case "pin":
+            .pin
         default:
             .copy
         }
@@ -3610,35 +3686,15 @@ private struct TextAssetCardCover: View {
         ZStack(alignment: .topLeading) {
             TextDocumentCardPalette.background
             VStack(alignment: .leading, spacing: 10) {
-                Text(cardData.title)
-                    .font(StudioFont.font(15, weight: .medium))
-                    .foregroundStyle(StudioColor.text)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(cardData.summaryLines, id: \.self) { line in
-                        Text(line)
-                            .font(StudioFont.font(12))
-                            .foregroundStyle(StudioColor.text.opacity(0.76))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                ViewThatFits(in: .vertical) {
+                    titleAndSummary(summaryLimit: 3)
+                    titleAndSummary(summaryLimit: 2)
+                    titleAndSummary(summaryLimit: 1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
 
-                Spacer(minLength: 0)
-
-                if !cardData.chips.isEmpty {
-                    TextAssetChipFlow(chips: cardData.chips)
-                }
-
-                Text(cardData.metadata)
-                    .font(StudioFont.caption(11))
-                    .foregroundStyle(TextDocumentCardPalette.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                cardFooter
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
@@ -3646,6 +3702,43 @@ private struct TextAssetCardCover: View {
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()
+    }
+
+    private func titleAndSummary(summaryLimit: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(cardData.title)
+                .font(StudioFont.font(15, weight: .medium))
+                .foregroundStyle(StudioColor.text)
+                .lineLimit(2)
+                .truncationMode(.tail)
+
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(cardData.displaySummaryLines(limit: summaryLimit).enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(StudioFont.font(12))
+                        .foregroundStyle(StudioColor.text.opacity(0.76))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var cardFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !cardData.chips.isEmpty {
+                TextAssetChipFlow(chips: cardData.chips)
+            }
+
+            Text(cardData.metadata)
+                .font(StudioFont.caption(11))
+                .foregroundStyle(TextDocumentCardPalette.mutedText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(2)
     }
 
     private var previewReloadID: String {
@@ -3786,6 +3879,23 @@ private struct TextAssetCardData: Equatable, Sendable {
         self.metadata = metadata
     }
 
+    func displaySummaryLines(limit: Int) -> [String] {
+        let limit = max(1, limit)
+        var lines = Array(summaryLines.prefix(limit))
+        guard !lines.isEmpty else { return ["暂无文档摘要"] }
+        guard summaryLines.count > limit, let lastIndex = lines.indices.last else {
+            return lines
+        }
+
+        var lastLine = lines[lastIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        lastLine = lastLine.truncated(to: limit == 1 ? 78 : 82)
+        if !lastLine.hasSuffix("...") {
+            lastLine += "..."
+        }
+        lines[lastIndex] = lastLine
+        return lines
+    }
+
     private static func firstMarkdownTitle(in text: String) -> String? {
         text.components(separatedBy: .newlines).compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -3887,27 +3997,13 @@ private struct TextAssetChipFlow: View {
     let chips: [String]
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            HStack(spacing: 6) {
-                ForEach(chips.prefix(3), id: \.self) { chip in
-                    chipView(chip)
-                }
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    ForEach(chips.prefix(3), id: \.self) { chip in
-                        chipView(chip)
-                    }
-                }
-                if chips.count > 3 {
-                    HStack(spacing: 6) {
-                        ForEach(chips.dropFirst(3).prefix(3), id: \.self) { chip in
-                            chipView(chip)
-                        }
-                    }
-                }
+        HStack(spacing: 6) {
+            ForEach(chips.prefix(3), id: \.self) { chip in
+                chipView(chip)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 
     private func chipView(_ title: String) -> some View {

@@ -2,6 +2,9 @@
 
 This document defines the current test gates for PromptStudio. It covers the macOS app, `PromptStudioCore`, CLI, MCP, local data persistence, manual UI checks, and release readiness.
 
+For the full Chinese release-candidate manual QA cases, use
+`docs/PromptStudio_Release_QA_Test_Cases.md`.
+
 ## Automated Gates
 
 Run these before merging code:
@@ -175,10 +178,20 @@ Acceptance criteria:
 ### Performance Baselines
 
 - App launch to interactive.
-- Search with 1000 items.
+- Search with 1000 items. Automated Core smoke:
+  `testFilteringPerformanceWith1000Items` requires combined query, tag, folder,
+  model, favorite, and prompt-present filters to finish under 500 ms.
+- SQLite repository 1000-item save/load. Automated Core smoke:
+  `testRepositoryBulkSaveLoadPerformanceWith1000Items` requires saving and
+  reloading 1000 prompt records with versions, tags, folders, model metadata,
+  and prompt parameters to finish under 5 s.
 - Import 100 mixed files.
 - Thumbnail generation while UI remains usable.
 - Memory does not grow without bound during browse/import/preview.
+
+Launch, scroll responsiveness, thumbnail UI responsiveness, import UI latency,
+and memory growth remain manual release checks or `/macos-qa` checks because
+they depend on the real macOS app process and UI rendering.
 
 ### Privacy
 
