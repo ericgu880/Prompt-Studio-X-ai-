@@ -736,6 +736,7 @@ private struct TitlebarControlButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .contentShape(Circle())
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
         .onHover { hovering in
@@ -953,6 +954,7 @@ private struct SidebarView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onHover { settingsHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: settingsHovered)
             .padding(.horizontal, 14)
@@ -1550,6 +1552,7 @@ private struct SidebarDisclosure: View {
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onHover { isHovered = $0 }
             .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
 
@@ -1644,6 +1647,7 @@ private struct SidebarRow: View {
             )
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
         .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
             guard let dropFolderName, let provider = providers.first else { return false }
@@ -2220,8 +2224,11 @@ private struct FilterPagerButton: View {
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(isHovered ? StudioColor.control.opacity(0.88) : Color.clear))
                     .overlay(Circle().stroke(isHovered ? StudioColor.hairline : Color.clear, lineWidth: 1))
+                    .frame(width: 40, height: 36)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
             .foregroundStyle(StudioColor.text)
             .onHover { isHovered = $0 }
         }
@@ -2385,6 +2392,7 @@ private struct CompactFilterChip: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
         .onHover { isHovered = $0 }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .accessibilityLabel("筛选：\(filter.title)")
@@ -2890,6 +2898,7 @@ private struct SubfolderCardView: View {
                     )
             }
             .buttonStyle(.plain)
+            .contentShape(Circle())
             .padding(.trailing, 14)
             .padding(.bottom, 12)
         }

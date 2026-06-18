@@ -831,6 +831,7 @@ struct SettingsSheet: View {
             .foregroundStyle(StudioColor.secondaryText)
             .background(Circle().fill(StudioColor.control))
             .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
+            .contentShape(Circle())
             .help("关闭设置")
         }
         .padding(.horizontal, 28)
@@ -933,11 +934,13 @@ struct SettingsSheet: View {
             .font(StudioFont.font(13, weight: selectedPage == page ? .semibold : .regular))
             .foregroundStyle(selectedPage == page ? StudioColor.text : StudioColor.secondaryText)
             .padding(.horizontal, 10)
-            .frame(height: 34)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
             .background(selectedPage == page ? StudioColor.selection : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func filteredPages(in section: SettingsPage.Section) -> [SettingsPage] {
@@ -1221,8 +1224,10 @@ private struct ShortcutRecorderButton: View {
             .frame(height: 30)
             .background(Capsule().fill(isRecording ? StudioColor.primaryAction : StudioColor.control))
             .overlay(Capsule().stroke(isRecording ? StudioColor.primaryAction : StudioColor.hairline, lineWidth: 1))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
         .background {
             ShortcutCaptureMonitor(
                 isActive: isRecording,
@@ -1473,12 +1478,14 @@ private struct FilterDimensionToggle: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
-            .frame(height: 44)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .background(StudioColor.panel.opacity(isSelected ? 0.86 : 0.38))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(isSelected ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -1678,8 +1685,10 @@ private struct PromptTypeSegment: View {
                 .foregroundStyle(type == value ? StudioColor.primaryActionText : StudioColor.text)
                 .frame(width: 44, height: 28)
                 .background(Capsule().fill(type == value ? StudioColor.primaryAction : Color.clear))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
     }
 }
 

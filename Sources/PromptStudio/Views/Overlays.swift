@@ -981,8 +981,10 @@ struct PromptComposerOverlay: View {
             .background(CreateComposerColor.inputBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var createFormatMenu: some View {
@@ -1008,8 +1010,10 @@ struct PromptComposerOverlay: View {
             .background(CreateComposerColor.inputBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
 
@@ -1910,8 +1914,10 @@ struct PromptComposerOverlay: View {
                         .foregroundStyle(type == option ? Color.white : OPSColor.buttonText)
                         .background(type == option ? Color(hex: 0x6C6C6C) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
             }
         }
         .padding(4)
@@ -1940,8 +1946,10 @@ struct PromptComposerOverlay: View {
             .frame(height: 36)
             .background(OPSColor.buttonBackground)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 
     private func opsIconTool(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
@@ -1954,6 +1962,7 @@ struct PromptComposerOverlay: View {
         .foregroundStyle(OPSColor.buttonText)
         .background(OPSColor.buttonBackground)
         .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
         .help(help)
     }
 
@@ -2534,6 +2543,7 @@ private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
             .frame(width: 120, height: 34)
             .background(configuration.isPressed ? Color.white.opacity(0.82) : StudioColor.primaryAction)
             .clipShape(Capsule())
+            .contentShape(Capsule())
             .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
@@ -2729,6 +2739,7 @@ private struct OverlayCloseButton: View {
         .buttonStyle(.plain)
         .background(Circle().fill(StudioColor.control.opacity(0.92)))
         .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
+        .contentShape(Circle())
         .help(help)
     }
 }
