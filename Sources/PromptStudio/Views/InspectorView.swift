@@ -169,7 +169,6 @@ struct InspectorView: View {
 
     private func fileActionButtons(_ item: PromptItem) -> some View {
         SidePanelActionRow(actions: [
-            SidePanelAction(icon: .pin, help: item.pinnedAt == nil ? "置顶" : "取消置顶") { state.togglePinned(item) },
             SidePanelAction(icon: .externalLink, help: "打开") { state.openSelectedInDefaultApplication() },
             SidePanelAction(icon: .copy, help: "复制文件") { state.copySelectedFile() },
             SidePanelAction(icon: .link, help: "复制路径") { state.copySelectedFilePath() }
@@ -281,9 +280,6 @@ struct InspectorView: View {
 
     private func markdownActionButtons(_ item: PromptItem) -> some View {
         HStack(spacing: 10) {
-            mediaActionButton("pin", help: item.pinnedAt == nil ? "置顶" : "取消置顶") {
-                state.togglePinned(item)
-            }
             mediaActionButton("pencil", help: "编辑") {
                 state.openMarkdownEditor(for: item)
             }
@@ -355,40 +351,44 @@ struct InspectorView: View {
     }
 
     private func mediaPreviewThumbnail(_ item: PromptItem) -> some View {
-        let size = mediaPreviewSize(for: item)
-        return ZStack(alignment: .leading) {
-            Color.clear
-                .frame(width: 260, height: 80)
+        GeometryReader { proxy in
+            let availableWidth = max(1, min(Self.mediaPreviewMaxWidth, proxy.size.width))
+            let size = mediaPreviewSize(for: item, maxWidth: availableWidth)
+            ZStack(alignment: .leading) {
+                Color.clear
 
-            AssetMediaView(item: item, contentMode: .fit)
-                .frame(width: size.width, height: size.height)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(StudioColor.hairline, lineWidth: 1)
-                )
+                AssetMediaView(item: item, contentMode: .fit)
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(StudioColor.hairline, lineWidth: 1)
+                    )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(width: 260, height: 80, alignment: .leading)
+        .frame(height: Self.mediaPreviewHeight)
         .transaction { transaction in
             transaction.animation = nil
         }
     }
 
-    private func mediaPreviewSize(for item: PromptItem) -> CGSize {
-        let maxHeight: CGFloat = 80
-        let maxWidth: CGFloat = 260
+    private func mediaPreviewSize(for item: PromptItem, maxWidth: CGFloat) -> CGSize {
         let aspectRatio: CGFloat
         if item.width > 0, item.height > 0 {
             aspectRatio = max(0.15, CGFloat(item.width) / CGFloat(item.height))
         } else {
             aspectRatio = 16.0 / 9.0
         }
-        let widthAtMaxHeight = maxHeight * aspectRatio
+        let widthAtMaxHeight = Self.mediaPreviewHeight * aspectRatio
         if widthAtMaxHeight <= maxWidth {
-            return CGSize(width: widthAtMaxHeight, height: maxHeight)
+            return CGSize(width: widthAtMaxHeight, height: Self.mediaPreviewHeight)
         }
         return CGSize(width: maxWidth, height: maxWidth / aspectRatio)
     }
+
+    private static let mediaPreviewMaxWidth: CGFloat = 260
+    private static let mediaPreviewHeight: CGFloat = 80
 
     @ViewBuilder
     private func mediaPromptContent(_ item: PromptItem) -> some View {
@@ -499,7 +499,6 @@ struct InspectorView: View {
 
     private func mediaPromptActions(_ item: PromptItem) -> [SidePanelAction] {
         [
-            SidePanelAction(icon: .pin, help: item.pinnedAt == nil ? "置顶" : "取消置顶") { state.togglePinned(item) },
             SidePanelAction(icon: .pencil, help: "编辑") { state.requestInlineEdit(item) },
             SidePanelAction(icon: .copy, help: "复制提示词") { state.copySelectedPrompt() },
             SidePanelAction(icon: .circleArrowDown, help: "下载") { state.modal = .export },
@@ -531,8 +530,6 @@ struct InspectorView: View {
             .history
         case "link":
             .link
-        case "pin":
-            .pin
         default:
             .copy
         }
@@ -925,8 +922,6 @@ private struct MidjourneyPromptInfoPanel: View {
             .circleArrowDown
         case "clock":
             .history
-        case "pin":
-            .pin
         default:
             .copy
         }

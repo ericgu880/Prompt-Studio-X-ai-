@@ -107,7 +107,7 @@ struct PromptStudioView: View {
                         .ignoresSafeArea(.container, edges: .vertical)
                     }
 
-                    SplitResizeHotZone(showsInactiveLine: false) {
+                    SplitResizeHotZone(showsInactiveLine: false, drawsActiveLine: false) {
                         if let liveInspectorWidth {
                             inspectorWidth = liveInspectorWidth
                         }
@@ -308,6 +308,7 @@ struct PromptStudioView: View {
 
 private struct SplitResizeHotZone: View {
     let showsInactiveLine: Bool
+    let drawsActiveLine: Bool
     let onDragEnded: () -> Void
     let onDragChanged: (CGFloat) -> Void
     let onActiveChanged: ((Bool) -> Void)?
@@ -316,11 +317,13 @@ private struct SplitResizeHotZone: View {
 
     init(
         showsInactiveLine: Bool = true,
+        drawsActiveLine: Bool = true,
         onDragEnded: @escaping () -> Void,
         onDragChanged: @escaping (CGFloat) -> Void,
         onActiveChanged: ((Bool) -> Void)? = nil
     ) {
         self.showsInactiveLine = showsInactiveLine
+        self.drawsActiveLine = drawsActiveLine
         self.onDragEnded = onDragEnded
         self.onDragChanged = onDragChanged
         self.onActiveChanged = onActiveChanged
@@ -331,7 +334,7 @@ private struct SplitResizeHotZone: View {
         ZStack {
             Color.clear
 
-            if active || showsInactiveLine {
+            if active ? drawsActiveLine : showsInactiveLine {
                 Rectangle()
                     .fill(active ? StudioColor.text.opacity(isDragging ? 0.16 : 0.11) : StudioColor.hairline.opacity(0.22))
                     .frame(width: 1)
@@ -3105,11 +3108,6 @@ private struct AssetCardView: View {
                     .transition(.opacity)
             }
 
-            if shouldShowPinToggle {
-                pinToggleButton
-                    .padding(10)
-            }
-
         }
         .frame(width: contentWidth, height: contentHeight)
         .clipShape(RoundedRectangle(cornerRadius: AssetCardMetrics.cardCornerRadius, style: .continuous))
@@ -3234,40 +3232,6 @@ private struct AssetCardView: View {
             }
         }
         .allowsHitTesting(true)
-    }
-
-    private var shouldShowPinToggle: Bool {
-        !item.isDeleted && (isSelected || item.pinnedAt != nil)
-    }
-
-    private var pinToggleButton: some View {
-        let isPinned = item.pinnedAt != nil
-        let pinnedFill = Color(red: 0.95, green: 0.95, blue: 0.91)
-        return Button {
-            selectImmediately()
-            state.togglePinned(item)
-        } label: {
-            LucideIcon(kind: .pin)
-                .frame(width: 14, height: 14)
-                .foregroundStyle(isPinned ? Color.black.opacity(0.92) : StudioColor.text.opacity(0.78))
-                .frame(width: 30, height: 30)
-                .background(
-                    Circle()
-                        .fill(isPinned ? pinnedFill : Color.black.opacity(0.54))
-                )
-                .overlay(
-                    Circle()
-                        .stroke(
-                            isPinned ? Color.white.opacity(0.64) : Color.white.opacity(0.24),
-                            lineWidth: isPinned ? 1.2 : 1
-                        )
-                )
-                .shadow(color: .black.opacity(isPinned ? 0.26 : 0.24), radius: 8, x: 0, y: 4)
-        }
-        .buttonStyle(.plain)
-        .contentShape(Circle())
-        .help(isPinned ? "取消置顶" : "置顶")
-        .accessibilityLabel(isPinned ? "取消置顶" : "置顶")
     }
 
     private func selectImmediately() {
@@ -3397,16 +3361,6 @@ private struct AssetCardView: View {
 
         Divider()
 
-        if !item.isDeleted {
-            Button {
-                runContextAction {
-                    state.togglePinned(item)
-                }
-            } label: {
-                Label(item.pinnedAt == nil ? "置顶" : "取消置顶", systemImage: item.pinnedAt == nil ? "pin" : "pin.slash")
-            }
-        }
-
         if item.isDeleted {
             Button {
                 runContextAction {
@@ -3487,8 +3441,6 @@ private struct AssetCardView: View {
             .copy
         case "clock":
             .history
-        case "pin":
-            .pin
         default:
             .copy
         }
