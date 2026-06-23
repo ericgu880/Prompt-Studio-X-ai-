@@ -184,6 +184,17 @@ struct PromptStudioView: View {
                 SpacePreviewKeyMonitor(shortcut: shortcutStore.binding(for: .preview)) {
                     state.togglePreview()
                 }
+                DeleteSelectionKeyMonitor(
+                    canDelete: {
+                        let selectedIDs = state.selectedIDs.isEmpty
+                            ? state.selectedID.map { Set([$0]) } ?? []
+                            : state.selectedIDs
+                        return state.items.contains { selectedIDs.contains($0.id) && !$0.isDeleted }
+                    },
+                    onDelete: {
+                        state.moveSelectedToTrash()
+                    }
+                )
                 AppShortcutKeyMonitor(
                     backShortcut: shortcutStore.binding(for: .navigateBack),
                     forwardShortcut: shortcutStore.binding(for: .navigateForward),
@@ -499,6 +510,64 @@ struct AppShortcutKeyMonitor: NSViewRepresentable {
                 }
                 return event
             }
+        }
+    }
+}
+
+struct DeleteSelectionKeyMonitor: NSViewRepresentable {
+    let canDelete: () -> Bool
+    let onDelete: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(canDelete: canDelete, onDelete: onDelete)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.canDelete = canDelete
+        context.coordinator.onDelete = onDelete
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        var canDelete: () -> Bool
+        var onDelete: () -> Void
+        private var monitor: Any?
+
+        init(canDelete: @escaping () -> Bool, onDelete: @escaping () -> Void) {
+            self.canDelete = canDelete
+            self.onDelete = onDelete
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                let textInputActive = MainActor.assumeIsolated {
+                    AppKitBridge.isTextInputActive()
+                }
+                guard !textInputActive,
+                      Self.isCommandDelete(event),
+                      self?.canDelete() == true else {
+                    return event
+                }
+                self?.onDelete()
+                return nil
+            }
+        }
+
+        private static func isCommandDelete(_ event: NSEvent) -> Bool {
+            let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            guard flags == .command else { return false }
+            return event.keyCode == 51 || event.keyCode == 117
         }
     }
 }

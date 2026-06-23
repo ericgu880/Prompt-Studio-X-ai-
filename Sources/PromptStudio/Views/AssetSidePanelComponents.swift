@@ -2,6 +2,25 @@ import AppKit
 import SwiftUI
 import PromptStudioCore
 
+enum SidePanelPromptBoxLayout {
+    static let textPadding: CGFloat = 14
+    static let bottomReserveAfterLastLine: CGFloat = 32
+    static let copyHintHeight: CGFloat = 24
+    static let copyHintOuterPadding: CGFloat = 8
+
+    static var copyHintFullHeight: CGFloat {
+        copyHintHeight + copyHintOuterPadding * 2
+    }
+
+    static var protectedBottomArea: CGFloat {
+        bottomReserveAfterLastLine + copyHintFullHeight
+    }
+
+    static var extraBottomClearance: CGFloat {
+        max(0, protectedBottomArea - textPadding)
+    }
+}
+
 struct SidePanelSectionTitle: View {
     let title: String
 
@@ -129,7 +148,7 @@ struct SidePanelPromptTextBox: View {
             let width = proxy.size.width
             let height = measuredHeight(width: width)
             let availableHeight = max(72, maxHeight)
-            let usesScroll = height > availableHeight - 32
+            let usesScroll = height > availableHeight
             let boxHeight = usesScroll ? availableHeight : height
 
             Group {
@@ -138,6 +157,7 @@ struct SidePanelPromptTextBox: View {
                         text: text,
                         isPlaceholder: isPlaceholder,
                         resetID: resetID,
+                        bottomClearance: SidePanelPromptBoxLayout.extraBottomClearance,
                         onCopyAll: onCopyAll,
                         onCopySelection: onCopySelection
                     )
@@ -175,9 +195,9 @@ struct SidePanelPromptTextBox: View {
                     .font(StudioFont.font(11))
                     .foregroundStyle(StudioColor.secondaryText)
                     .padding(.horizontal, 8)
-                    .frame(height: 24)
+                    .frame(height: SidePanelPromptBoxLayout.copyHintHeight)
                     .background(Capsule().fill(StudioColor.control.opacity(0.94)))
-                    .padding(8)
+                    .padding(SidePanelPromptBoxLayout.copyHintOuterPadding)
                     .transition(.opacity)
                     .allowsHitTesting(false)
                 }
@@ -188,15 +208,15 @@ struct SidePanelPromptTextBox: View {
     }
 
     private func measuredHeight(width: CGFloat) -> CGFloat {
-        let measurementWidth = max(1, width - 36)
+        let measurementWidth = max(1, width)
         return PromptTextMetrics.height(
             for: text,
             width: measurementWidth,
             font: NSFont.systemFont(ofSize: 13, weight: .regular),
             lineSpacing: 4,
-            horizontalPadding: 14,
-            verticalPadding: 14
-        ) + 24
+            horizontalPadding: SidePanelPromptBoxLayout.textPadding,
+            verticalPadding: SidePanelPromptBoxLayout.textPadding
+        ) + SidePanelPromptBoxLayout.extraBottomClearance
     }
 }
 
@@ -227,6 +247,7 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
     let text: String
     var isPlaceholder = false
     var resetID: AnyHashable?
+    var bottomClearance: CGFloat = SidePanelPromptBoxLayout.extraBottomClearance
     var onCopyAll: (() -> Void)?
     var onCopySelection: ((String) -> Void)?
 
@@ -304,7 +325,7 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
 
     private func resize(_ documentView: SidePanelPromptTextContainer, in scrollView: NSScrollView) {
         let width = max(1, scrollView.contentView.bounds.width)
-        let height = max(scrollView.contentView.bounds.height, documentView.fittingHeight(for: width))
+        let height = max(scrollView.contentView.bounds.height, documentView.fittingHeight(for: width) + bottomClearance)
         documentView.frame = NSRect(x: 0, y: 0, width: width, height: height)
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
@@ -335,7 +356,10 @@ final class SidePanelPromptTextContainer: NSView {
 
     private let textView = SidePanelCopyingPromptTextView()
     private let font = NSFont.systemFont(ofSize: 13, weight: .regular)
-    private let textInset = NSSize(width: 14, height: 14)
+    private let textInset = NSSize(
+        width: SidePanelPromptBoxLayout.textPadding,
+        height: SidePanelPromptBoxLayout.textPadding
+    )
     private var currentText = ""
     private var currentPlaceholderState = false
 
