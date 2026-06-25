@@ -947,9 +947,9 @@ private struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     sidebarSection(nil) {
                         VStack(alignment: .leading, spacing: 4) {
-                            SidebarRow(icon: "rectangle.stack", title: "全部", count: allCount, collection: .all)
-                            SidebarRow(icon: "clock", title: "最近使用", count: state.recentCount, collection: .recent)
-                            SidebarRow(icon: "trash", title: "回收站", count: state.trashCount, collection: .trash)
+                            SidebarRow(icon: "rectangle.stack", title: "全部", countText: sidebarCountText(allCount), collection: .all)
+                            SidebarRow(icon: "clock", title: "最近使用", countText: sidebarCountText(state.recentCount), collection: .recent)
+                            SidebarRow(icon: "trash", title: "回收站", countText: sidebarCountText(state.trashCount), collection: .trash)
                         }
                         Text("文件夹")
                             .font(StudioFont.caption(11))
@@ -1053,6 +1053,10 @@ private struct SidebarView: View {
 
     private var allCount: Int {
         state.items.filter { !$0.isDeleted }.count
+    }
+
+    private func sidebarCountText(_ count: Int) -> String {
+        state.isLibraryReady ? "\(count)" : "—"
     }
 
     @ViewBuilder
@@ -1633,7 +1637,7 @@ private struct SidebarDisclosure: View {
                     SidebarRow(
                         icon: "folder",
                         title: row.folder.name,
-                        count: row.count,
+                        countText: "\(row.count)",
                         collection: row.collection,
                         tint: StudioColor.text,
                         folder: row.folder,
@@ -1676,7 +1680,7 @@ private struct SidebarRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let icon: String
     let title: String
-    let count: Int
+    let countText: String
     let collection: LibraryCollection
     var isActive = false
     var tint: Color = StudioColor.secondaryText
@@ -1703,7 +1707,7 @@ private struct SidebarRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 16)
-                Text("\(count)")
+                Text(countText)
                     .foregroundStyle(StudioColor.secondaryText)
             }
             .font(StudioFont.font(14))
@@ -1821,18 +1825,22 @@ private struct MainContentView: View {
                 .padding(.bottom, 12)
 
             Group {
-                let childFolders = state.childFolderRowsForCurrentCollection()
-                if state.filteredItems.isEmpty && childFolders.isEmpty {
-                    EmptyStateView()
-                } else if state.isListView && childFolders.isEmpty {
-                    PromptListView(items: state.filteredItems)
+                if !state.isLibraryReady {
+                    LibraryAccessRecoveryView()
                 } else {
-                    MasonryGridView(
-                        folders: childFolders,
-                        items: state.filteredItems,
-                        isSplitResizing: isSplitResizing
-                    )
-                    .padding(.horizontal, Self.contentHorizontalInset)
+                    let childFolders = state.childFolderRowsForCurrentCollection()
+                    if state.filteredItems.isEmpty && childFolders.isEmpty {
+                        EmptyStateView()
+                    } else if state.isListView && childFolders.isEmpty {
+                        PromptListView(items: state.filteredItems)
+                    } else {
+                        MasonryGridView(
+                            folders: childFolders,
+                            items: state.filteredItems,
+                            isSplitResizing: isSplitResizing
+                        )
+                        .padding(.horizontal, Self.contentHorizontalInset)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: contentFrameAlignment)
@@ -1849,6 +1857,9 @@ private struct MainContentView: View {
     }
 
     private var contentFrameAlignment: Alignment {
+        if !state.isLibraryReady {
+            return .center
+        }
         if state.filteredItems.isEmpty && state.childFolderRowsForCurrentCollection().isEmpty {
             return .center
         }
@@ -1856,6 +1867,9 @@ private struct MainContentView: View {
     }
 
     private var contentStateKey: String {
+        if !state.isLibraryReady {
+            return "library-\(state.libraryAccessState)"
+        }
         if state.filteredItems.isEmpty {
             return "empty-\(state.isListView)"
         }
@@ -3707,6 +3721,156 @@ private struct EmptyStateView: View {
 
     private var isTrash: Bool {
         state.filter.collection == .trash
+    }
+}
+
+private struct LibraryAccessRecoveryView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: iconName)
+                .font(StudioFont.symbol(42, weight: .medium))
+                .foregroundStyle(iconColor)
+
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(StudioFont.font(16, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                Text(message)
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 430)
+
+            if let path = pathText {
+                Text(path)
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.tertiaryText)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 430)
+            }
+
+            HStack(spacing: 12) {
+                Button("重试") {
+                    state.retryLoadLibrary()
+                }
+                .buttonStyle(CapsuleButtonStyle())
+
+                Button("重新连接资料库") {
+                    state.reconnectExistingLibrary()
+                }
+                .buttonStyle(CapsuleButtonStyle(filled: true))
+            }
+        }
+        .padding(30)
+        .background(StudioColor.panel.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(StudioColor.hairline, lineWidth: 1))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var title: String {
+        switch state.libraryAccessState {
+        case .loading:
+            "正在加载资料库"
+        case .needsAuthorization(let reason, _):
+            reason.title
+        case .missing:
+            "找不到资料库"
+        case .readOnly:
+            "资料库不可写"
+        case .invalidLibrary:
+            "无效资料库"
+        case .failed(let error):
+            errorTitle(for: error)
+        case .ready:
+            "资料库已加载"
+        }
+    }
+
+    private var message: String {
+        switch state.libraryAccessState {
+        case .loading:
+            "正在检查本地数据库和素材目录。"
+        case .needsAuthorization(let reason, _):
+            reason.message
+        case .missing:
+            "原资料库可能已被移动或删除，请重新连接已有资料库。"
+        case .readOnly:
+            "数据库或资料库目录没有写入权限，PromptStudio 无法安全打开。"
+        case .invalidLibrary(_, let message):
+            message
+        case .failed(let error):
+            error.localizedDescription
+        case .ready:
+            ""
+        }
+    }
+
+    private var pathText: String? {
+        switch state.libraryAccessState {
+        case .needsAuthorization(_, let url), .missing(let url):
+            return url?.path
+        case .readOnly(let url), .invalidLibrary(let url, _):
+            return url.path
+        case .ready(let descriptor):
+            return descriptor.url.path
+        case .loading, .failed:
+            return nil
+        }
+    }
+
+    private var iconName: String {
+        switch state.libraryAccessState {
+        case .loading:
+            "externaldrive"
+        case .needsAuthorization:
+            "lock.open"
+        case .missing:
+            "folder.badge.questionmark"
+        case .readOnly:
+            "lock"
+        case .invalidLibrary, .failed:
+            "exclamationmark.triangle"
+        case .ready:
+            "checkmark.circle"
+        }
+    }
+
+    private var iconColor: Color {
+        switch state.libraryAccessState {
+        case .loading, .ready:
+            StudioColor.blue
+        case .needsAuthorization, .missing, .readOnly, .invalidLibrary, .failed:
+            Color(hex: 0xFF8A2A)
+        }
+    }
+
+    private func errorTitle(for error: LibraryLoadError) -> String {
+        switch error {
+        case .databaseCorrupted:
+            "数据库损坏"
+        case .databaseBusy:
+            "数据库正被占用"
+        case .diskFull:
+            "磁盘空间不足"
+        case .ioFailure:
+            "资料库读取失败"
+        case .permissionDenied:
+            "资料库访问被拒绝"
+        case .notFound:
+            "找不到资料库"
+        case .readOnly:
+            "资料库不可写"
+        case .invalidLibrary, .incompatibleSchema:
+            "无效资料库"
+        case .bookmarkResolutionFailed:
+            "资料库授权已失效"
+        }
     }
 }
 

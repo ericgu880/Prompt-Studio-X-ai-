@@ -100,6 +100,22 @@ enum AppKitBridge {
     }
 
     @MainActor
+    static func chooseExistingLibraryDirectory(defaultURL: URL?) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "重新连接 PromptStudio 资料库"
+        panel.message = "请选择包含 database/promptstudio.sqlite 的已有资料库目录。"
+        panel.prompt = "连接资料库"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        if let defaultURL {
+            panel.directoryURL = defaultURL
+        }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    @MainActor
     static func chooseExportURL(defaultName: String, allowedContentType: UTType) -> URL? {
         let panel = NSSavePanel()
         panel.title = "导出"

@@ -884,9 +884,18 @@ struct SettingsSheet: View {
         switch selectedPage {
         case .library:
             settingsGroup("当前资料库", detail: "Prompt、素材、附件和缓存都保存在本机资料库中。") {
+                settingsValueRow("访问状态", value: libraryStatusTitle, detail: libraryStatusDetail)
                 settingsPathRow("资料库路径", path: libraryPath, revealPath: libraryPath)
                 settingsPathRow("本地数据库", path: databasePath, revealPath: databasePath)
                 settingsPathRow("资产目录", path: assetsPath, revealPath: assetsPath)
+                settingsAction(
+                    "重新连接资料库",
+                    detail: "选择一个已经存在的 PromptStudio 资料库目录，不会自动创建空资料库。",
+                    button: "选择目录",
+                    filled: true
+                ) {
+                    state.reconnectExistingLibrary()
+                }
             }
         case .shortcuts:
             settingsGroup("常用快捷键", detail: "点击快捷键后按下新的组合键，保存后立即生效。") {
@@ -1080,6 +1089,53 @@ struct SettingsSheet: View {
 
     private var assetsPath: String {
         state.libraryURL.appendingPathComponent("assets").path
+    }
+
+    private var libraryStatusTitle: String {
+        switch state.libraryAccessState {
+        case .loading:
+            "加载中"
+        case .ready:
+            "已连接"
+        case .needsAuthorization:
+            "需要授权"
+        case .missing:
+            "未找到"
+        case .readOnly:
+            "只读"
+        case .invalidLibrary:
+            "无效资料库"
+        case .failed(let error):
+            switch error {
+            case .databaseBusy:
+                "数据库占用"
+            case .databaseCorrupted:
+                "数据库损坏"
+            case .diskFull:
+                "磁盘已满"
+            default:
+                "加载失败"
+            }
+        }
+    }
+
+    private var libraryStatusDetail: String {
+        switch state.libraryAccessState {
+        case .loading:
+            "正在检查资料库。"
+        case .ready(let descriptor):
+            descriptor.isSecurityScoped ? "通过系统授权访问。" : "使用默认本地路径。"
+        case .needsAuthorization(let reason, _):
+            reason.message
+        case .missing:
+            "原资料库可能已被移动或删除。"
+        case .readOnly:
+            "资料库目录或 SQLite WAL 文件不可写。"
+        case .invalidLibrary(_, let message):
+            message
+        case .failed(let error):
+            error.localizedDescription
+        }
     }
 
     private func copyPath(_ path: String) {

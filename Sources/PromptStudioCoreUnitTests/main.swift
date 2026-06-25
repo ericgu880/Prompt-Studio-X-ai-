@@ -63,6 +63,49 @@ func temporaryLibraryURL() throws -> URL {
     return url
 }
 
+func testLibraryURLResolution() throws {
+    let defaultURL = PromptRepository.defaultLibraryURL()
+    let spacedPath = "/tmp/promptstudio qa library"
+    let equalsPath = "/tmp/promptstudio-equals-library"
+    let envPath = "/tmp/promptstudio-env-library"
+    let argPath = "/tmp/promptstudio-arg-wins"
+
+    try expect(
+        PromptRepository.resolvedLibraryURL(arguments: ["--library", spacedPath], environment: [:]).path == spacedPath,
+        "--library PATH should resolve the following token as the library URL"
+    )
+    try expect(
+        PromptRepository.resolvedLibraryURL(arguments: ["--library=\(equalsPath)"], environment: [:]).path == equalsPath,
+        "--library=PATH should resolve the inline value as the library URL"
+    )
+    try expect(
+        PromptRepository.resolvedLibraryURL(arguments: [], environment: ["PROMPTSTUDIO_LIBRARY_PATH": envPath]).path == envPath,
+        "PROMPTSTUDIO_LIBRARY_PATH should resolve when no --library argument is present"
+    )
+    try expect(
+        PromptRepository.resolvedLibraryURL(arguments: ["--library", argPath], environment: ["PROMPTSTUDIO_LIBRARY_PATH": envPath]).path == argPath,
+        "--library should take priority over PROMPTSTUDIO_LIBRARY_PATH"
+    )
+    try expect(
+        PromptRepository.resolvedLibraryURL(arguments: [], environment: [:]) == defaultURL,
+        "missing overrides should fall back to the default library URL"
+    )
+}
+
+func testExistingLibraryValidationDoesNotCreateDatabase() throws {
+    let emptyDirectory = try temporaryLibraryURL()
+    do {
+        try PromptRepository.validateExistingLibrary(at: emptyDirectory)
+        throw CoreUnitTestError.failure("existing library validation should reject an empty directory")
+    } catch PromptRepositoryValidationError.missingDatabase {
+        let databaseURL = emptyDirectory.appendingPathComponent("database/promptstudio.sqlite")
+        try expect(
+            !FileManager.default.fileExists(atPath: databaseURL.path),
+            "existing library validation must not create database files"
+        )
+    }
+}
+
 @discardableResult
 func measurePerformance(_ label: String, threshold: TimeInterval, operation: () throws -> Void) throws -> TimeInterval {
     let start = Date()
@@ -556,7 +599,7 @@ func testLastUsedUpdatePersistsForRecentSorting() throws {
     try expect(recent.first?.id == older.id, "updated lastUsedAt should drive recent sorting")
 }
 
-func testPinnedItemsSortAboveNormalCollections() throws {
+func testPinnedAtDoesNotAffectNormalCollectionSorting() throws {
     var first = sampleItem(title: "普通靠前", assetKind: .markdown, tags: ["置顶测试"], prompt: "first")
     var pinned = sampleItem(title: "置顶靠后", assetKind: .markdown, tags: ["置顶测试"], prompt: "pinned")
     first.sortOrder = 0
@@ -564,16 +607,16 @@ func testPinnedItemsSortAboveNormalCollections() throws {
     pinned.pinnedAt = Date()
 
     let all = PromptFiltering.apply([first, pinned], filter: PromptFilter())
-    try expect(all.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal all items")
+    try expect(all.map(\.id) == [first.id, pinned.id], "pinnedAt should not affect all item sorting while pinning is disabled")
 
     let text = PromptFiltering.apply([first, pinned], filter: PromptFilter(assetKindFilter: .promptDocument))
-    try expect(text.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal text filter items")
+    try expect(text.map(\.id) == [first.id, pinned.id], "pinnedAt should not affect text filter sorting while pinning is disabled")
 
     let tag = PromptFiltering.apply([first, pinned], filter: PromptFilter(collection: .tag("置顶测试")))
-    try expect(tag.map(\.id) == [pinned.id, first.id], "pinned item should sort above normal tag results")
+    try expect(tag.map(\.id) == [first.id, pinned.id], "pinnedAt should not affect tag sorting while pinning is disabled")
 }
 
-func testPinnedItemsSortAboveRecentButTrashIgnoresPin() throws {
+func testPinnedAtDoesNotAffectRecentOrTrashSorting() throws {
     var pinnedOlder = sampleItem(title: "置顶较早", prompt: "pinned")
     var normalNewer = sampleItem(title: "普通较新", prompt: "newer")
     pinnedOlder.pinnedAt = Date()
@@ -581,7 +624,7 @@ func testPinnedItemsSortAboveRecentButTrashIgnoresPin() throws {
     normalNewer.lastUsedAt = Date(timeIntervalSince1970: 200)
 
     let recent = PromptFiltering.apply([normalNewer, pinnedOlder], filter: PromptFilter(collection: .recent))
-    try expect(recent.map(\.id) == [pinnedOlder.id, normalNewer.id], "pinned recent item should stay above newer normal item")
+    try expect(recent.map(\.id) == [normalNewer.id, pinnedOlder.id], "pinnedAt should not override recent sorting while pinning is disabled")
 
     pinnedOlder.deletedAt = Date()
     normalNewer.deletedAt = Date()
@@ -763,6 +806,8 @@ func testAutomationServiceImportsImageMetadata() throws {
 }
 
 do {
+    try testLibraryURLResolution()
+    try testExistingLibraryValidationDoesNotCreateDatabase()
     try testSearchFiltering()
     try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
@@ -788,8 +833,8 @@ do {
     try testSeedAssetRepairKeepsExistingUserData()
     try testThumbnailPathUpdatePersistsWithoutChangingOriginalAsset()
     try testLastUsedUpdatePersistsForRecentSorting()
-    try testPinnedItemsSortAboveNormalCollections()
-    try testPinnedItemsSortAboveRecentButTrashIgnoresPin()
+    try testPinnedAtDoesNotAffectNormalCollectionSorting()
+    try testPinnedAtDoesNotAffectRecentOrTrashSorting()
     try testPinnedAtPersistsAndMigratesFromOldSchema()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()

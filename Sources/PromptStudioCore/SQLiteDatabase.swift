@@ -9,30 +9,74 @@ public enum SQLiteValue: Sendable {
 }
 
 public enum SQLiteError: Error, LocalizedError {
-    case openFailed(String)
-    case prepareFailed(String)
-    case stepFailed(String)
-    case bindFailed(String)
+    case openFailed(String, resultCode: Int32, extendedCode: Int32)
+    case prepareFailed(String, resultCode: Int32, extendedCode: Int32)
+    case stepFailed(String, resultCode: Int32, extendedCode: Int32)
+    case bindFailed(String, resultCode: Int32, extendedCode: Int32)
     case transactionRollbackFailed(original: String, rollback: String)
 
     public var errorDescription: String? {
         switch self {
-        case .openFailed(let message), .prepareFailed(let message), .stepFailed(let message), .bindFailed(let message):
+        case .openFailed(let message, _, _),
+             .prepareFailed(let message, _, _),
+             .stepFailed(let message, _, _),
+             .bindFailed(let message, _, _):
             message
         case .transactionRollbackFailed(let original, let rollback):
             "SQLite transaction failed: \(original); rollback failed: \(rollback)"
         }
     }
+
+    public var resultCode: Int32? {
+        switch self {
+        case .openFailed(_, let code, _),
+             .prepareFailed(_, let code, _),
+             .stepFailed(_, let code, _),
+             .bindFailed(_, let code, _):
+            code
+        case .transactionRollbackFailed:
+            nil
+        }
+    }
+
+    public var extendedCode: Int32? {
+        switch self {
+        case .openFailed(_, _, let code),
+             .prepareFailed(_, _, let code),
+             .stepFailed(_, _, let code),
+             .bindFailed(_, _, let code):
+            code
+        case .transactionRollbackFailed:
+            nil
+        }
+    }
+}
+
+public enum SQLiteOpenMode {
+    case createIfNeeded
+    case existingReadWrite
 }
 
 public final class SQLiteDatabase: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    public init(path: String) throws {
-        if sqlite3_open(path, &handle) != SQLITE_OK {
-            throw SQLiteError.openFailed(Self.message(from: handle))
+    public init(path: String, mode: SQLiteOpenMode = .createIfNeeded) throws {
+        let flags: Int32
+        switch mode {
+        case .createIfNeeded:
+            flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        case .existingReadWrite:
+            flags = SQLITE_OPEN_READWRITE
         }
+        if sqlite3_open_v2(path, &handle, flags, nil) != SQLITE_OK {
+            throw SQLiteError.openFailed(
+                Self.message(from: handle),
+                resultCode: sqlite3_errcode(handle),
+                extendedCode: sqlite3_extended_errcode(handle)
+            )
+        }
+        sqlite3_extended_result_codes(handle, 1)
         try execute("PRAGMA foreign_keys = ON;")
         try execute("PRAGMA journal_mode = WAL;")
     }
@@ -43,28 +87,44 @@ public final class SQLiteDatabase: @unchecked Sendable {
 
     public func execute(_ sql: String) throws {
         if sqlite3_exec(handle, sql, nil, nil, nil) != SQLITE_OK {
-            throw SQLiteError.stepFailed(Self.message(from: handle))
+            throw SQLiteError.stepFailed(
+                Self.message(from: handle),
+                resultCode: sqlite3_errcode(handle),
+                extendedCode: sqlite3_extended_errcode(handle)
+            )
         }
     }
 
     public func run(_ sql: String, values: [SQLiteValue] = []) throws {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw SQLiteError.prepareFailed(Self.message(from: handle))
+            throw SQLiteError.prepareFailed(
+                Self.message(from: handle),
+                resultCode: sqlite3_errcode(handle),
+                extendedCode: sqlite3_extended_errcode(handle)
+            )
         }
         defer { sqlite3_finalize(statement) }
 
         try bind(values, to: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw SQLiteError.stepFailed(Self.message(from: handle))
+            throw SQLiteError.stepFailed(
+                Self.message(from: handle),
+                resultCode: sqlite3_errcode(handle),
+                extendedCode: sqlite3_extended_errcode(handle)
+            )
         }
     }
 
     public func query(_ sql: String, values: [SQLiteValue] = []) throws -> [[String: String?]] {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw SQLiteError.prepareFailed(Self.message(from: handle))
+            throw SQLiteError.prepareFailed(
+                Self.message(from: handle),
+                resultCode: sqlite3_errcode(handle),
+                extendedCode: sqlite3_extended_errcode(handle)
+            )
         }
         defer { sqlite3_finalize(statement) }
 
@@ -124,7 +184,11 @@ public final class SQLiteDatabase: @unchecked Sendable {
             }
 
             guard result == SQLITE_OK else {
-                throw SQLiteError.bindFailed(Self.message(from: handle))
+                throw SQLiteError.bindFailed(
+                    Self.message(from: handle),
+                    resultCode: sqlite3_errcode(handle),
+                    extendedCode: sqlite3_extended_errcode(handle)
+                )
             }
         }
     }

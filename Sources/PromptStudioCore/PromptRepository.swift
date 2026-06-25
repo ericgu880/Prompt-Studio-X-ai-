@@ -1,5 +1,22 @@
 import Foundation
 
+public enum PromptRepositoryValidationError: Error, LocalizedError {
+    case notDirectory(String)
+    case missingDatabase(String)
+    case incompatibleSchema(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notDirectory(let path):
+            "选择的不是资料库目录：\(path)"
+        case .missingDatabase(let path):
+            "找不到资料库数据库：\(path)"
+        case .incompatibleSchema(let message):
+            "资料库结构不兼容：\(message)"
+        }
+    }
+}
+
 public final class PromptRepository: @unchecked Sendable {
     public let libraryURL: URL
     public let databaseURL: URL
@@ -26,9 +43,30 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public static func defaultLibraryURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents")
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+            .first!
             .appendingPathComponent("PromptStudio Library")
+    }
+
+    public static func resolvedLibraryURL(
+        arguments: [String] = Array(CommandLine.arguments.dropFirst()),
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        var tokens = arguments
+        while let first = tokens.first {
+            if first == "--library", tokens.count >= 2 {
+                return URL(fileURLWithPath: tokens[1])
+            }
+            if first.hasPrefix("--library=") {
+                return URL(fileURLWithPath: String(first.dropFirst("--library=".count)))
+            }
+            tokens.removeFirst()
+        }
+        if let path = environment["PROMPTSTUDIO_LIBRARY_PATH"],
+           !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        return defaultLibraryURL()
     }
 
     public static func createLibraryDirectories(at url: URL) throws {
@@ -53,6 +91,37 @@ public final class PromptRepository: @unchecked Sendable {
         ]
         for path in paths {
             try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        }
+    }
+
+    public static func validateExistingLibrary(at libraryURL: URL) throws {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: libraryURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw PromptRepositoryValidationError.notDirectory(libraryURL.path)
+        }
+
+        let databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw PromptRepositoryValidationError.missingDatabase(databaseURL.path)
+        }
+
+        let database = try SQLiteDatabase(path: databaseURL.path, mode: .existingReadWrite)
+        let requiredTables = Set(["prompt_items", "prompt_versions", "tags", "model_profiles", "library_folders"])
+        let rows = try database.query(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name IN ('prompt_items', 'prompt_versions', 'tags', 'model_profiles', 'library_folders');
+            """
+        )
+        let tableNames = Set(rows.compactMap { $0["name"] ?? nil })
+        guard requiredTables.isSubset(of: tableNames) else {
+            let missing = requiredTables.subtracting(tableNames).sorted().joined(separator: ", ")
+            throw PromptRepositoryValidationError.incompatibleSchema("缺少数据表：\(missing)")
+        }
+
+        try database.transaction {
+            try database.run("UPDATE prompt_items SET updatedAt = updatedAt WHERE 0;")
         }
     }
 

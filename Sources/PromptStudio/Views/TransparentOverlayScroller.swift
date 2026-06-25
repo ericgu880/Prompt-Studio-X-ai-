@@ -1,8 +1,108 @@
 import AppKit
 
+@MainActor
+private final class ScrollRevealRegistry {
+    static let shared = ScrollRevealRegistry()
+
+    private let scrollViews = NSHashTable<HoverRevealScrollView>.weakObjects()
+    private var eventMonitor: Any?
+    private var syncTimer: Timer?
+
+    func register(_ scrollView: HoverRevealScrollView) {
+        scrollViews.add(scrollView)
+        scrollView.window?.acceptsMouseMovedEvents = true
+        installEventMonitorIfNeeded()
+        installSyncTimerIfNeeded()
+    }
+
+    func unregister(_ scrollView: HoverRevealScrollView) {
+        scrollViews.remove(scrollView)
+        guard scrollViews.allObjects.isEmpty else { return }
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+        }
+        eventMonitor = nil
+        syncTimer?.invalidate()
+        syncTimer = nil
+    }
+
+    func syncRegisteredWindows() {
+        let windows = Set(scrollViews.allObjects.compactMap(\.window))
+        for window in windows {
+            sync(window: window, windowPoint: window.mouseLocationOutsideOfEventStream)
+        }
+    }
+
+    func hideOthers(than activeScrollView: HoverRevealScrollView) {
+        for scrollView in scrollViews.allObjects where scrollView !== activeScrollView {
+            scrollView.forceHideScroller()
+        }
+    }
+
+    func syncAfterDrag(window: NSWindow?, windowPoint: NSPoint) {
+        guard let window else { return }
+        sync(window: window, windowPoint: windowPoint)
+    }
+
+    func sync(window: NSWindow?, windowPoint: NSPoint) {
+        guard let window else { return }
+
+        let activeScrollView = scrollViews.allObjects.first { scrollView in
+            scrollView.window === window && scrollView.containsVisibleArea(windowPoint: windowPoint)
+        }
+        for scrollView in scrollViews.allObjects where scrollView.window === window {
+            scrollView.syncPointerState(
+                windowPoint: windowPoint,
+                shouldPreferVisible: scrollView === activeScrollView
+            )
+        }
+    }
+
+    private func installEventMonitorIfNeeded() {
+        guard eventMonitor == nil else { return }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDown, .scrollWheel]
+        ) { [weak self] event in
+            self?.handle(event) ?? event
+        }
+    }
+
+    private func installSyncTimerIfNeeded() {
+        guard syncTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.08, repeats: true) { _ in
+            Task { @MainActor in
+                ScrollRevealRegistry.shared.syncRegisteredWindows()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        syncTimer = timer
+    }
+
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        guard let window = event.window else { return event }
+        switch event.type {
+        case .mouseMoved, .scrollWheel:
+            sync(window: window, windowPoint: event.locationInWindow)
+            return event
+        case .leftMouseDown:
+            sync(window: window, windowPoint: event.locationInWindow)
+            guard let activeScrollView = scrollViews.allObjects.first(where: { scrollView in
+                scrollView.window === window && scrollView.containsVisibleArea(windowPoint: event.locationInWindow)
+            }) else {
+                return event
+            }
+            if activeScrollView.handleScrollerMouseDown(with: event) {
+                return nil
+            }
+            return event
+        default:
+            return event
+        }
+    }
+}
+
 final class HoverRevealScrollView: NSScrollView {
     private var revealTrackingArea: NSTrackingArea?
-    nonisolated(unsafe) private var revealEventMonitor: Any?
     private var isPointerInside = false
     private var isPointerOverScroller = false
     private var isDraggingScroller = false
@@ -17,14 +117,25 @@ final class HoverRevealScrollView: NSScrollView {
 
         revealOnHover = enabled
         if enabled {
-            installRevealEventMonitor()
+            ScrollRevealRegistry.shared.register(self)
         } else {
-            removeRevealEventMonitor()
+            ScrollRevealRegistry.shared.unregister(self)
             isPointerOverScroller = false
             (verticalScroller as? TransparentOverlayScroller)?.setKnobHover(false)
         }
         applyScrollerVisibility()
         updateTrackingAreas()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard revealOnHover else { return }
+        if window == nil {
+            ScrollRevealRegistry.shared.unregister(self)
+        } else {
+            ScrollRevealRegistry.shared.register(self)
+            window?.acceptsMouseMovedEvents = true
+        }
     }
 
     override func updateTrackingAreas() {
@@ -49,32 +160,27 @@ final class HoverRevealScrollView: NSScrollView {
         super.mouseEntered(with: event)
         guard revealOnHover else { return }
         isPointerInside = true
-        showScroller()
-        updateScrollerHover(with: event)
+        ScrollRevealRegistry.shared.sync(window: window, windowPoint: event.locationInWindow)
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         guard revealOnHover else { return }
-        isPointerInside = false
-        if containsVisibleScrollerKnob(windowPoint: event.locationInWindow) {
-            setScrollerHover(true)
-            showScroller()
-            return
-        }
-        setScrollerHover(false)
-        hideScrollerIfIdle()
+        ScrollRevealRegistry.shared.sync(window: window, windowPoint: event.locationInWindow)
     }
 
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         guard revealOnHover else { return }
-        updateScrollerHover(with: event)
+        ScrollRevealRegistry.shared.sync(window: window, windowPoint: event.locationInWindow)
     }
 
     override func scrollWheel(with event: NSEvent) {
-        if revealOnHover && isPointerInside {
-            showScroller()
+        if revealOnHover {
+            isPointerInside = bounds.contains(convert(event.locationInWindow, from: nil))
+            if isPointerInside {
+                showScroller()
+            }
         }
         super.scrollWheel(with: event)
         if revealOnHover && !isPointerInside {
@@ -89,17 +195,31 @@ final class HoverRevealScrollView: NSScrollView {
         showScroller()
     }
 
-    func endScrollerDrag() {
+    func endScrollerDrag(window: NSWindow?, windowPoint: NSPoint) {
         guard revealOnHover else { return }
         isDraggingScroller = false
-        if !isPointerInside && !isPointerOverScroller {
-            hideScrollerIfIdle()
-        }
+        ScrollRevealRegistry.shared.syncAfterDrag(window: window, windowPoint: windowPoint)
     }
 
     func updateScrollerHoverFromScroller(_ isHovering: Bool) {
         guard revealOnHover else { return }
         setScrollerHover(isHovering)
+    }
+
+    func handleScrollerMouseDown(with event: NSEvent) -> Bool {
+        guard revealOnHover,
+              containsVisibleArea(windowPoint: event.locationInWindow),
+              containsVisibleScrollerKnob(windowPoint: event.locationInWindow),
+              let scroller = verticalScroller as? TransparentOverlayScroller else {
+            return false
+        }
+        scroller.handleKnobDrag(with: event, in: self)
+        return true
+    }
+
+    func containsVisibleArea(windowPoint: NSPoint) -> Bool {
+        guard revealOnHover, window != nil, !isHiddenOrHasHiddenAncestor else { return false }
+        return convert(bounds, to: nil).contains(windowPoint)
     }
 
     func containsVisibleScrollerKnob(windowPoint: NSPoint) -> Bool {
@@ -119,61 +239,30 @@ final class HoverRevealScrollView: NSScrollView {
         return super.hitTest(point)
     }
 
-    private func updateScrollerHover(with event: NSEvent) {
-        guard let scroller = verticalScroller as? TransparentOverlayScroller else {
-            setScrollerHover(false)
-            return
+    func syncPointerState(windowPoint: NSPoint, shouldPreferVisible: Bool) {
+        guard revealOnHover else { return }
+        isPointerInside = shouldPreferVisible && containsVisibleArea(windowPoint: windowPoint)
+        isPointerOverScroller = containsVisibleScrollerKnob(windowPoint: windowPoint)
+        (verticalScroller as? TransparentOverlayScroller)?.setKnobHover(isPointerOverScroller)
+        if isPointerInside || isPointerOverScroller || isDraggingScroller {
+            showScroller()
+        } else {
+            forceHideScroller()
         }
-        let point = convert(event.locationInWindow, from: nil)
-        setScrollerHover(scrollerHitRect(for: scroller).contains(point))
+    }
+
+    func forceHideScroller() {
+        guard revealOnHover else { return }
+        isPointerInside = false
+        isPointerOverScroller = false
+        isDraggingScroller = false
+        verticalScroller?.alphaValue = 0
+        (verticalScroller as? TransparentOverlayScroller)?.setKnobHover(false)
+        verticalScroller?.needsDisplay = true
     }
 
     private func scrollerHitRect(for scroller: TransparentOverlayScroller) -> NSRect {
         convert(scroller.visibleKnobHitRect, from: scroller)
-    }
-
-    private func installRevealEventMonitor() {
-        guard revealEventMonitor == nil else { return }
-        revealEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDown]
-        ) { [weak self] event in
-            self?.handleRevealEvent(event) ?? event
-        }
-    }
-
-    private func removeRevealEventMonitor() {
-        if let revealEventMonitor {
-            NSEvent.removeMonitor(revealEventMonitor)
-            self.revealEventMonitor = nil
-        }
-    }
-
-    private func handleRevealEvent(_ event: NSEvent) -> NSEvent? {
-        guard revealOnHover, event.window === window else { return event }
-
-        switch event.type {
-        case .mouseMoved:
-            let point = convert(event.locationInWindow, from: nil)
-            if containsVisibleScrollerKnob(windowPoint: event.locationInWindow) {
-                setScrollerHover(true)
-            } else if !bounds.contains(point) {
-                isPointerInside = false
-                setScrollerHover(false)
-                hideScrollerIfIdle()
-            }
-            return event
-
-        case .leftMouseDown:
-            guard containsVisibleScrollerKnob(windowPoint: event.locationInWindow),
-                  let scroller = verticalScroller as? TransparentOverlayScroller else {
-                return event
-            }
-            scroller.handleKnobDrag(with: event, in: self)
-            return nil
-
-        default:
-            return event
-        }
     }
 
     private func setScrollerHover(_ isHovering: Bool) {
@@ -186,6 +275,7 @@ final class HoverRevealScrollView: NSScrollView {
     }
 
     private func showScroller() {
+        ScrollRevealRegistry.shared.hideOthers(than: self)
         verticalScroller?.alphaValue = 1
         verticalScroller?.needsDisplay = true
     }
@@ -205,11 +295,7 @@ final class HoverRevealScrollView: NSScrollView {
         verticalScroller?.needsDisplay = true
     }
 
-    deinit {
-        if let revealEventMonitor {
-            NSEvent.removeMonitor(revealEventMonitor)
-        }
-    }
+    deinit {}
 }
 
 final class TransparentOverlayScroller: NSScroller {
@@ -283,7 +369,8 @@ final class TransparentOverlayScroller: NSScroller {
         guard maxOffset > 0 else { return }
 
         scrollView.beginScrollerDrag()
-        defer { scrollView.endScrollerDrag() }
+        var lastWindowPoint = event.locationInWindow
+        defer { scrollView.endScrollerDrag(window: window, windowPoint: lastWindowPoint) }
 
         setKnobHover(true)
         let startPoint = scrollView.convert(event.locationInWindow, from: nil)
@@ -293,6 +380,7 @@ final class TransparentOverlayScroller: NSScroller {
 
         while let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
             guard nextEvent.type == .leftMouseDragged || nextEvent.type == .leftMouseUp else { continue }
+            lastWindowPoint = nextEvent.locationInWindow
             if nextEvent.type == .leftMouseDragged {
                 let currentPoint = scrollView.convert(nextEvent.locationInWindow, from: nil)
                 let deltaY = currentPoint.y - startPoint.y

@@ -232,10 +232,18 @@ final class AppState: ObservableObject {
     @Published var expandedFolderIDs: Set<String> = []
     @Published private(set) var canNavigateBack = false
     @Published private(set) var canNavigateForward = false
+    @Published private(set) var libraryAccessState: LibraryAccessState = .loading
 
-    private var repository: PromptRepository?
+    private let configuredLibraryURL: URL
+    private let libraryAccessCoordinator: LibraryAccessCoordinator
+    private var authorizedLibraryContext: AuthorizedLibraryContext?
+    private var repository: PromptRepository? {
+        authorizedLibraryContext?.repository
+    }
     private var itemsByID: [String: PromptItem] = [:]
     private var pendingLastUsedTask: Task<Void, Never>?
+    private var libraryLoadTask: Task<Void, Never>?
+    private var loadGeneration = 0
     private var activeThumbnailGenerationIDs: Set<UUID> = []
     private var activeThumbnailGenerationBatches: [UUID: Set<String>] = [:]
     private var activeThumbnailItemIDs: Set<String> = []
@@ -248,10 +256,12 @@ final class AppState: ObservableObject {
     private var lastExternalOpenAt: Date?
 
     var libraryURL: URL {
-        repository?.libraryURL ?? PromptRepository.defaultLibraryURL()
+        authorizedLibraryContext?.url ?? configuredLibraryURL
     }
 
-    init() {
+    init(libraryURL: URL = PromptRepository.defaultLibraryURL()) {
+        self.configuredLibraryURL = libraryURL
+        self.libraryAccessCoordinator = LibraryAccessCoordinator(defaultURL: libraryURL)
         licenseManager.objectWillChange
             .sink { [weak self] _ in
                 Task { @MainActor in
@@ -283,33 +293,154 @@ final class AppState: ObservableObject {
         items.filter { !$0.isDeleted && Self.hasRecentUse($0) }.count
     }
 
+    var isLibraryReady: Bool {
+        libraryAccessState.isReady
+    }
+
     func load() {
-        do {
-            let repository = try PromptRepository(libraryURL: PromptRepository.defaultLibraryURL())
-            let seedItems = try SeedData.makePromptItems(resourceBundle: .module, libraryURL: repository.libraryURL)
-            try repository.seedIfNeeded(
-                items: seedItems,
-                models: SeedData.models,
-                tags: SeedData.tags
+        startLibraryLoad { [libraryAccessCoordinator] in
+            try libraryAccessCoordinator.loadInitialContext()
+        }
+    }
+
+    func retryLoadLibrary() {
+        load()
+    }
+
+    func reconnectExistingLibrary() {
+        let defaultURL = libraryAccessState.lastKnownURL ?? libraryAccessCoordinator.preferredPanelURL
+        guard let panelURL = AppKitBridge.chooseExistingLibraryDirectory(defaultURL: defaultURL) else { return }
+        startLibraryLoad { [libraryAccessCoordinator] in
+            try libraryAccessCoordinator.connectExistingLibrary(fromPanelURL: panelURL)
+        }
+    }
+
+    private struct LoadedLibraryData {
+        let models: [ModelProfile]
+        let folders: [LibraryFolder]
+        let items: [PromptItem]
+        let tags: [Tag]
+    }
+
+    private func startLibraryLoad(_ makeContext: @escaping () throws -> AuthorizedLibraryContext) {
+        libraryLoadTask?.cancel()
+        loadGeneration += 1
+        let generation = loadGeneration
+        libraryAccessState = .loading
+
+        libraryLoadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let context = try makeContext()
+                let data = try self.loadRepositoryData(repository: context.repository)
+                guard generation == self.loadGeneration, !Task.isCancelled else { return }
+                self.installLibraryContext(context, data: data)
+            } catch let error as LibraryLoadError {
+                guard generation == self.loadGeneration, !Task.isCancelled else { return }
+                self.handleLibraryLoadError(error)
+            } catch {
+                guard generation == self.loadGeneration, !Task.isCancelled else { return }
+                self.handleLibraryLoadError(.ioFailure(nil, error.localizedDescription))
+            }
+        }
+    }
+
+    private func loadRepositoryData(repository: PromptRepository) throws -> LoadedLibraryData {
+        let seedItems = try SeedData.makePromptItems(resourceBundle: .module, libraryURL: repository.libraryURL)
+        try repository.seedIfNeeded(
+            items: seedItems,
+            models: SeedData.models,
+            tags: SeedData.tags
+        )
+        try repository.seedFoldersIfNeeded(SeedData.folders)
+        try migrateFolderHierarchyIfNeeded(repository: repository)
+        try repository.repairSeedAssetPaths(from: seedItems)
+        let persistedModels = try repository.loadModelProfiles()
+        let loadedFolders = try repository.loadFolders()
+        let loadedItems = try repository.loadItems()
+        try repairLegacyRecentTimestampsIfNeeded(repository: repository)
+        let loadedTags = try repository.loadTags()
+        return LoadedLibraryData(
+            models: SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels),
+            folders: loadedFolders,
+            items: loadedItems,
+            tags: loadedTags
+        )
+    }
+
+    private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) {
+        stopLibraryBackgroundWork()
+        authorizedLibraryContext = context
+        models = data.models
+        folders = data.folders
+        expandedFolderIDs = Set(data.folders.map(\.id))
+        items = data.items
+        tags = data.tags
+        selectedID = nil
+        selectedIDs = []
+        isBatchingFilterUpdate = true
+        filter = PromptFilter()
+        isBatchingFilterUpdate = false
+        refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
+        libraryAccessState = .ready(
+            LibraryDescriptor(
+                url: context.url,
+                isSecurityScoped: context.session != nil,
+                isSandboxed: libraryAccessCoordinator.isSandboxed
             )
-            try repository.seedFoldersIfNeeded(SeedData.folders)
-            try migrateFolderHierarchyIfNeeded(repository: repository)
-            try repository.repairSeedAssetPaths(from: seedItems)
-            self.repository = repository
-            let persistedModels = try repository.loadModelProfiles()
-            self.models = SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels)
-            self.folders = try repository.loadFolders()
-            self.expandedFolderIDs = Set(self.folders.map(\.id))
-            self.items = try repository.loadItems()
-            try repairLegacyRecentTimestampsIfNeeded(repository: repository)
-            self.tags = try repository.loadTags()
-            isBatchingFilterUpdate = true
-            filter = PromptFilter()
-            isBatchingFilterUpdate = false
-            refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
-            prepareMissingThumbnails()
-        } catch {
-            self.modal = .error(error.localizedDescription)
+        )
+        prepareMissingThumbnails()
+    }
+
+    private func stopLibraryBackgroundWork() {
+        pendingLastUsedTask?.cancel()
+        pendingLastUsedTask = nil
+        activeThumbnailGenerationIDs.removeAll()
+        activeThumbnailGenerationBatches.removeAll()
+        activeThumbnailItemIDs.removeAll()
+    }
+
+    private func handleLibraryLoadError(_ error: LibraryLoadError) {
+        if let context = authorizedLibraryContext {
+            libraryAccessState = .ready(
+                LibraryDescriptor(
+                    url: context.url,
+                    isSecurityScoped: context.session != nil,
+                    isSandboxed: libraryAccessCoordinator.isSandboxed
+                )
+            )
+            modal = .error(error.localizedDescription)
+            return
+        }
+
+        items = []
+        folders = []
+        tags = []
+        selectedID = nil
+        selectedIDs = []
+        refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
+
+        switch error {
+        case .permissionDenied(let url, _):
+            let reason: LibraryAuthorizationReason = libraryAccessCoordinator.isSandboxed
+                ? .noBookmarkInSandbox
+                : .permissionDenied
+            libraryAccessState = .needsAuthorization(reason: reason, lastKnownURL: url ?? libraryAccessCoordinator.preferredPanelURL)
+        case .bookmarkResolutionFailed:
+            libraryAccessState = .needsAuthorization(
+                reason: .bookmarkUnavailable,
+                lastKnownURL: libraryAccessCoordinator.preferredPanelURL
+            )
+        case .notFound(let url, _):
+            libraryAccessState = .missing(lastKnownURL: url ?? libraryAccessCoordinator.preferredPanelURL)
+        case .readOnly(let url, _):
+            libraryAccessState = .readOnly(url)
+        case .invalidLibrary(let url, let message):
+            libraryAccessState = .invalidLibrary(url, message: message)
+        case .incompatibleSchema(let url, let message):
+            libraryAccessState = .invalidLibrary(url, message: message)
+        case .databaseCorrupted, .ioFailure, .databaseBusy, .diskFull:
+            libraryAccessState = .failed(error)
         }
     }
 
@@ -705,14 +836,6 @@ final class AppState: ObservableObject {
         updated.favorite.toggle()
         updated.updatedAt = Date()
         save(updated, toast: updated.favorite ? "已收藏" : "已取消收藏")
-    }
-
-    func togglePinned(_ item: PromptItem) {
-        guard requireFeature(.proManageCollections) else { return }
-        var updated = item
-        updated.pinnedAt = updated.pinnedAt == nil ? Date() : nil
-        updated.updatedAt = Date()
-        save(updated, toast: updated.pinnedAt == nil ? "已取消置顶" : "已置顶")
     }
 
     func moveSelectedToTrash() {
