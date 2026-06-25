@@ -73,26 +73,26 @@ struct LicenseSettingsView: View {
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
             }
-            licenseActionRow("刷新授权", detail: "联网更新本机 30 天证书。") {
+            licenseActionRow("刷新授权", detail: refreshActionDetail) {
                 Button(isRefreshing ? "刷新中" : "刷新") {
                     Task { await refresh() }
                 }
                 .buttonStyle(CapsuleButtonStyle())
-                .disabled(isRefreshing)
+                .disabled(isRefreshing || !hasDeviceLicense)
             }
-            licenseActionRow("当前设备", detail: "停用后会释放一个设备席位。") {
+            licenseActionRow("当前设备", detail: currentDeviceActionDetail) {
                 Button(isDeactivating ? "停用中" : "停用设备") {
                     Task { await deactivate() }
                 }
                 .buttonStyle(CapsuleButtonStyle())
-                .disabled(isDeactivating || currentCertificate == nil)
+                .disabled(isDeactivating || !hasDeviceLicense)
             }
-            licenseActionRow("激活设备", detail: "查看、重命名或移除已激活设备。") {
+            licenseActionRow("激活设备", detail: deviceManagementActionDetail) {
                 Button("管理设备") {
                     isDeviceManagementPresented = true
                 }
-                .buttonStyle(CapsuleButtonStyle(filled: true))
-                .disabled(currentCertificate == nil)
+                .buttonStyle(CapsuleButtonStyle(filled: hasDeviceLicense))
+                .disabled(!hasDeviceLicense)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -115,6 +115,22 @@ struct LicenseSettingsView: View {
         .background(StudioColor.panel)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private var hasDeviceLicense: Bool {
+        currentCertificate != nil
+    }
+
+    private var refreshActionDetail: String {
+        hasDeviceLicense ? "联网更新本机 30 天证书。" : "激活后可联网刷新本机证书。"
+    }
+
+    private var currentDeviceActionDetail: String {
+        hasDeviceLicense ? "停用后会释放一个设备席位。" : "试用状态未绑定设备席位。"
+    }
+
+    private var deviceManagementActionDetail: String {
+        hasDeviceLicense ? "查看、重命名或移除已激活设备。" : "激活后可查看、重命名或移除设备。"
     }
 
     private var currentCertificate: LicenseCertificate? {
