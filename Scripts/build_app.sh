@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIGURATION="${1:-debug}"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+ENTITLEMENTS_PATH="${ENTITLEMENTS_PATH:-}"
 
 cd "$ROOT_DIR"
 
@@ -28,5 +30,20 @@ if [[ -d "$RESOURCE_BUNDLE" ]]; then
 fi
 
 chmod +x "$APP_PATH/Contents/MacOS/PromptStudio"
+
+codesign_args=(--force --sign "$SIGN_IDENTITY")
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign_args+=(--timestamp=none)
+fi
+if [[ -n "$ENTITLEMENTS_PATH" ]]; then
+    if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
+        echo "ENTITLEMENTS_PATH not found: $ENTITLEMENTS_PATH" >&2
+        exit 1
+    fi
+    codesign_args+=(--entitlements "$ENTITLEMENTS_PATH")
+fi
+
+/usr/bin/codesign "${codesign_args[@]}" "$APP_PATH"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 echo "$APP_PATH"

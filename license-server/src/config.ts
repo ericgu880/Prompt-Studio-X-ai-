@@ -40,6 +40,11 @@ export interface AppConfig {
   rateLimitEnabled: boolean;
   adminToken?: string;
   adminSessionSecret?: string;
+  adminCsrfSecret: string;
+  adminHmacSecret: string;
+  adminWebOrigin: string;
+  legacyAdminEnabled: boolean;
+  telemetryEnabled: boolean;
 }
 
 export function loadConfig(): AppConfig {
@@ -60,6 +65,11 @@ export function loadConfig(): AppConfig {
     refreshAfterDays: numberValue("LICENSE_REFRESH_AFTER_DAYS", 7),
     rateLimitEnabled: (process.env.RATE_LIMIT_ENABLED ?? "true") === "true",
     adminToken: optionalSecret("ADMIN_TOKEN"),
-    adminSessionSecret: optionalSecret("ADMIN_SESSION_SECRET")
+    adminSessionSecret: optionalSecret("ADMIN_SESSION_SECRET"),
+    adminCsrfSecret: process.env.ADMIN_CSRF_SECRET ?? process.env.ADMIN_SESSION_SECRET ?? "promptstudio-admin-dev-csrf",
+    adminHmacSecret: process.env.ADMIN_HMAC_SECRET ?? process.env.ADMIN_SESSION_SECRET ?? "promptstudio-admin-dev-hmac",
+    adminWebOrigin: process.env.ADMIN_WEB_ORIGIN ?? "http://localhost:8000",
+    legacyAdminEnabled: (process.env.LEGACY_ADMIN_ENABLED ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true",
+    telemetryEnabled: (process.env.TELEMETRY_ENABLED ?? "false") === "true"
   };
 }

@@ -2520,6 +2520,9 @@ private struct MasonryGridView: View {
     let items: [PromptItem]
     let isSplitResizing: Bool
     @State private var draggedItemID: String?
+    @State private var reorderBaseItemIDs: [String] = []
+    @State private var reorderPreviewItemIDs: [String] = []
+    @State private var reorderPreviewTargetID: String?
     @State private var selectedFolderID: String?
     @State private var lockedColumnCount: Int?
     @State private var selectionDragStart: CGPoint?
@@ -2531,12 +2534,16 @@ private struct MasonryGridView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let canReorderItems = state.allowsManualItemReordering && state.selectedIDs.count <= 1
             let computedColumnCount = computedColumnCount(for: proxy.size.width)
             let columnCount = lockedColumnCount ?? computedColumnCount
             let gridContentWidth = gridContentWidth(for: proxy.size.width)
             let width = (gridContentWidth - CGFloat(columnCount - 1) * 12) / CGFloat(columnCount)
             let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = layout.visualItemIDs
+            let isItemReordering = draggedItemID != nil
+            let itemReorderAnimation: Animation? = isItemReordering ? .easeInOut(duration: 0.22) : nil
+            let reorderPlacementOverrides = itemReorderPlacementOverrides(for: layout.placements)
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
             let renderedPlacements = layout.placements.filter { $0.intersectsYRange(renderRange) }
             let visibleThumbnailCandidateIDs = thumbnailCandidateIDs(in: renderedPlacements)
@@ -2590,15 +2597,26 @@ private struct MasonryGridView: View {
                                 .offset(x: placement.x, y: placement.y)
                                 .zIndex(selectedFolderID == folder.id ? 1 : 0)
                         case .item(let item):
+                            let reorderOffset = reorderPlacementOverrides[item.id]
                             AssetCardView(
                                 item: item,
                                 width: width,
-                                draggedItemID: $draggedItemID,
+                                isReorderingEnabled: canReorderItems,
                                 selectionAction: { item, modifiers in
                                     selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
+                                },
+                                reorderDragChangedAction: { itemID, location in
+                                    updateItemReorder(draggedID: itemID, location: location, layout: layout, width: width, visualItemIDs: visualItemIDs)
+                                },
+                                reorderDragEndedAction: { draggedID in
+                                    finishItemReorder(draggedID: draggedID)
                                 }
                             )
-                            .offset(x: placement.x, y: placement.y)
+                            .modifier(MasonryPlacementOffsetModifier(
+                                x: reorderOffset?.x ?? placement.x,
+                                y: reorderOffset?.y ?? placement.y,
+                                animation: itemReorderAnimation
+                            ))
                             .simultaneousGesture(TapGesture().onEnded {
                                 selectedFolderID = nil
                             })
@@ -2633,6 +2651,10 @@ private struct MasonryGridView: View {
                 scrollResetID = UUID()
                 selectedFolderID = nil
                 clearSelectionDrag()
+                clearItemReorder()
+            }
+            .onChange(of: items.map(\.id)) { _, _ in
+                clearItemReorder()
             }
             .task(id: visibleThumbnailCandidateIDs) {
                 state.prepareVisibleThumbnails(for: visibleThumbnailCandidateIDs)
@@ -2646,8 +2668,13 @@ private struct MasonryGridView: View {
             }
         }
         .transaction { transaction in
-            transaction.animation = nil
-            transaction.disablesAnimations = true
+            if draggedItemID != nil {
+                transaction.animation = .easeInOut(duration: 0.22)
+                transaction.disablesAnimations = false
+            } else {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
         }
     }
 
@@ -2658,12 +2685,131 @@ private struct MasonryGridView: View {
         return max(2, min(6, proposed))
     }
 
-    private static let gridCoordinateSpace = "masonry-grid-coordinate-space"
+    fileprivate static let gridCoordinateSpace = "masonry-grid-coordinate-space"
     private static let scrollbarLaneWidth: CGFloat = 18
     private static let contentBottomPadding: CGFloat = 24
 
     private func gridContentWidth(for availableWidth: CGFloat) -> CGFloat {
         max(0, availableWidth)
+    }
+
+    private func beginItemReorder(itemID: String, visualItemIDs: [String], items: [PromptItem]) {
+        clearItemReorderPreview()
+        draggedItemID = itemID
+        let itemIDSet = Set(items.map(\.id))
+        let visibleOrderIDs = visualItemIDs.filter { itemIDSet.contains($0) }
+        reorderBaseItemIDs = visibleOrderIDs.count == items.count ? visibleOrderIDs : items.map(\.id)
+    }
+
+    private func previewItemReorder(targetID: String, items: [PromptItem]) {
+        guard state.allowsManualItemReordering, state.selectedIDs.count <= 1,
+              let draggedItemID, draggedItemID != targetID else {
+            return
+        }
+        guard reorderPreviewTargetID != targetID || reorderPreviewItemIDs.count != items.count else {
+            return
+        }
+
+        var itemIDs: [String]
+        if reorderPreviewItemIDs.count == items.count {
+            itemIDs = reorderPreviewItemIDs
+        } else if reorderBaseItemIDs.count == items.count {
+            itemIDs = reorderBaseItemIDs
+        } else {
+            itemIDs = items.map(\.id)
+        }
+        guard let draggedIndex = itemIDs.firstIndex(of: draggedItemID),
+              let targetIndex = itemIDs.firstIndex(of: targetID) else {
+            return
+        }
+
+        reorderPreviewTargetID = targetID
+        withAnimation(.easeInOut(duration: 0.18)) {
+            itemIDs.swapAt(draggedIndex, targetIndex)
+            reorderPreviewItemIDs = itemIDs
+        }
+    }
+
+    private func itemReorderPlacementOverrides(for placements: [MasonryPlacement]) -> [String: CGPoint] {
+        guard reorderPreviewItemIDs.count == reorderBaseItemIDs.count, !reorderPreviewItemIDs.isEmpty else {
+            return [:]
+        }
+        let itemSlots = placements
+            .compactMap { placement -> (id: String, point: CGPoint)? in
+                guard case .item(let item) = placement.entry else { return nil }
+                return (item.id, CGPoint(x: placement.x, y: placement.y))
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.point.y - rhs.point.y) > 0.5 {
+                    return lhs.point.y < rhs.point.y
+                }
+                return lhs.point.x < rhs.point.x
+            }
+        guard itemSlots.map(\.id) == reorderBaseItemIDs,
+              itemSlots.count == reorderPreviewItemIDs.count else {
+            return [:]
+        }
+
+        var overrides: [String: CGPoint] = [:]
+        for (index, itemID) in reorderPreviewItemIDs.enumerated() {
+            overrides[itemID] = itemSlots[index].point
+        }
+        return overrides
+    }
+
+    private func updateItemReorder(
+        draggedID: String,
+        location: CGPoint,
+        layout: MasonryLayoutResult,
+        width: CGFloat,
+        visualItemIDs: [String]
+    ) {
+        if draggedItemID != draggedID {
+            beginItemReorder(itemID: draggedID, visualItemIDs: visualItemIDs, items: items)
+        }
+        guard let targetID = itemTargetID(at: location, in: layout.placements, width: width),
+              targetID != draggedID else {
+            return
+        }
+        previewItemReorder(targetID: targetID, items: items)
+    }
+
+    private func finishItemReorder(draggedID: String) {
+        guard draggedItemID == draggedID, let targetID = reorderPreviewTargetID else {
+            clearItemReorder()
+            return
+        }
+        commitItemReorder(draggedID: draggedID, targetID: targetID)
+    }
+
+    private func itemTargetID(at location: CGPoint, in placements: [MasonryPlacement], width: CGFloat) -> String? {
+        placements
+            .compactMap { placement -> String? in
+                guard case .item(let item) = placement.entry else { return nil }
+                let frame = CGRect(x: placement.x, y: placement.y, width: width, height: placement.height)
+                return frame.contains(location) ? item.id : nil
+            }
+            .first
+    }
+
+    private func commitItemReorder(draggedID: String, targetID: String) {
+        guard state.allowsManualItemReordering, state.selectedIDs.count <= 1 else {
+            clearItemReorder()
+            return
+        }
+        state.swapFilteredItems(draggedID, targetID)
+        clearItemReorder()
+    }
+
+    private func clearItemReorder() {
+        clearItemReorderPreview()
+        draggedItemID = nil
+    }
+
+    private func clearItemReorderPreview() {
+        reorderBaseItemIDs = []
+        reorderPreviewItemIDs = []
+        reorderPreviewTargetID = nil
     }
 
     private func renderedYRange(viewportHeight: CGFloat) -> ClosedRange<CGFloat> {
@@ -3193,12 +3339,48 @@ private enum AssetCardMetrics {
     }
 }
 
+private struct MasonryPlacementOffsetModifier: ViewModifier {
+    let x: CGFloat
+    let y: CGFloat
+    let animation: Animation?
+    @State private var currentOffset: CGPoint?
+
+    func body(content: Content) -> some View {
+        let targetOffset = CGPoint(x: x, y: y)
+        content
+            .offset(
+                x: currentOffset?.x ?? targetOffset.x,
+                y: currentOffset?.y ?? targetOffset.y
+            )
+            .onAppear {
+                currentOffset = targetOffset
+            }
+            .onChange(of: targetOffset) { _, newOffset in
+                if let animation {
+                    var transaction = Transaction(animation: animation)
+                    transaction.disablesAnimations = false
+                    withTransaction(transaction) {
+                        currentOffset = newOffset
+                    }
+                } else {
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        currentOffset = newOffset
+                    }
+                }
+            }
+    }
+}
+
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
     let width: CGFloat
-    @Binding var draggedItemID: String?
+    let isReorderingEnabled: Bool
     let selectionAction: (PromptItem, NSEvent.ModifierFlags) -> Void
+    let reorderDragChangedAction: (String, CGPoint) -> Void
+    let reorderDragEndedAction: (String) -> Void
     @State private var lastClickAt: Date?
 
     private var isSelected: Bool {
@@ -3242,24 +3424,23 @@ private struct AssetCardView: View {
         .contextMenu {
             assetContextMenu
         }
-        .onDrag {
-            draggedItemID = item.id
-            return NSItemProvider(object: item.id as NSString)
-        } preview: {
-            dragPreview
-        }
-        .onDrop(
-            of: [UTType.plainText.identifier],
-            delegate: AssetCardDropDelegate(
-                targetItemID: item.id,
-                draggedItemID: $draggedItemID,
-                state: state
-            )
-        )
+        .simultaneousGesture(reorderGesture)
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true
         }
+    }
+
+    private var reorderGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named(MasonryGridView.gridCoordinateSpace))
+            .onChanged { value in
+                guard isReorderingEnabled else { return }
+                reorderDragChangedAction(item.id, value.location)
+            }
+            .onEnded { _ in
+                guard isReorderingEnabled else { return }
+                reorderDragEndedAction(item.id)
+            }
     }
 
     private func handleCardTap() {
@@ -3509,28 +3690,6 @@ private struct AssetCardView: View {
         action()
     }
 
-    private var dragPreview: some View {
-        let previewWidth = min(138, max(88, width * 0.46))
-        let previewHeight = min(156, max(72, AssetCardMetrics.contentHeight(for: item, width: previewWidth)))
-        return Group {
-            if item.isTextDocumentLike {
-                TextAssetCardCover(item: item)
-            } else {
-                AssetMediaView(item: item)
-            }
-        }
-        .frame(width: previewWidth, height: previewHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(Color.white.opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.36), radius: 14, x: 0, y: 10)
-        .opacity(0.78)
-        .padding(8)
-        .background(Color.clear)
-    }
-
     private func cardAction(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
         Button {
             selectImmediately()
@@ -3580,27 +3739,6 @@ private extension PromptItem {
         thumbnailPath != assetPath
             && !thumbnailPath.isEmpty
             && FileManager.default.fileExists(atPath: thumbnailPath)
-    }
-}
-
-private struct AssetCardDropDelegate: DropDelegate {
-    let targetItemID: String
-    @Binding var draggedItemID: String?
-    let state: AppState
-
-    func validateDrop(info: DropInfo) -> Bool {
-        draggedItemID != nil && draggedItemID != targetItemID
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        defer { draggedItemID = nil }
-        guard let draggedItemID, draggedItemID != targetItemID else { return false }
-        state.moveFilteredItem(draggedID: draggedItemID, before: targetItemID)
-        return true
     }
 }
 

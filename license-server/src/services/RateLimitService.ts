@@ -27,4 +27,8 @@ export class RateLimitService {
       throw new RateLimitError();
     }
   }
+
+  clear(key: string): void {
+    this.buckets.delete(key);
+  }
 }

@@ -72,8 +72,7 @@ final class LicenseAPIClient {
         self.session = session
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder = LicenseDateCoding.makeDecoder()
     }
 
     func activate(_ request: ActivateRequest) async throws -> ActivateResponse {
@@ -155,7 +154,13 @@ final class LicenseAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LicenseError.invalidResponse("无法连接授权服务（\(baseURL.absoluteString)）：\(error.localizedDescription)")
+        }
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(statusCode) else {
             if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
@@ -163,7 +168,11 @@ final class LicenseAPIClient {
             }
             throw LicenseError.invalidResponse("授权服务暂时不可用，请稍后再试。")
         }
-        return try decoder.decode(T.self, from: data)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw LicenseError.invalidResponse("授权服务响应格式不兼容：\(error.localizedDescription)")
+        }
     }
 
     private func url(for path: String) -> URL {

@@ -1283,7 +1283,17 @@ final class AppState: ObservableObject {
         previewSelected()
     }
 
-    func moveFilteredItem(draggedID: String, before targetID: String) {
+    var allowsManualItemReordering: Bool {
+        guard filter.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        switch filter.collection {
+        case .recent, .trash:
+            return false
+        default:
+            return true
+        }
+    }
+
+    func moveFilteredItem(draggedID: String, toTargetPosition targetID: String) {
         guard requireFeature(.proManageCollections) else { return }
         guard draggedID != targetID else { return }
         guard filteredItems.contains(where: { $0.id == draggedID }),
@@ -1301,9 +1311,10 @@ final class AppState: ObservableObject {
               let targetIndex = reorderedAll.firstIndex(where: { $0.id == targetID }) else {
             return
         }
-        let moved = reorderedAll.remove(at: fromIndex)
-        let adjustedTargetIndex = fromIndex < targetIndex ? max(0, targetIndex - 1) : targetIndex
-        reorderedAll.insert(moved, at: adjustedTargetIndex)
+        reorderedAll.move(
+            fromOffsets: IndexSet(integer: fromIndex),
+            toOffset: targetIndex > fromIndex ? targetIndex + 1 : targetIndex
+        )
 
         do {
             let orders = reorderedAll.enumerated().map { index, item in
@@ -1320,6 +1331,36 @@ final class AppState: ObservableObject {
             }
             items = updatedItems
             refreshFilteredItems(selecting: draggedID)
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    func swapFilteredItems(_ firstID: String, _ secondID: String) {
+        guard requireFeature(.proManageCollections) else { return }
+        guard firstID != secondID else { return }
+        guard filteredItems.contains(where: { $0.id == firstID }),
+              filteredItems.contains(where: { $0.id == secondID }),
+              let firstIndex = items.firstIndex(where: { $0.id == firstID }),
+              let secondIndex = items.firstIndex(where: { $0.id == secondID }) else {
+            return
+        }
+
+        var updatedItems = items
+        let firstOrder = updatedItems[firstIndex].sortOrder
+        let secondOrder = updatedItems[secondIndex].sortOrder
+        updatedItems[firstIndex].sortOrder = secondOrder
+        updatedItems[secondIndex].sortOrder = firstOrder
+        updatedItems[firstIndex].updatedAt = Date()
+        updatedItems[secondIndex].updatedAt = Date()
+
+        do {
+            try repository?.updateSortOrders([
+                (id: firstID, sortOrder: secondOrder),
+                (id: secondID, sortOrder: firstOrder)
+            ])
+            items = updatedItems
+            refreshFilteredItems(selecting: firstID)
         } catch {
             modal = .error(error.localizedDescription)
         }

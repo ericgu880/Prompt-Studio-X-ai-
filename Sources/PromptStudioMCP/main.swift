@@ -291,17 +291,7 @@ private final class PromptStudioMCPServer {
     }
 
     private static func libraryURL(from arguments: [String]) -> URL {
-        var tokens = arguments
-        while let first = tokens.first {
-            if first == "--library", tokens.count >= 2 {
-                return URL(fileURLWithPath: tokens[1])
-            }
-            if first.hasPrefix("--library=") {
-                return URL(fileURLWithPath: String(first.dropFirst("--library=".count)))
-            }
-            tokens.removeFirst()
-        }
-        return PromptRepository.defaultLibraryURL()
+        PromptRepository.resolvedLibraryURL(arguments: arguments)
     }
 }
 

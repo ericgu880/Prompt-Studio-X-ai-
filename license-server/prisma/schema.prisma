@@ -69,6 +69,7 @@ model License {
   revokedReason String?
   refundedAt    DateTime?
   notes         String?
+  version       Int           @default(0)
 
   activations  Activation[]
   certificates LicenseCertificate[]
@@ -77,6 +78,7 @@ model License {
   @@index([customerId])
   @@index([codePrefix])
   @@index([status])
+  @@unique([orderProvider, orderId])
 }
 
 model Activation {
@@ -168,4 +170,72 @@ model LicenseEvent {
   @@index([activationId])
   @@index([eventType])
   @@index([createdAt])
+}
+
+model AdminUser {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  role              String    @default("owner")
+  disabledAt        DateTime?
+  passwordChangedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  sessions          AdminSession[]
+  auditLogs         AdminAuditLog[]
+}
+
+model AdminSession {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  adminUserId String
+  csrfVersion Int       @default(1)
+  expiresAt   DateTime
+  lastSeenAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id])
+
+  @@index([adminUserId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+model AdminAuditLog {
+  id            String   @id @default(cuid())
+  adminUserId   String?
+  actorSnapshot String?
+  action        String
+  targetType    String?
+  targetId      String?
+  result        String
+  reason        String?
+  requestId     String?
+  ipHmac        String?
+  userAgentHmac String?
+  metadataJson  Json?
+  createdAt     DateTime @default(now())
+
+  adminUser AdminUser? @relation(fields: [adminUserId], references: [id])
+
+  @@index([adminUserId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model AdminIdempotencyRecord {
+  id          String   @id @default(cuid())
+  adminUserId String
+  route       String
+  key         String
+  requestHash String
+  resourceId  String?
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@unique([adminUserId, route, key])
+  @@index([expiresAt])
 }

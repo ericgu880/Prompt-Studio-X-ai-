@@ -11,6 +11,10 @@ import { CertificateService } from "./services/CertificateService.js";
 import { DeviceProofService } from "./services/DeviceProofService.js";
 import { ActivationService } from "./services/ActivationService.js";
 import { LicenseService } from "./services/LicenseService.js";
+import { AdminAuthService } from "./services/AdminAuthService.js";
+import { AdminLicenseService } from "./services/AdminLicenseService.js";
+import { AdminPortalService } from "./services/AdminPortalService.js";
+import { adminApiRoutes } from "./routes/adminApi.js";
 
 export function buildServices(prisma: PrismaClient, config: AppConfig) {
   const audit = new AuditEventService(prisma);
@@ -22,7 +26,10 @@ export function buildServices(prisma: PrismaClient, config: AppConfig) {
     certificates,
     deviceProof,
     activation: new ActivationService(prisma, config, audit, certificates, deviceProof),
-    licenses: new LicenseService(prisma, config, audit)
+    licenses: new LicenseService(prisma, config, audit),
+    adminAuth: new AdminAuthService(prisma, config),
+    adminLicenses: new AdminLicenseService(prisma, config),
+    adminPortal: new AdminPortalService(prisma, config)
   };
 }
 
@@ -50,6 +57,7 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   app.decorate("licenseServices", buildServices(prisma, config));
   await app.register(healthRoutes);
   await app.register(licenseRoutes);
+  await app.register(adminApiRoutes, config);
   await app.register(adminRoutes, config);
   return app;
 }

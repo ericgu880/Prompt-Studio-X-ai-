@@ -1,8 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import type { AppConfig } from "../config.js";
 
 type FormBody = Record<string, string>;
+
+const createLicenseFormSchema = z.object({
+  email: z.string().trim().email("购买邮箱格式不正确。"),
+  plan: z.string().trim().min(1, "方案不能为空。").max(80, "方案名称太长。"),
+  seats: z.coerce.number().int("设备数必须是整数。").min(1, "设备数至少为 1。").max(99, "设备数最多为 99。"),
+  provider: z.string().trim().max(80, "订单来源太长。").optional(),
+  orderId: z.string().trim().max(120, "订单 ID 太长。").optional()
+});
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -152,6 +161,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function validationText(error: z.ZodError): string {
+  return error.issues.map((issue) => issue.message).join(" ");
+}
+
 function adminErrorNotice(title: string, error: unknown): string {
   return `
     <div class="panel notice" style="margin-bottom:16px;">
@@ -165,6 +178,14 @@ function adminErrorNotice(title: string, error: unknown): string {
 export async function adminRoutes(app: FastifyInstance, config: AppConfig): Promise<void> {
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
     done(null, Object.fromEntries(new URLSearchParams(String(body))));
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/admin") || request.url.startsWith("/admin-api")) return;
+    if (config.legacyAdminEnabled === false) {
+      reply.code(404).type("text/plain").send("Not found");
+      return reply;
+    }
   });
 
   app.get("/admin/login", async (_request, reply) => {
@@ -253,12 +274,23 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
 
   app.post("/admin/licenses", async (request, reply) => {
     const body = formBody(request);
+    const parsed = createLicenseFormSchema.safeParse(body);
+    if (!parsed.success) {
+      return reply.code(400).type("text/html").send(page("Invalid license form", `
+        <p><a href="/admin">← 返回后台</a></p>
+        <section class="panel notice">
+          <h1>无法生成激活码</h1>
+          <p class="muted">${escapeHtml(validationText(parsed.error))}</p>
+        </section>
+      `));
+    }
+    const { email, plan, seats, provider, orderId } = parsed.data;
     const result = await app.licenseServices.licenses.createLicense({
-      email: body.email,
-      plan: body.plan || "pro_lifetime",
-      seats: Number(body.seats || "2"),
-      orderProvider: body.provider || undefined,
-      orderId: body.orderId || undefined
+      email,
+      plan,
+      seats,
+      orderProvider: provider || undefined,
+      orderId: orderId || undefined
     }).catch((error: unknown) => ({ error }));
     if ("error" in result) {
       return reply.code(503).type("text/html").send(page("Database unavailable", `

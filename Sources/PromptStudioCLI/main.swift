@@ -34,14 +34,12 @@ private let encoder: JSONEncoder = {
 
 private func parseGlobalArguments(_ arguments: [String]) throws -> (libraryURL: URL, command: String, options: CommandOptions) {
     var tokens = arguments
-    var libraryURL = PromptRepository.defaultLibraryURL()
+    let libraryURL = PromptRepository.resolvedLibraryURL(arguments: arguments)
     while let first = tokens.first {
         if first == "--library" {
             guard tokens.count >= 2 else { throw CLIError.usage("--library 需要路径") }
-            libraryURL = URL(fileURLWithPath: tokens[1])
             tokens.removeFirst(2)
         } else if first.hasPrefix("--library=") {
-            libraryURL = URL(fileURLWithPath: String(first.dropFirst("--library=".count)))
             tokens.removeFirst()
         } else {
             break

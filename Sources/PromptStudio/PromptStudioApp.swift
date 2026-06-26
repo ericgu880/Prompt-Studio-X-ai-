@@ -1,11 +1,17 @@
 import AppKit
+import PromptStudioCore
 import SwiftUI
 
 @main
 struct PromptStudioApp: App {
-    @StateObject private var appState = AppState()
+    @StateObject private var appState: AppState
     @StateObject private var shortcutStore = AppShortcutStore()
     @NSApplicationDelegateAdaptor(PromptStudioAppDelegate.self) private var appDelegate
+
+    init() {
+        let libraryURL = PromptRepository.resolvedLibraryURL()
+        _appState = StateObject(wrappedValue: AppState(libraryURL: libraryURL))
+    }
 
     var body: some Scene {
         Window("PromptStudio", id: "main") {

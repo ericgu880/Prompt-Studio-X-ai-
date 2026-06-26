@@ -824,13 +824,6 @@ public enum PromptFiltering {
             return searchable.contains(query)
         }
         .sorted { lhs, rhs in
-            if filter.collection != .trash {
-                let lhsPinned = lhs.pinnedAt != nil
-                let rhsPinned = rhs.pinnedAt != nil
-                if lhsPinned != rhsPinned {
-                    return lhsPinned
-                }
-            }
             switch filter.collection {
             case .recent:
                 if lhs.lastUsedAt != rhs.lastUsedAt {

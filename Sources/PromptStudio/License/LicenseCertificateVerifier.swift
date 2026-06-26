@@ -18,8 +18,7 @@ final class LicenseCertificateVerifier {
         self.bundleId = bundleId
         self.issuer = issuer
         self.audience = audience
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder = LicenseDateCoding.makeDecoder()
     }
 
     func verify(_ certificateString: String, expectedActivationId: String, expectedDeviceKeyThumbprint: String) throws -> LicenseCertificate {

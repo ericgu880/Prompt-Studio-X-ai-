@@ -1,7 +1,9 @@
 import "dotenv/config";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../config.js";
 import { prisma } from "../db/prisma.js";
 import { buildServices } from "../app.js";
@@ -24,6 +26,32 @@ function requireOption(options: Map<string, string>, key: string): string {
   const value = options.get(key);
   if (!value) throw new Error(`Missing --${key}`);
   return value;
+}
+
+async function promptPassword(): Promise<string> {
+  if (!input.isTTY) {
+    const [password = "", confirmation = ""] = readFileSync(0, "utf8").split(/\r?\n/);
+    if (password !== confirmation) throw new Error("Passwords do not match");
+    if (password.length < 8) throw new Error("Password must be at least 8 characters");
+    return password;
+  }
+  const rl = createInterface({ input, output });
+  try {
+    const password = await rl.question("Password: ");
+    const confirmation = await rl.question("Confirm password: ");
+    if (password !== confirmation) throw new Error("Passwords do not match");
+    if (password.length < 8) throw new Error("Password must be at least 8 characters");
+    return password;
+  } finally {
+    rl.close();
+  }
+}
+
+async function requireInteractivePassword(options: Map<string, string>): Promise<string> {
+  if (options.has("password")) {
+    throw new Error("Do not pass --password. Passwords must be entered interactively.");
+  }
+  return promptPassword();
 }
 
 function fixturePath(name: string): string {
@@ -108,9 +136,35 @@ async function main(): Promise<void> {
       console.log("IMPORTANT: This license code is shown only once. Store it in the purchase email.");
       break;
     }
+    case "admin:create-user": {
+      const email = requireOption(options, "email");
+      const password = await requireInteractivePassword(options);
+      const user = await services.adminAuth.createUser(email, password);
+      console.log(`Admin user created: ${user.email}`);
+      break;
+    }
+    case "admin:set-password": {
+      const email = requireOption(options, "email");
+      const password = await requireInteractivePassword(options);
+      await services.adminAuth.setPassword(email, password);
+      console.log(`Admin password updated and sessions revoked: ${email.trim().toLowerCase()}`);
+      break;
+    }
+    case "admin:disable-user": {
+      const email = requireOption(options, "email");
+      await services.adminAuth.disableUser(email);
+      console.log(`Admin user disabled and sessions revoked: ${email.trim().toLowerCase()}`);
+      break;
+    }
+    case "admin:revoke-sessions": {
+      const email = requireOption(options, "email");
+      await services.adminAuth.revokeSessions(email);
+      console.log(`Admin sessions revoked: ${email.trim().toLowerCase()}`);
+      break;
+    }
     default:
       console.log(`Unknown command: ${command}`);
-      console.log("Commands: keys:generate-dev, license:create, license:list, license:add-seats, license:revoke, license:deactivate-device, license:rotate-code");
+      console.log("Commands: keys:generate-dev, license:create, license:list, license:add-seats, license:revoke, license:deactivate-device, license:rotate-code, admin:create-user, admin:set-password, admin:disable-user, admin:revoke-sessions");
       process.exitCode = 1;
   }
 }

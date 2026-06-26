@@ -33,6 +33,16 @@ function prismaStub(): PrismaClient {
   } as unknown as PrismaClient;
 }
 
+async function loginCookie(app: Awaited<ReturnType<typeof buildApp>>): Promise<string> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/admin/login",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    payload: "token=secret-token"
+  });
+  return String(response.headers["set-cookie"]);
+}
+
 describe("admin web auth", () => {
   it("shows disabled page when ADMIN_TOKEN is not set", async () => {
     const app = await buildApp(prismaStub(), config());
@@ -80,5 +90,25 @@ describe("admin web auth", () => {
     expect(response.headers.location).toBe("/admin");
     expect(response.headers["set-cookie"]).toContain("ps_admin=");
     expect(response.headers["set-cookie"]).toContain("HttpOnly");
+  });
+
+  it("validates create license form input before writing", async () => {
+    const app = await buildApp(prismaStub(), config({ adminToken: "secret-token", adminSessionSecret: "session-secret" }));
+    const cookie = await loginCookie(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/licenses",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie
+      },
+      payload: "email=not-an-email&plan=pro_lifetime&seats=0"
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("无法生成激活码");
+    expect(response.body).toContain("购买邮箱格式不正确");
+    expect(response.body).toContain("设备数至少为 1");
   });
 });

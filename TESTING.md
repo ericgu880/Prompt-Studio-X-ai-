@@ -113,9 +113,22 @@ Acceptance criteria:
 
 ## Manual UI Smoke Checklist
 
+Use a temporary library for destructive UI checks. Do not run create, edit,
+delete, restore, import, or bulk tests against a real user library.
+
+```sh
+Scripts/build_app.sh release
+LIB="$(mktemp -d /tmp/promptstudio-ui-qa.XXXXXX)"
+open .build/release/PromptStudio.app --args --library "$LIB"
+```
+
+The UI run can be marked PASS only when the app is confirmed to use the test
+library, for example by Settings showing the temporary path or by filesystem
+evidence under `$LIB`.
+
 ### Startup And Window
 
-- First launch creates or reads the default local library.
+- First launch creates or reads the selected local library.
 - Main window shows the three-column layout.
 - Resize, full screen, minimize, and restore do not break layout.
 - Dark UI, glass sidebar, inspector, and content area have no obvious visual regressions.
@@ -196,9 +209,25 @@ they depend on the real macOS app process and UI rendering.
 ### Privacy
 
 - App, CLI, and MCP do not make network requests by default.
-- CLI/MCP only read and write the selected local library.
+- App, CLI, and MCP only read and write the selected local library.
 - API keys are not printed.
 - Error logs do not expose full sensitive prompts unless the user explicitly exports or copies them.
+
+### Release Packaging
+
+Local release QA requires a signed app bundle that passes strict verification:
+
+```sh
+Scripts/build_app.sh release
+codesign --verify --deep --strict --verbose=2 .build/release/PromptStudio.app
+codesign -dv --verbose=4 .build/release/PromptStudio.app 2>&1
+```
+
+`Scripts/build_app.sh` defaults to ad-hoc signing for local QA. For Developer ID
+release signing, provide `SIGN_IDENTITY` and optionally `ENTITLEMENTS_PATH`.
+Run notarization when Apple credentials are available. If credentials are not
+available, mark notarization as `ENVIRONMENT/SKIPPED`; do not mark the product
+failed solely because credentials are missing.
 
 ## Execution Rhythm
 
@@ -206,4 +235,4 @@ they depend on the real macOS app process and UI rendering.
 - Core change: also run `swift run PromptStudioCoreUnitTests`.
 - Core/CLI/MCP change: also run `swift run PromptStudioSmokeTests`.
 - UI change: run `swift build` and the manual UI smoke checklist; run smoke tests if the UI change writes data.
-- Release candidate: run all automated gates, full manual UI smoke, CLI/MCP manual acceptance, packaging/signing/notarization, and first-launch verification.
+- Release candidate: run all automated gates, full manual UI smoke against a temporary library, CLI/MCP manual acceptance, packaging/signing/notarization, and first-launch verification.

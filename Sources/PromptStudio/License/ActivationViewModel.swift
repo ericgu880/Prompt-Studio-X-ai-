@@ -43,8 +43,11 @@ final class ActivationViewModel: ObservableObject {
             isActivated = true
             feedback = .success("激活成功，正在进入 PromptStudio...")
             return true
+        } catch let error as LicenseError {
+            feedback = .error(error.localizedDescription)
+            return false
         } catch {
-            feedback = .error("激活失败，请检查信息或稍后重试。")
+            feedback = .error("激活失败：\(error.localizedDescription)")
             return false
         }
     }
