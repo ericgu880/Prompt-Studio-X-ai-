@@ -936,10 +936,10 @@ private struct SidebarView: View {
             Button {
                 state.openNewPromptComposer()
             } label: {
-                Label("新建 Prompt", systemImage: "plus")
+                Label("Create New Prompt", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(CapsuleButtonStyle(filled: true))
+            .buttonStyle(SidebarCreateButtonStyle())
             .padding(.horizontal, 14)
             .padding(.top, 24)
 
@@ -1070,6 +1070,34 @@ private struct SidebarView: View {
             }
             content()
         }
+    }
+}
+
+private struct SidebarCreateButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SidebarCreateButtonBody(configuration: configuration)
+    }
+}
+
+private struct SidebarCreateButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    private let accent = Color(hex: 0xE8491F)
+
+    var body: some View {
+        configuration.label
+            .font(StudioFont.button())
+            .foregroundStyle(accent)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 16)
+            .frame(height: 34)
+            .background {
+                Capsule()
+                    .fill(accent.opacity(configuration.isPressed ? 0.16 : 0.20))
+            }
+            .overlay(Capsule().stroke(accent.opacity(0.40), lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .contentShape(Capsule())
     }
 }
 
