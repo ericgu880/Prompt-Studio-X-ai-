@@ -421,6 +421,8 @@ final class AppState: ObservableObject {
         refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
 
         switch error {
+        case .authorizationRequired(let reason, let url):
+            libraryAccessState = .needsAuthorization(reason: reason, lastKnownURL: url ?? libraryAccessCoordinator.preferredPanelURL)
         case .permissionDenied(let url, _):
             let reason: LibraryAuthorizationReason = libraryAccessCoordinator.isSandboxed
                 ? .noBookmarkInSandbox

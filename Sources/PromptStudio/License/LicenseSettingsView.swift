@@ -205,24 +205,20 @@ struct ActivationSheetView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            VStack(spacing: 20) {
-                hero
+            VStack(alignment: .leading, spacing: 16) {
                 header
-                fields
-                primaryAction
-                recoveryRow
+                formPanel
                 statusPanel
                 footerNote
+                actionBar
             }
-            .padding(.horizontal, 38)
-            .padding(.top, 34)
-            .padding(.bottom, 24)
+            .padding(24)
             .frame(width: 560)
-            .background(Color(hex: 0x141518))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(StudioColor.appBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(StudioColor.hairline, lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 18)
 
@@ -247,33 +243,55 @@ struct ActivationSheetView: View {
 
     private var hero: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(accentColor.opacity(0.16))
-                .frame(width: 64, height: 64)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(StudioColor.panelRaised)
+                .frame(width: 42, height: 42)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(accentColor.opacity(0.32), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(StudioColor.hairline, lineWidth: 1)
                 )
             Image(systemName: "key.fill")
-                .font(StudioFont.symbol(26, weight: .semibold))
-                .foregroundStyle(accentColor)
+                .font(StudioFont.symbol(18, weight: .semibold))
+                .foregroundStyle(StudioColor.secondaryText)
         }
     }
 
     private var header: some View {
-        VStack(spacing: 9) {
-            Text("激活 PromptStudio")
-                .font(StudioFont.font(25, weight: .semibold))
-                .foregroundStyle(StudioColor.text)
-            Text("输入购买邮箱与激活码，完成授权后解锁 Pro 功能。")
-                .font(StudioFont.font(14))
-                .foregroundStyle(StudioColor.secondaryText)
+        HStack(alignment: .center, spacing: 12) {
+            hero
+            VStack(alignment: .leading, spacing: 5) {
+                Text("激活 PromptStudio")
+                    .font(StudioFont.font(22, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                Text("输入购买邮箱与激活码，完成授权后解锁 Pro 功能。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .padding(.trailing, 44)
+    }
+
+    private var formPanel: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 14) {
+                fields
+            }
+            .padding(16)
+
+            Divider().overlay(StudioColor.hairline)
+
+            recoveryRow
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
     }
 
     private var fields: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             ActivationInputField(
                 title: "购买邮箱",
                 placeholder: "请输入购买时使用的邮箱",
@@ -293,7 +311,6 @@ struct ActivationSheetView: View {
                 monospaced: true
             )
         }
-        .padding(.top, 2)
     }
 
     private var primaryAction: some View {
@@ -316,7 +333,7 @@ struct ActivationSheetView: View {
             }
             .foregroundStyle(primaryButtonTextColor)
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .frame(height: 42)
             .background(Capsule().fill(primaryButtonColor))
             .overlay(Capsule().stroke(primaryButtonBorderColor, lineWidth: 1))
             .contentShape(Capsule())
@@ -336,7 +353,7 @@ struct ActivationSheetView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(viewModel.canRecover ? accentColor : StudioColor.mutedText)
+            .foregroundStyle(viewModel.canRecover ? StudioColor.secondaryText : StudioColor.mutedText)
             .disabled(!viewModel.canRecover)
 
             Spacer()
@@ -345,7 +362,6 @@ struct ActivationSheetView: View {
                 .font(StudioFont.font(12))
                 .foregroundStyle(StudioColor.mutedText)
         }
-        .frame(height: 30)
     }
 
     private var statusPanel: some View {
@@ -381,6 +397,14 @@ struct ActivationSheetView: View {
         }
         .foregroundStyle(StudioColor.mutedText)
         .frame(maxWidth: .infinity)
+    }
+
+    private var actionBar: some View {
+        HStack {
+            Spacer()
+            primaryAction
+                .frame(width: 184)
+        }
     }
 
     @ViewBuilder
@@ -482,22 +506,22 @@ struct ActivationSheetView: View {
     private var primaryButtonColor: Color {
         switch viewModel.feedback {
         case .loading:
-            return accentColor.opacity(0.24)
+            return StudioColor.panelRaised
         case .success:
             return Color(hex: 0xE9F8EF)
         case .idle, .error, .info:
-            return primaryButtonDisabled ? accentColor.opacity(0.16) : accentColor
+            return primaryButtonDisabled ? StudioColor.control : StudioColor.primaryAction
         }
     }
 
     private var primaryButtonTextColor: Color {
         switch viewModel.feedback {
         case .loading:
-            return Color(hex: 0xFFE6DE)
+            return Color(hex: 0xD8DEE8)
         case .success:
             return Color(hex: 0x17351F)
         case .idle, .error, .info:
-            return primaryButtonDisabled ? accentColor.opacity(0.56) : .white
+            return primaryButtonDisabled ? StudioColor.mutedText : StudioColor.primaryActionText
         }
     }
 
@@ -506,7 +530,7 @@ struct ActivationSheetView: View {
         case .success:
             return Color(hex: 0xBFE8CA)
         case .loading, .idle, .error, .info:
-            return accentColor.opacity(primaryButtonDisabled ? 0.22 : 0.42)
+            return primaryButtonDisabled ? StudioColor.hairline : Color.clear
         }
     }
 

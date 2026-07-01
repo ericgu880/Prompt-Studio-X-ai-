@@ -7,11 +7,17 @@ import UniformTypeIdentifiers
 struct ImmersivePreviewOverlay: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
+    let onNavigate: (PreviewNavigationDirection) -> Void
     @State private var imageScale: CGFloat = 1.0
     @State private var imageOffset: CGSize = .zero
     @State private var previewPromptHovered = false
     @State private var previewPromptCopyFeedback = false
     @GestureState private var imageDragTranslation: CGSize = .zero
+
+    init(item: PromptItem, onNavigate: @escaping (PreviewNavigationDirection) -> Void = { _ in }) {
+        self.item = item
+        self.onNavigate = onNavigate
+    }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -66,6 +72,7 @@ struct ImmersivePreviewOverlay: View {
                 onExit: {
                     state.isPreviewPresented = false
                 },
+                onNavigate: onNavigate,
                 onZoom: { delta in
                     guard item.assetKind == .image else { return }
                     adjustImageScale(by: delta)
@@ -2945,12 +2952,20 @@ private struct MarkdownEditorKeyMonitor: NSViewRepresentable {
     }
 }
 
+enum PreviewNavigationDirection: Equatable {
+    case left
+    case right
+    case up
+    case down
+}
+
 private struct PreviewInputMonitor: NSViewRepresentable {
     let onExit: () -> Void
+    let onNavigate: (PreviewNavigationDirection) -> Void
     let onZoom: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onExit: onExit, onZoom: onZoom)
+        Coordinator(onExit: onExit, onNavigate: onNavigate, onZoom: onZoom)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -2960,17 +2975,24 @@ private struct PreviewInputMonitor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onExit = onExit
+        context.coordinator.onNavigate = onNavigate
         context.coordinator.onZoom = onZoom
     }
 
     final class Coordinator {
         var onExit: () -> Void
+        var onNavigate: (PreviewNavigationDirection) -> Void
         var onZoom: (CGFloat) -> Void
         private var keyMonitor: Any?
         private var scrollMonitor: Any?
 
-        init(onExit: @escaping () -> Void, onZoom: @escaping (CGFloat) -> Void) {
+        init(
+            onExit: @escaping () -> Void,
+            onNavigate: @escaping (PreviewNavigationDirection) -> Void,
+            onZoom: @escaping (CGFloat) -> Void
+        ) {
             self.onExit = onExit
+            self.onNavigate = onNavigate
             self.onZoom = onZoom
         }
 
@@ -2990,6 +3012,10 @@ private struct PreviewInputMonitor: NSViewRepresentable {
                         self?.onExit()
                         return nil
                     }
+                    if let direction = Self.navigationDirection(for: event) {
+                        self?.onNavigate(direction)
+                        return nil
+                    }
                     return event
                 }
             }
@@ -3003,6 +3029,23 @@ private struct PreviewInputMonitor: NSViewRepresentable {
                     self?.onZoom(normalized)
                     return nil
                 }
+            }
+        }
+
+        private static func navigationDirection(for event: NSEvent) -> PreviewNavigationDirection? {
+            let reservedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+            guard event.modifierFlags.intersection(reservedModifiers).isEmpty else { return nil }
+            switch event.keyCode {
+            case 123:
+                return .left
+            case 124:
+                return .right
+            case 125:
+                return .down
+            case 126:
+                return .up
+            default:
+                return nil
             }
         }
     }

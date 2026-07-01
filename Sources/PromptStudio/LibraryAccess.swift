@@ -6,6 +6,7 @@ import SQLite3
 
 enum LibraryAuthorizationReason: Equatable {
     case noBookmarkInSandbox
+    case noSavedLibraryAuthorization
     case permissionDenied
     case bookmarkUnavailable
 
@@ -13,6 +14,8 @@ enum LibraryAuthorizationReason: Equatable {
         switch self {
         case .noBookmarkInSandbox:
             "需要重新连接资料库"
+        case .noSavedLibraryAuthorization:
+            "需要连接资料库"
         case .permissionDenied:
             "资料库访问被拒绝"
         case .bookmarkUnavailable:
@@ -24,6 +27,8 @@ enum LibraryAuthorizationReason: Equatable {
         switch self {
         case .noBookmarkInSandbox:
             "首次授权被拒绝后，PromptStudio 需要你重新选择已有资料库目录。"
+        case .noSavedLibraryAuthorization:
+            "请选择已有 PromptStudio 资料库目录，完成一次授权后后续启动会自动加载。"
         case .permissionDenied:
             "当前系统权限无法访问资料库，请重新连接已有资料库。"
         case .bookmarkUnavailable:
@@ -67,6 +72,7 @@ enum LibraryAccessState: Equatable {
 }
 
 enum LibraryLoadError: Error, Equatable, LocalizedError {
+    case authorizationRequired(reason: LibraryAuthorizationReason, lastKnownURL: URL?)
     case permissionDenied(URL?, String)
     case notFound(URL?, String)
     case readOnly(URL, String)
@@ -80,6 +86,8 @@ enum LibraryLoadError: Error, Equatable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .authorizationRequired(let reason, _):
+            reason.message
         case .permissionDenied(_, let message),
              .notFound(_, let message),
              .readOnly(_, let message),
@@ -180,18 +188,13 @@ final class LibraryAccessCoordinator {
             return try loadContext(fromBookmarkData: bookmarkData, saveOnSuccess: true)
         }
 
-        if isSandboxed {
-            throw LibraryLoadError.permissionDenied(
-                bookmarkStore.lastKnownURL,
-                LibraryAuthorizationReason.noBookmarkInSandbox.message
-            )
-        }
-
-        return try classify(defaultURL: defaultURL) {
-            let repository = try PromptRepository(libraryURL: defaultURL)
-            bookmarkStore.saveLastKnownURL(repository.libraryURL)
-            return AuthorizedLibraryContext(url: repository.libraryURL, session: nil, repository: repository)
-        }
+        let reason: LibraryAuthorizationReason = isSandboxed
+            ? .noBookmarkInSandbox
+            : .noSavedLibraryAuthorization
+        throw LibraryLoadError.authorizationRequired(
+            reason: reason,
+            lastKnownURL: bookmarkStore.lastKnownURL ?? defaultURL
+        )
     }
 
     func connectExistingLibrary(fromPanelURL panelURL: URL) throws -> AuthorizedLibraryContext {

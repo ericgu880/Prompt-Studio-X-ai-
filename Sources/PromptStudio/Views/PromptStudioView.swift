@@ -18,6 +18,7 @@ struct PromptStudioView: View {
     @State private var isSplitResizing = false
     @State private var isInspectorResizeActive = false
     @State private var isFileDropTargeted = false
+    @State private var previewNavigationSnapshot = PreviewNavigationSnapshot.empty
     private static let fileDropInset: CGFloat = 10
 
     var body: some View {
@@ -34,7 +35,13 @@ struct PromptStudioView: View {
                         }
 
                         HStack(spacing: 0) {
-                            MainContentView(isSidebarVisible: $isSidebarVisible, isSplitResizing: isSplitResizing)
+                            MainContentView(
+                                isSidebarVisible: $isSidebarVisible,
+                                isSplitResizing: isSplitResizing,
+                                onPreviewNavigationSnapshotChange: { snapshot in
+                                    previewNavigationSnapshot = snapshot
+                                }
+                            )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                             InspectorView()
@@ -150,7 +157,9 @@ struct PromptStudioView: View {
             .background(StudioColor.appBackground)
 
             if state.isPreviewPresented, let item = state.selectedItem {
-                ImmersivePreviewOverlay(item: item)
+                ImmersivePreviewOverlay(item: item) { direction in
+                    navigatePreview(direction)
+                }
                     .environmentObject(state)
                     .zIndex(80)
             }
@@ -213,6 +222,15 @@ struct PromptStudioView: View {
         .sheet(item: $state.modal) { modal in
             sheet(for: modal)
         }
+    }
+
+    private func navigatePreview(_ direction: PreviewNavigationDirection) {
+        guard let currentID = state.selectedItem?.id,
+              let nextID = previewNavigationSnapshot.nextItemID(from: currentID, direction: direction),
+              let nextItem = state.filteredItems.first(where: { $0.id == nextID }) else {
+            return
+        }
+        state.select(nextItem)
     }
 
     private func constrainedLayout(totalWidth: CGFloat) -> (sidebar: CGFloat, inspector: CGFloat) {
@@ -935,6 +953,101 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
                 .compactMap { ($0 as? URL) ?? ($0 as? NSURL)?.absoluteURL } ?? []
         }
     }
+}
+
+private struct PreviewNavigationSnapshot: Equatable {
+    let itemFrames: [String: CGRect]
+    let visualItemIDs: [String]
+    let columnCount: Int
+
+    static let empty = PreviewNavigationSnapshot(itemFrames: [:], visualItemIDs: [], columnCount: 1)
+
+    func nextItemID(from currentID: String, direction: PreviewNavigationDirection) -> String? {
+        if let frame = itemFrames[currentID], !itemFrames.isEmpty {
+            return spatialNextItemID(from: currentID, currentFrame: frame, direction: direction)
+        }
+        return fallbackNextItemID(from: currentID, direction: direction)
+    }
+
+    private func spatialNextItemID(
+        from currentID: String,
+        currentFrame: CGRect,
+        direction: PreviewNavigationDirection
+    ) -> String? {
+        let currentCenter = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
+        let candidates = itemFrames.compactMap { itemID, frame -> PreviewNavigationCandidate? in
+            guard itemID != currentID else { return nil }
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            let primaryDistance: CGFloat
+            let secondaryDistance: CGFloat
+            let overlapsAxis: Bool
+
+            switch direction {
+            case .left:
+                guard center.x < currentCenter.x - 0.5 else { return nil }
+                primaryDistance = currentCenter.x - center.x
+                secondaryDistance = abs(currentCenter.y - center.y)
+                overlapsAxis = frame.maxY > currentFrame.minY && frame.minY < currentFrame.maxY
+            case .right:
+                guard center.x > currentCenter.x + 0.5 else { return nil }
+                primaryDistance = center.x - currentCenter.x
+                secondaryDistance = abs(currentCenter.y - center.y)
+                overlapsAxis = frame.maxY > currentFrame.minY && frame.minY < currentFrame.maxY
+            case .up:
+                guard center.y < currentCenter.y - 0.5 else { return nil }
+                primaryDistance = currentCenter.y - center.y
+                secondaryDistance = abs(currentCenter.x - center.x)
+                overlapsAxis = frame.maxX > currentFrame.minX && frame.minX < currentFrame.maxX
+            case .down:
+                guard center.y > currentCenter.y + 0.5 else { return nil }
+                primaryDistance = center.y - currentCenter.y
+                secondaryDistance = abs(currentCenter.x - center.x)
+                overlapsAxis = frame.maxX > currentFrame.minX && frame.minX < currentFrame.maxX
+            }
+
+            return PreviewNavigationCandidate(
+                id: itemID,
+                primaryDistance: primaryDistance,
+                secondaryDistance: secondaryDistance,
+                overlapsAxis: overlapsAxis
+            )
+        }
+
+        let preferredCandidates = candidates.filter(\.overlapsAxis)
+        return (preferredCandidates.isEmpty ? candidates : preferredCandidates)
+            .min { lhs, rhs in
+                if abs(lhs.primaryDistance - rhs.primaryDistance) > 0.5 {
+                    return lhs.primaryDistance < rhs.primaryDistance
+                }
+                return lhs.secondaryDistance < rhs.secondaryDistance
+            }?
+            .id
+    }
+
+    private func fallbackNextItemID(from currentID: String, direction: PreviewNavigationDirection) -> String? {
+        guard let currentIndex = visualItemIDs.firstIndex(of: currentID) else { return nil }
+        let step: Int
+        switch direction {
+        case .left:
+            step = -1
+        case .right:
+            step = 1
+        case .up:
+            step = -max(1, columnCount)
+        case .down:
+            step = max(1, columnCount)
+        }
+        let nextIndex = currentIndex + step
+        guard visualItemIDs.indices.contains(nextIndex) else { return nil }
+        return visualItemIDs[nextIndex]
+    }
+}
+
+private struct PreviewNavigationCandidate {
+    let id: String
+    let primaryDistance: CGFloat
+    let secondaryDistance: CGFloat
+    let overlapsAxis: Bool
 }
 
 private struct SidebarView: View {
@@ -1865,6 +1978,7 @@ private struct MainContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
+    let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
     private static let contentHorizontalInset: CGFloat = 24
 
     var body: some View {
@@ -1884,7 +1998,11 @@ private struct MainContentView: View {
 
             Group {
                 if !state.isLibraryReady {
-                    LibraryAccessRecoveryView()
+                    if case .loading = state.libraryAccessState {
+                        LibraryLoadingPlaceholderView()
+                    } else {
+                        LibraryAccessRecoveryView()
+                    }
                 } else {
                     let childFolders = state.childFolderRowsForCurrentCollection()
                     if state.filteredItems.isEmpty && childFolders.isEmpty {
@@ -1895,7 +2013,8 @@ private struct MainContentView: View {
                         MasonryGridView(
                             folders: childFolders,
                             items: state.filteredItems,
-                            isSplitResizing: isSplitResizing
+                            isSplitResizing: isSplitResizing,
+                            onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
                         )
                         .padding(.horizontal, Self.contentHorizontalInset)
                     }
@@ -1951,6 +2070,20 @@ private struct TopToolbarView: View {
                 set: { state.filter.query = $0 }
             ), placeholder: "全能搜索：名称、提示词、分类、标签、描述", isFocused: $searchFocused)
             .frame(height: 22)
+
+            if !state.filter.query.isEmpty {
+                Button {
+                    state.filter.query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(StudioFont.symbol(14, weight: .medium))
+                        .foregroundStyle(searchHovered || searchFocused ? StudioColor.secondaryText : StudioColor.mutedText)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("清空搜索")
+            }
         }
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity)
@@ -2549,6 +2682,7 @@ private struct MasonryGridView: View {
     let folders: [AppState.FolderRow]
     let items: [PromptItem]
     let isSplitResizing: Bool
+    let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
     @State private var draggedItemID: String?
     @State private var reorderBaseItemIDs: [String] = []
     @State private var reorderPreviewItemIDs: [String] = []
@@ -2571,6 +2705,7 @@ private struct MasonryGridView: View {
             let width = (gridContentWidth - CGFloat(columnCount - 1) * 12) / CGFloat(columnCount)
             let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = layout.visualItemIDs
+            let previewNavigationSnapshot = previewNavigationSnapshot(for: layout, width: width, columnCount: columnCount)
             let isItemReordering = draggedItemID != nil
             let itemReorderAnimation: Animation? = isItemReordering ? .easeInOut(duration: 0.22) : nil
             let reorderPlacementOverrides = itemReorderPlacementOverrides(for: layout.placements)
@@ -2683,6 +2818,12 @@ private struct MasonryGridView: View {
                 clearSelectionDrag()
                 clearItemReorder()
             }
+            .onAppear {
+                onPreviewNavigationSnapshotChange(previewNavigationSnapshot)
+            }
+            .onChange(of: previewNavigationSnapshot) { _, snapshot in
+                onPreviewNavigationSnapshotChange(snapshot)
+            }
             .onChange(of: items.map(\.id)) { _, _ in
                 clearItemReorder()
             }
@@ -2721,6 +2862,23 @@ private struct MasonryGridView: View {
 
     private func gridContentWidth(for availableWidth: CGFloat) -> CGFloat {
         max(0, availableWidth)
+    }
+
+    private func previewNavigationSnapshot(
+        for layout: MasonryLayoutResult,
+        width: CGFloat,
+        columnCount: Int
+    ) -> PreviewNavigationSnapshot {
+        var itemFrames: [String: CGRect] = [:]
+        for placement in layout.placements {
+            guard case .item(let item) = placement.entry else { continue }
+            itemFrames[item.id] = CGRect(x: placement.x, y: placement.y, width: width, height: placement.height)
+        }
+        return PreviewNavigationSnapshot(
+            itemFrames: itemFrames,
+            visualItemIDs: layout.visualItemIDs,
+            columnCount: columnCount
+        )
     }
 
     private func beginItemReorder(itemID: String, visualItemIDs: [String], items: [PromptItem]) {
@@ -3920,6 +4078,21 @@ private struct EmptyStateView: View {
     }
 }
 
+private struct LibraryLoadingPlaceholderView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(StudioColor.secondaryText)
+
+            Text("正在检查资料库")
+                .font(StudioFont.font(13, weight: .medium))
+                .foregroundStyle(StudioColor.secondaryText)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 private struct LibraryAccessRecoveryView: View {
     @EnvironmentObject private var state: AppState
 
@@ -4048,6 +4221,8 @@ private struct LibraryAccessRecoveryView: View {
 
     private func errorTitle(for error: LibraryLoadError) -> String {
         switch error {
+        case .authorizationRequired:
+            "需要连接资料库"
         case .databaseCorrupted:
             "数据库损坏"
         case .databaseBusy:
