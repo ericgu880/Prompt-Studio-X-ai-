@@ -18,6 +18,7 @@ struct PromptStudioView: View {
     @State private var isSplitResizing = false
     @State private var isInspectorResizeActive = false
     @State private var isFileDropTargeted = false
+    private static let fileDropInset: CGFloat = 10
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -44,8 +45,9 @@ struct PromptStudioView: View {
                         .overlay(
                             ZStack {
                                 if isFileDropTargeted {
-                                    Color.white.opacity(0.30)
-                                        .ignoresSafeArea()
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color.white.opacity(0.30))
+                                        .padding(Self.fileDropInset + 1)
 
                                     Text("将任意文件拖放至此处添加")
                                         .font(StudioFont.font(16, weight: .semibold))
@@ -58,12 +60,12 @@ struct PromptStudioView: View {
 
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .stroke(isFileDropTargeted ? StudioColor.primaryAction.opacity(0.7) : Color.clear, lineWidth: 2)
-                                    .padding(10)
+                                    .padding(Self.fileDropInset)
                             }
                             .allowsHitTesting(false)
                         )
                         .overlay(
-                            FileDropCaptureOverlay(isTargeted: $isFileDropTargeted) { urls in
+                            FileDropCaptureOverlay(inset: Self.fileDropInset, isTargeted: $isFileDropTargeted) { urls in
                                 state.importFiles(urls)
                             }
                         )
@@ -848,11 +850,13 @@ private func loadDroppedFileURLs(from providers: [NSItemProvider]) async -> [URL
 }
 
 private struct FileDropCaptureOverlay: NSViewRepresentable {
+    let inset: CGFloat
     @Binding var isTargeted: Bool
     let onDrop: ([URL]) -> Void
 
     func makeNSView(context: Context) -> FileDropCaptureView {
         let view = FileDropCaptureView()
+        view.inset = inset
         view.onTargetChange = { targeted in
             isTargeted = targeted
         }
@@ -861,6 +865,7 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
     }
 
     func updateNSView(_ view: FileDropCaptureView, context: Context) {
+        view.inset = inset
         view.onTargetChange = { targeted in
             isTargeted = targeted
         }
@@ -868,6 +873,7 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
     }
 
     final class FileDropCaptureView: NSView {
+        var inset: CGFloat = 0
         var onTargetChange: (Bool) -> Void = { _ in }
         var onDrop: ([URL]) -> Void = { _ in }
 
@@ -889,14 +895,16 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
 
         override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
             guard fileURLs(from: sender).isEmpty == false else { return [] }
-            onTargetChange(true)
-            return .copy
+            let acceptsDrop = isInsideDropBounds(sender)
+            onTargetChange(acceptsDrop)
+            return acceptsDrop ? .copy : []
         }
 
         override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
             guard fileURLs(from: sender).isEmpty == false else { return [] }
-            onTargetChange(true)
-            return .copy
+            let acceptsDrop = isInsideDropBounds(sender)
+            onTargetChange(acceptsDrop)
+            return acceptsDrop ? .copy : []
         }
 
         override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -910,9 +918,14 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
         override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
             let urls = fileURLs(from: sender)
             onTargetChange(false)
-            guard !urls.isEmpty else { return false }
+            guard !urls.isEmpty, isInsideDropBounds(sender) else { return false }
             onDrop(urls)
             return true
+        }
+
+        private func isInsideDropBounds(_ sender: NSDraggingInfo) -> Bool {
+            let location = convert(sender.draggingLocation, from: nil)
+            return bounds.insetBy(dx: inset, dy: inset).contains(location)
         }
 
         private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
@@ -928,6 +941,7 @@ private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var settingsHovered = false
+    @State private var createPromptHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -939,9 +953,11 @@ private struct SidebarView: View {
                 Label("Create New Prompt", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(SidebarCreateButtonStyle())
+            .buttonStyle(SidebarCreateButtonStyle(isHovered: createPromptHovered))
+            .onHover { createPromptHovered = $0 }
             .padding(.horizontal, 14)
             .padding(.top, 24)
+            .padding(.bottom, 10)
 
             SidebarHoverScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1074,13 +1090,16 @@ private struct SidebarView: View {
 }
 
 private struct SidebarCreateButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
     func makeBody(configuration: Configuration) -> some View {
-        SidebarCreateButtonBody(configuration: configuration)
+        SidebarCreateButtonBody(configuration: configuration, isHovered: isHovered)
     }
 }
 
 private struct SidebarCreateButtonBody: View {
     let configuration: ButtonStyle.Configuration
+    let isHovered: Bool
     private let accent = Color(hex: 0xE8491F)
 
     var body: some View {
@@ -1093,11 +1112,22 @@ private struct SidebarCreateButtonBody: View {
             .frame(height: 34)
             .background {
                 Capsule()
-                    .fill(accent.opacity(configuration.isPressed ? 0.16 : 0.20))
+                    .fill(accent.opacity(fillOpacity))
             }
-            .overlay(Capsule().stroke(accent.opacity(0.40), lineWidth: 1))
+            .overlay(Capsule().stroke(accent.opacity(strokeOpacity), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.86 : 1)
             .contentShape(Capsule())
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+            .animation(.easeInOut(duration: 0.08), value: configuration.isPressed)
+    }
+
+    private var fillOpacity: Double {
+        if configuration.isPressed { return 0.16 }
+        return isHovered ? 0.28 : 0.20
+    }
+
+    private var strokeOpacity: Double {
+        isHovered ? 0.62 : 0.40
     }
 }
 

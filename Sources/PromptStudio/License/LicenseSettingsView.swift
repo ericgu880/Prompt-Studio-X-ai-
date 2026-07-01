@@ -201,49 +201,30 @@ struct ActivationSheetView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = ActivationViewModel()
+    private let accentColor = Color(hex: 0xE8491F)
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            VStack(spacing: 0) {
-                VStack(spacing: 18) {
-                    hero
-                    header
-                    fields
-                    primaryAction
-                    recoveryRow
-                }
-                .padding(.horizontal, 38)
-                .padding(.top, 42)
-                .padding(.bottom, 18)
-
-                Rectangle()
-                    .fill(StudioColor.hairline)
-                    .frame(height: 1)
-
+            VStack(spacing: 20) {
+                hero
+                header
+                fields
+                primaryAction
+                recoveryRow
                 statusPanel
-                    .padding(.horizontal, 38)
-                    .padding(.top, 18)
-
-                Text("授权只绑定当前设备，不会上传或改变你的本地素材数据。")
-                    .font(StudioFont.font(11))
-                    .foregroundStyle(StudioColor.mutedText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 14)
-                    .padding(.bottom, 20)
+                footerNote
             }
+            .padding(.horizontal, 38)
+            .padding(.top, 34)
+            .padding(.bottom, 24)
             .frame(width: 560)
-            .background(
-                LinearGradient(
-                    colors: [Color(hex: 0x202124), Color(hex: 0x17191D)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .background(Color(hex: 0x141518))
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.white.opacity(0.34), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
             )
+            .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 18)
 
             Button {
                 dismiss()
@@ -251,11 +232,13 @@ struct ActivationSheetView: View {
                 Image(systemName: "xmark")
                     .font(StudioFont.symbol(13, weight: .medium))
                     .foregroundStyle(StudioColor.secondaryText)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(0.07)))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isLoading)
-            .padding(20)
+            .padding(18)
         }
         .padding(1)
         .background(StudioColor.appBackground)
@@ -264,36 +247,23 @@ struct ActivationSheetView: View {
 
     private var hero: some View {
         ZStack {
-            Circle()
-                .fill(Color.white.opacity(0.06))
-                .frame(width: 80, height: 80)
-                .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 1))
-            Image(systemName: "bolt.fill")
-                .font(StudioFont.symbol(30, weight: .semibold))
-                .foregroundStyle(.white)
-            Image(systemName: "sparkle")
-                .font(StudioFont.symbol(11, weight: .semibold))
-                .foregroundStyle(StudioColor.mutedText)
-                .offset(x: -58, y: -12)
-            Image(systemName: "sparkle")
-                .font(StudioFont.symbol(11, weight: .semibold))
-                .foregroundStyle(StudioColor.mutedText)
-                .offset(x: 58, y: -8)
-            Image(systemName: "sparkles")
-                .font(StudioFont.symbol(10, weight: .semibold))
-                .foregroundStyle(StudioColor.mutedText.opacity(0.72))
-                .offset(x: -76, y: 10)
-            Image(systemName: "sparkles")
-                .font(StudioFont.symbol(10, weight: .semibold))
-                .foregroundStyle(StudioColor.mutedText.opacity(0.72))
-                .offset(x: 78, y: 12)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(accentColor.opacity(0.16))
+                .frame(width: 64, height: 64)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(accentColor.opacity(0.32), lineWidth: 1)
+                )
+            Image(systemName: "key.fill")
+                .font(StudioFont.symbol(26, weight: .semibold))
+                .foregroundStyle(accentColor)
         }
     }
 
     private var header: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 9) {
             Text("激活 PromptStudio")
-                .font(StudioFont.font(26, weight: .semibold))
+                .font(StudioFont.font(25, weight: .semibold))
                 .foregroundStyle(StudioColor.text)
             Text("输入购买邮箱与激活码，完成授权后解锁 Pro 功能。")
                 .font(StudioFont.font(14))
@@ -323,7 +293,7 @@ struct ActivationSheetView: View {
                 monospaced: true
             )
         }
-        .padding(.top, 8)
+        .padding(.top, 2)
     }
 
     private var primaryAction: some View {
@@ -346,13 +316,13 @@ struct ActivationSheetView: View {
             }
             .foregroundStyle(primaryButtonTextColor)
             .frame(maxWidth: .infinity)
-            .frame(height: 54)
+            .frame(height: 50)
             .background(Capsule().fill(primaryButtonColor))
+            .overlay(Capsule().stroke(primaryButtonBorderColor, lineWidth: 1))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .disabled(primaryButtonDisabled)
-        .padding(.top, 4)
     }
 
     private var recoveryRow: some View {
@@ -362,9 +332,11 @@ struct ActivationSheetView: View {
             } label: {
                 Label("找回激活码", systemImage: "arrow.counterclockwise")
                     .font(StudioFont.font(13, weight: .medium))
+                    .frame(height: 30)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(viewModel.canRecover ? StudioColor.secondaryText : StudioColor.mutedText)
+            .foregroundStyle(viewModel.canRecover ? accentColor : StudioColor.mutedText)
             .disabled(!viewModel.canRecover)
 
             Spacer()
@@ -373,7 +345,7 @@ struct ActivationSheetView: View {
                 .font(StudioFont.font(12))
                 .foregroundStyle(StudioColor.mutedText)
         }
-        .frame(height: 24)
+        .frame(height: 30)
     }
 
     private var statusPanel: some View {
@@ -387,16 +359,28 @@ struct ActivationSheetView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .frame(height: 54)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(minHeight: 50)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(statusBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(statusBorder, lineWidth: 1)
         )
+    }
+
+    private var footerNote: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.shield")
+                .font(StudioFont.symbol(12, weight: .medium))
+            Text("授权只绑定当前设备，不会上传或改变你的本地素材数据。")
+                .font(StudioFont.font(11))
+        }
+        .foregroundStyle(StudioColor.mutedText)
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -498,22 +482,31 @@ struct ActivationSheetView: View {
     private var primaryButtonColor: Color {
         switch viewModel.feedback {
         case .loading:
-            return Color(hex: 0x3A414B)
+            return accentColor.opacity(0.24)
         case .success:
             return Color(hex: 0xE9F8EF)
         case .idle, .error, .info:
-            return primaryButtonDisabled ? Color(hex: 0x4A4E55) : StudioColor.primaryAction
+            return primaryButtonDisabled ? accentColor.opacity(0.16) : accentColor
         }
     }
 
     private var primaryButtonTextColor: Color {
         switch viewModel.feedback {
         case .loading:
-            return Color(hex: 0xD8DEE8)
+            return Color(hex: 0xFFE6DE)
         case .success:
             return Color(hex: 0x17351F)
         case .idle, .error, .info:
-            return primaryButtonDisabled ? Color(hex: 0xAEB4BD) : StudioColor.primaryActionText
+            return primaryButtonDisabled ? accentColor.opacity(0.56) : .white
+        }
+    }
+
+    private var primaryButtonBorderColor: Color {
+        switch viewModel.feedback {
+        case .success:
+            return Color(hex: 0xBFE8CA)
+        case .loading, .idle, .error, .info:
+            return accentColor.opacity(primaryButtonDisabled ? 0.22 : 0.42)
         }
     }
 
