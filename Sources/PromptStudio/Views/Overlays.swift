@@ -8,11 +8,13 @@ struct PreviewRailItem: Identifiable, Equatable {
     let id: String
     let item: PromptItem
     let isCurrent: Bool
+    let positionIndex: Int
 
-    init(item: PromptItem, isCurrent: Bool) {
+    init(item: PromptItem, isCurrent: Bool, positionIndex: Int) {
         self.id = item.id
         self.item = item
         self.isCurrent = isCurrent
+        self.positionIndex = positionIndex
     }
 }
 
@@ -61,6 +63,11 @@ struct ImmersivePreviewOverlay: View {
             } else {
                 GeometryReader { proxy in
                     let showsRail = shouldShowRail(size: proxy.size)
+                    let visibleRailItems = PreviewRailVisibleWindow.items(
+                        from: railItems,
+                        currentItemID: item.id,
+                        availableHeight: proxy.size.height
+                    )
                     HStack(spacing: 0) {
                         previewMedia
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -70,12 +77,15 @@ struct ImmersivePreviewOverlay: View {
 
                         if showsRail {
                             PreviewThumbnailRail(
-                                items: railItems,
+                                items: visibleRailItems,
                                 currentItemID: item.id,
                                 onSelect: onSelectRailItemID
                             )
                             .frame(width: PreviewThumbnailRail.railWidth)
                             .frame(maxHeight: .infinity)
+                            .task(id: visibleRailItems.map(\.id)) {
+                                state.prepareVisibleThumbnails(for: visibleRailItems.map(\.id))
+                            }
                         }
 
                         previewInspector
@@ -124,9 +134,6 @@ struct ImmersivePreviewOverlay: View {
         }
         .onChange(of: item.id) { _, _ in
             resetImageTransform()
-        }
-        .task(id: railItems.map(\.id)) {
-            state.prepareVisibleThumbnails(for: railItems.map(\.id))
         }
     }
 
@@ -369,6 +376,11 @@ private struct MarkdownDocumentPreviewContent: View {
     var body: some View {
         GeometryReader { proxy in
             let showsRail = shouldShowRail(size: proxy.size)
+            let visibleRailItems = PreviewRailVisibleWindow.items(
+                from: railItems,
+                currentItemID: item.id,
+                availableHeight: proxy.size.height
+            )
             HStack(spacing: 0) {
                 editorPane
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -378,12 +390,15 @@ private struct MarkdownDocumentPreviewContent: View {
 
                 if showsRail {
                     PreviewThumbnailRail(
-                        items: railItems,
+                        items: visibleRailItems,
                         currentItemID: item.id,
                         onSelect: onSelectRailItemID
                     )
                     .frame(width: PreviewThumbnailRail.railWidth)
                     .frame(maxHeight: .infinity)
+                    .task(id: visibleRailItems.map(\.id)) {
+                        state.prepareVisibleThumbnails(for: visibleRailItems.map(\.id))
+                    }
                 }
 
                 inspectorPane
@@ -2802,8 +2817,35 @@ private final class OverlayImageLoader: ObservableObject {
     }
 }
 
+private enum PreviewRailVisibleWindow {
+    private static let bufferItemCount = 3
+    private static let fadeHeight: CGFloat = 78
+    private static let buttonSize: CGFloat = 68
+    private static let itemSpacing: CGFloat = 11
+    private static let itemStride = buttonSize + itemSpacing
+
+    static func items(
+        from items: [PreviewRailItem],
+        currentItemID: String,
+        availableHeight: CGFloat
+    ) -> [PreviewRailItem] {
+        guard items.count > 1,
+              let currentIndex = items.firstIndex(where: { $0.id == currentItemID }) else {
+            return []
+        }
+
+        let visibleHalfSpan = max(itemStride, availableHeight / 2 + fadeHeight)
+        let itemsEachSide = max(1, Int(ceil(visibleHalfSpan / itemStride)) + bufferItemCount)
+        let lowerBound = max(0, currentIndex - itemsEachSide)
+        let upperBound = min(items.count - 1, currentIndex + itemsEachSide)
+        return Array(items[lowerBound...upperBound])
+    }
+}
+
 private struct PreviewThumbnailRail: View {
     static let railWidth: CGFloat = 82
+    static let fadeHeight: CGFloat = 78
+    static let itemStride: CGFloat = buttonSize + itemSpacing
 
     private static let thumbnailSize: CGFloat = 60
     private static let buttonSize: CGFloat = 68
@@ -2817,33 +2859,40 @@ private struct PreviewThumbnailRail: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let currentIndex = items.firstIndex { $0.id == currentItemID }
+            let currentPositionIndex = items.first { $0.id == currentItemID }?.positionIndex
             let railCenterY = proxy.size.height / 2
-            let itemStride = Self.buttonSize + Self.itemSpacing
-            let contentOffsetY = currentIndex.map { railCenterY - Self.buttonSize / 2 - CGFloat($0) * itemStride } ?? 0
 
             ZStack {
-                VStack(spacing: Self.itemSpacing) {
-                    ForEach(items) { railItem in
-                        railButton(for: railItem)
+                Group {
+                    if let currentPositionIndex {
+                        ForEach(items, id: \.positionIndex) { railItem in
+                            railButton(for: railItem)
+                                .position(
+                                    x: proxy.size.width / 2,
+                                    y: railCenterY + CGFloat(railItem.positionIndex - currentPositionIndex) * Self.itemStride
+                                )
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .offset(y: contentOffsetY)
                 .animation(
-                    .interactiveSpring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.02),
-                    value: currentItemID
+                    .interactiveSpring(response: 0.22, dampingFraction: 0.92, blendDuration: 0.02),
+                    value: currentPositionIndex
                 )
-                .animation(
-                    .interactiveSpring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.02),
-                    value: items.map(\.id)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .clipped()
 
                 fixedSelectionFrame
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .overlay(alignment: .top) {
+                fadeOverlay(edge: .top)
+                    .frame(height: Self.fadeHeight)
+                    .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+                fadeOverlay(edge: .bottom)
+                    .frame(height: Self.fadeHeight)
+                    .allowsHitTesting(false)
+            }
         }
     }
 
@@ -2854,6 +2903,35 @@ private struct PreviewThumbnailRail: View {
             .frame(width: Self.buttonSize, height: Self.buttonSize)
             .allowsHitTesting(false)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private enum FadeEdge {
+        case top
+        case bottom
+    }
+
+    private func fadeOverlay(edge: FadeEdge) -> some View {
+        let stops: [Gradient.Stop] = switch edge {
+        case .top:
+            [
+                .init(color: Color.black.opacity(0.82), location: 0.00),
+                .init(color: Color.black.opacity(0.56), location: 0.30),
+                .init(color: Color.black.opacity(0.18), location: 0.68),
+                .init(color: .clear, location: 1.00)
+            ]
+        case .bottom:
+            [
+                .init(color: .clear, location: 0.00),
+                .init(color: Color.black.opacity(0.18), location: 0.32),
+                .init(color: Color.black.opacity(0.56), location: 0.70),
+                .init(color: Color.black.opacity(0.82), location: 1.00)
+            ]
+        }
+        return LinearGradient(
+            stops: stops,
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     private func railButton(for railItem: PreviewRailItem) -> some View {

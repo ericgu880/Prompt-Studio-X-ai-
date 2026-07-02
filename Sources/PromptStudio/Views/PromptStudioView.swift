@@ -1015,15 +1015,17 @@ private struct PreviewSessionSnapshot: Equatable {
         let availableItems = Dictionary(uniqueKeysWithValues: allItems.filter { !$0.isDeleted }.map { ($0.id, $0) })
         let orderedIDs = itemIDs.filter { availableItems[$0] != nil }
         guard orderedIDs.count > 1,
-              let currentIndex = orderedIDs.firstIndex(of: currentID) else {
+              orderedIDs.contains(currentID) else {
             return []
         }
 
-        let lowerBound = max(0, currentIndex - 4)
-        let upperBound = min(orderedIDs.count - 1, currentIndex + 4)
-        return orderedIDs[lowerBound...upperBound].compactMap { itemID in
+        return orderedIDs.enumerated().compactMap { positionIndex, itemID in
             guard let item = availableItems[itemID] else { return nil }
-            return PreviewRailItem(item: item, isCurrent: itemID == currentID)
+            return PreviewRailItem(
+                item: item,
+                isCurrent: itemID == currentID,
+                positionIndex: positionIndex
+            )
         }
     }
 
