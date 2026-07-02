@@ -19,6 +19,7 @@ struct PromptStudioView: View {
     @State private var isInspectorResizeActive = false
     @State private var isFileDropTargeted = false
     @State private var previewNavigationSnapshot = PreviewNavigationSnapshot.empty
+    @State private var previewSessionSnapshot = PreviewSessionSnapshot.empty
     private static let fileDropInset: CGFloat = 10
 
     var body: some View {
@@ -157,9 +158,12 @@ struct PromptStudioView: View {
             .background(StudioColor.appBackground)
 
             if state.isPreviewPresented, let item = state.selectedItem {
-                ImmersivePreviewOverlay(item: item) { direction in
-                    navigatePreview(direction)
-                }
+                ImmersivePreviewOverlay(
+                    item: item,
+                    railItems: previewSessionSnapshot.railItems(currentID: item.id, allItems: state.items),
+                    onSelectRailItemID: selectPreviewRailItem,
+                    onNavigateStep: navigatePreviewStep
+                )
                     .environmentObject(state)
                     .zIndex(80)
             }
@@ -222,12 +226,41 @@ struct PromptStudioView: View {
         .sheet(item: $state.modal) { modal in
             sheet(for: modal)
         }
+        .onAppear {
+            if state.isPreviewPresented {
+                capturePreviewSessionSnapshot()
+            }
+        }
+        .onChange(of: state.isPreviewPresented) { _, presented in
+            if presented {
+                capturePreviewSessionSnapshot()
+            } else {
+                previewSessionSnapshot = .empty
+            }
+        }
     }
 
-    private func navigatePreview(_ direction: PreviewNavigationDirection) {
+    private func capturePreviewSessionSnapshot() {
+        guard let currentID = state.selectedItem?.id else {
+            previewSessionSnapshot = .empty
+            return
+        }
+        previewSessionSnapshot = PreviewSessionSnapshot(
+            currentID: currentID,
+            navigationSnapshot: previewNavigationSnapshot,
+            filteredItems: state.filteredItems
+        )
+    }
+
+    private func selectPreviewRailItem(_ itemID: String) {
+        guard let item = state.items.first(where: { $0.id == itemID && !$0.isDeleted }) else { return }
+        state.select(item)
+    }
+
+    private func navigatePreviewStep(_ direction: PreviewStepDirection) {
         guard let currentID = state.selectedItem?.id,
-              let nextID = previewNavigationSnapshot.nextItemID(from: currentID, direction: direction),
-              let nextItem = state.filteredItems.first(where: { $0.id == nextID }) else {
+              let nextID = previewSessionSnapshot.nextItemID(from: currentID, direction: direction),
+              let nextItem = state.items.first(where: { $0.id == nextID && !$0.isDeleted }) else {
             return
         }
         state.select(nextItem)
@@ -956,98 +989,56 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
 }
 
 private struct PreviewNavigationSnapshot: Equatable {
-    let itemFrames: [String: CGRect]
     let visualItemIDs: [String]
-    let columnCount: Int
 
-    static let empty = PreviewNavigationSnapshot(itemFrames: [:], visualItemIDs: [], columnCount: 1)
-
-    func nextItemID(from currentID: String, direction: PreviewNavigationDirection) -> String? {
-        if let frame = itemFrames[currentID], !itemFrames.isEmpty {
-            return spatialNextItemID(from: currentID, currentFrame: frame, direction: direction)
-        }
-        return fallbackNextItemID(from: currentID, direction: direction)
-    }
-
-    private func spatialNextItemID(
-        from currentID: String,
-        currentFrame: CGRect,
-        direction: PreviewNavigationDirection
-    ) -> String? {
-        let currentCenter = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
-        let candidates = itemFrames.compactMap { itemID, frame -> PreviewNavigationCandidate? in
-            guard itemID != currentID else { return nil }
-            let center = CGPoint(x: frame.midX, y: frame.midY)
-            let primaryDistance: CGFloat
-            let secondaryDistance: CGFloat
-            let overlapsAxis: Bool
-
-            switch direction {
-            case .left:
-                guard center.x < currentCenter.x - 0.5 else { return nil }
-                primaryDistance = currentCenter.x - center.x
-                secondaryDistance = abs(currentCenter.y - center.y)
-                overlapsAxis = frame.maxY > currentFrame.minY && frame.minY < currentFrame.maxY
-            case .right:
-                guard center.x > currentCenter.x + 0.5 else { return nil }
-                primaryDistance = center.x - currentCenter.x
-                secondaryDistance = abs(currentCenter.y - center.y)
-                overlapsAxis = frame.maxY > currentFrame.minY && frame.minY < currentFrame.maxY
-            case .up:
-                guard center.y < currentCenter.y - 0.5 else { return nil }
-                primaryDistance = currentCenter.y - center.y
-                secondaryDistance = abs(currentCenter.x - center.x)
-                overlapsAxis = frame.maxX > currentFrame.minX && frame.minX < currentFrame.maxX
-            case .down:
-                guard center.y > currentCenter.y + 0.5 else { return nil }
-                primaryDistance = center.y - currentCenter.y
-                secondaryDistance = abs(currentCenter.x - center.x)
-                overlapsAxis = frame.maxX > currentFrame.minX && frame.minX < currentFrame.maxX
-            }
-
-            return PreviewNavigationCandidate(
-                id: itemID,
-                primaryDistance: primaryDistance,
-                secondaryDistance: secondaryDistance,
-                overlapsAxis: overlapsAxis
-            )
-        }
-
-        let preferredCandidates = candidates.filter(\.overlapsAxis)
-        return (preferredCandidates.isEmpty ? candidates : preferredCandidates)
-            .min { lhs, rhs in
-                if abs(lhs.primaryDistance - rhs.primaryDistance) > 0.5 {
-                    return lhs.primaryDistance < rhs.primaryDistance
-                }
-                return lhs.secondaryDistance < rhs.secondaryDistance
-            }?
-            .id
-    }
-
-    private func fallbackNextItemID(from currentID: String, direction: PreviewNavigationDirection) -> String? {
-        guard let currentIndex = visualItemIDs.firstIndex(of: currentID) else { return nil }
-        let step: Int
-        switch direction {
-        case .left:
-            step = -1
-        case .right:
-            step = 1
-        case .up:
-            step = -max(1, columnCount)
-        case .down:
-            step = max(1, columnCount)
-        }
-        let nextIndex = currentIndex + step
-        guard visualItemIDs.indices.contains(nextIndex) else { return nil }
-        return visualItemIDs[nextIndex]
-    }
+    static let empty = PreviewNavigationSnapshot(visualItemIDs: [])
 }
 
-private struct PreviewNavigationCandidate {
-    let id: String
-    let primaryDistance: CGFloat
-    let secondaryDistance: CGFloat
-    let overlapsAxis: Bool
+private struct PreviewSessionSnapshot: Equatable {
+    let itemIDs: [String]
+
+    static let empty = PreviewSessionSnapshot(itemIDs: [])
+
+    init(itemIDs: [String]) {
+        self.itemIDs = itemIDs
+    }
+
+    init(currentID: String, navigationSnapshot: PreviewNavigationSnapshot, filteredItems: [PromptItem]) {
+        let filteredIDs = filteredItems.filter { !$0.isDeleted }.map(\.id)
+        let filteredIDSet = Set(filteredIDs)
+        let visualIDs = navigationSnapshot.visualItemIDs.filter { filteredIDSet.contains($0) }
+        let preferredIDs = visualIDs.contains(currentID) ? visualIDs : filteredIDs
+        self.itemIDs = preferredIDs.contains(currentID) ? preferredIDs : [currentID]
+    }
+
+    func railItems(currentID: String, allItems: [PromptItem]) -> [PreviewRailItem] {
+        let availableItems = Dictionary(uniqueKeysWithValues: allItems.filter { !$0.isDeleted }.map { ($0.id, $0) })
+        let orderedIDs = itemIDs.filter { availableItems[$0] != nil }
+        guard orderedIDs.count > 1,
+              let currentIndex = orderedIDs.firstIndex(of: currentID) else {
+            return []
+        }
+
+        let lowerBound = max(0, currentIndex - 4)
+        let upperBound = min(orderedIDs.count - 1, currentIndex + 4)
+        return orderedIDs[lowerBound...upperBound].compactMap { itemID in
+            guard let item = availableItems[itemID] else { return nil }
+            return PreviewRailItem(item: item, isCurrent: itemID == currentID)
+        }
+    }
+
+    func nextItemID(from currentID: String, direction: PreviewStepDirection) -> String? {
+        guard let currentIndex = itemIDs.firstIndex(of: currentID) else { return nil }
+        let nextIndex: Int
+        switch direction {
+        case .previous:
+            nextIndex = currentIndex - 1
+        case .next:
+            nextIndex = currentIndex + 1
+        }
+        guard itemIDs.indices.contains(nextIndex) else { return nil }
+        return itemIDs[nextIndex]
+    }
 }
 
 private struct SidebarView: View {
@@ -2705,7 +2696,7 @@ private struct MasonryGridView: View {
             let width = (gridContentWidth - CGFloat(columnCount - 1) * 12) / CGFloat(columnCount)
             let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = layout.visualItemIDs
-            let previewNavigationSnapshot = previewNavigationSnapshot(for: layout, width: width, columnCount: columnCount)
+            let previewNavigationSnapshot = previewNavigationSnapshot(for: layout)
             let isItemReordering = draggedItemID != nil
             let itemReorderAnimation: Animation? = isItemReordering ? .easeInOut(duration: 0.22) : nil
             let reorderPlacementOverrides = itemReorderPlacementOverrides(for: layout.placements)
@@ -2864,20 +2855,9 @@ private struct MasonryGridView: View {
         max(0, availableWidth)
     }
 
-    private func previewNavigationSnapshot(
-        for layout: MasonryLayoutResult,
-        width: CGFloat,
-        columnCount: Int
-    ) -> PreviewNavigationSnapshot {
-        var itemFrames: [String: CGRect] = [:]
-        for placement in layout.placements {
-            guard case .item(let item) = placement.entry else { continue }
-            itemFrames[item.id] = CGRect(x: placement.x, y: placement.y, width: width, height: placement.height)
-        }
+    private func previewNavigationSnapshot(for layout: MasonryLayoutResult) -> PreviewNavigationSnapshot {
         return PreviewNavigationSnapshot(
-            itemFrames: itemFrames,
-            visualItemIDs: layout.visualItemIDs,
-            columnCount: columnCount
+            visualItemIDs: layout.visualItemIDs
         )
     }
 

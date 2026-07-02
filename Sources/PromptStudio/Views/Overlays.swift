@@ -4,19 +4,45 @@ import SwiftUI
 import PromptStudioCore
 import UniformTypeIdentifiers
 
+struct PreviewRailItem: Identifiable, Equatable {
+    let id: String
+    let item: PromptItem
+    let isCurrent: Bool
+
+    init(item: PromptItem, isCurrent: Bool) {
+        self.id = item.id
+        self.item = item
+        self.isCurrent = isCurrent
+    }
+}
+
+enum PreviewStepDirection: Equatable {
+    case previous
+    case next
+}
+
 struct ImmersivePreviewOverlay: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
-    let onNavigate: (PreviewNavigationDirection) -> Void
+    let railItems: [PreviewRailItem]
+    let onSelectRailItemID: (String) -> Void
+    let onNavigateStep: (PreviewStepDirection) -> Void
     @State private var imageScale: CGFloat = 1.0
     @State private var imageOffset: CGSize = .zero
     @State private var previewPromptHovered = false
     @State private var previewPromptCopyFeedback = false
     @GestureState private var imageDragTranslation: CGSize = .zero
 
-    init(item: PromptItem, onNavigate: @escaping (PreviewNavigationDirection) -> Void = { _ in }) {
+    init(
+        item: PromptItem,
+        railItems: [PreviewRailItem] = [],
+        onSelectRailItemID: @escaping (String) -> Void = { _ in },
+        onNavigateStep: @escaping (PreviewStepDirection) -> Void = { _ in }
+    ) {
         self.item = item
-        self.onNavigate = onNavigate
+        self.railItems = railItems
+        self.onSelectRailItemID = onSelectRailItemID
+        self.onNavigateStep = onNavigateStep
     }
 
     var body: some View {
@@ -25,25 +51,42 @@ struct ImmersivePreviewOverlay: View {
                 .ignoresSafeArea()
 
             if item.isTextDocumentLike {
-                MarkdownDocumentPreviewContent(item: item)
+                MarkdownDocumentPreviewContent(
+                    item: item,
+                    railItems: railItems,
+                    onSelectRailItemID: onSelectRailItemID
+                )
                     .environmentObject(state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                HStack(spacing: 0) {
-                    previewMedia
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.leading, 42)
-                        .padding(.trailing, 34)
-                        .padding(.vertical, 42)
+                GeometryReader { proxy in
+                    let showsRail = shouldShowRail(size: proxy.size)
+                    HStack(spacing: 0) {
+                        previewMedia
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(.leading, 42)
+                            .padding(.trailing, showsRail ? 18 : 34)
+                            .padding(.vertical, 42)
 
-                    previewInspector
-                        .frame(width: 360)
-                        .frame(maxHeight: .infinity)
-                        .background(StudioColor.panel.opacity(0.96))
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(StudioColor.hairline)
-                                .frame(width: 1)
+                        if showsRail {
+                            PreviewThumbnailRail(
+                                items: railItems,
+                                currentItemID: item.id,
+                                onSelect: onSelectRailItemID
+                            )
+                            .frame(width: PreviewThumbnailRail.railWidth)
+                            .frame(maxHeight: .infinity)
+                        }
+
+                        previewInspector
+                            .frame(width: 360)
+                            .frame(maxHeight: .infinity)
+                            .background(StudioColor.panel.opacity(0.96))
+                            .overlay(alignment: .leading) {
+                                Rectangle()
+                                    .fill(StudioColor.hairline)
+                                    .frame(width: 1)
+                            }
                         }
                 }
 
@@ -72,7 +115,7 @@ struct ImmersivePreviewOverlay: View {
                 onExit: {
                     state.isPreviewPresented = false
                 },
-                onNavigate: onNavigate,
+                onNavigateStep: onNavigateStep,
                 onZoom: { delta in
                     guard item.assetKind == .image else { return }
                     adjustImageScale(by: delta)
@@ -82,6 +125,13 @@ struct ImmersivePreviewOverlay: View {
         .onChange(of: item.id) { _, _ in
             resetImageTransform()
         }
+        .task(id: railItems.map(\.id)) {
+            state.prepareVisibleThumbnails(for: railItems.map(\.id))
+        }
+    }
+
+    private func shouldShowRail(size: CGSize) -> Bool {
+        !railItems.isEmpty && size.width >= 1_180 && size.height >= 620
     }
 
     private func adjustImageScale(by delta: CGFloat) {
@@ -311,29 +361,48 @@ struct ImmersivePreviewOverlay: View {
 private struct MarkdownDocumentPreviewContent: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
+    let railItems: [PreviewRailItem]
+    let onSelectRailItemID: (String) -> Void
     @State private var text = ""
     @State private var loadedItemID = ""
 
     var body: some View {
-        HStack(spacing: 0) {
-            editorPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.leading, 42)
-                .padding(.trailing, 34)
-                .padding(.vertical, 42)
+        GeometryReader { proxy in
+            let showsRail = shouldShowRail(size: proxy.size)
+            HStack(spacing: 0) {
+                editorPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.leading, 42)
+                    .padding(.trailing, showsRail ? 18 : 34)
+                    .padding(.vertical, 42)
 
-            inspectorPane
-                .frame(width: 360)
-                .frame(maxHeight: .infinity)
-                .background(StudioColor.panel.opacity(0.96))
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(StudioColor.hairline)
-                        .frame(width: 1)
+                if showsRail {
+                    PreviewThumbnailRail(
+                        items: railItems,
+                        currentItemID: item.id,
+                        onSelect: onSelectRailItemID
+                    )
+                    .frame(width: PreviewThumbnailRail.railWidth)
+                    .frame(maxHeight: .infinity)
+                }
+
+                inspectorPane
+                    .frame(width: 360)
+                    .frame(maxHeight: .infinity)
+                    .background(StudioColor.panel.opacity(0.96))
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(StudioColor.hairline)
+                            .frame(width: 1)
+                    }
                 }
         }
         .onAppear(perform: loadText)
         .onChange(of: item.id) { _, _ in loadText() }
+    }
+
+    private func shouldShowRail(size: CGSize) -> Bool {
+        !railItems.isEmpty && size.width >= 1_180 && size.height >= 620
     }
 
     private var editorPane: some View {
@@ -2733,6 +2802,95 @@ private final class OverlayImageLoader: ObservableObject {
     }
 }
 
+private struct PreviewThumbnailRail: View {
+    static let railWidth: CGFloat = 82
+
+    private static let thumbnailSize: CGFloat = 60
+    private static let buttonSize: CGFloat = 68
+    private static let itemSpacing: CGFloat = 11
+    private static let cornerRadius: CGFloat = 11
+
+    let items: [PreviewRailItem]
+    let currentItemID: String
+    let onSelect: (String) -> Void
+    @State private var hoveredItemID: String?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let currentIndex = items.firstIndex { $0.id == currentItemID }
+            let railCenterY = proxy.size.height / 2
+            let itemStride = Self.buttonSize + Self.itemSpacing
+            let contentOffsetY = currentIndex.map { railCenterY - Self.buttonSize / 2 - CGFloat($0) * itemStride } ?? 0
+
+            ZStack {
+                VStack(spacing: Self.itemSpacing) {
+                    ForEach(items) { railItem in
+                        railButton(for: railItem)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .offset(y: contentOffsetY)
+                .animation(
+                    .interactiveSpring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.02),
+                    value: currentItemID
+                )
+                .animation(
+                    .interactiveSpring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.02),
+                    value: items.map(\.id)
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .clipped()
+
+                fixedSelectionFrame
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var fixedSelectionFrame: some View {
+        RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            .stroke(StudioColor.primaryAction.opacity(0.84), lineWidth: 1.5)
+            .shadow(color: StudioColor.primaryAction.opacity(0.18), radius: 5, x: 0, y: 0)
+            .frame(width: Self.buttonSize, height: Self.buttonSize)
+            .allowsHitTesting(false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private func railButton(for railItem: PreviewRailItem) -> some View {
+        let isCurrent = railItem.id == currentItemID || railItem.isCurrent
+        let isHovered = hoveredItemID == railItem.id
+
+        return Button {
+            guard !isCurrent else { return }
+            onSelect(railItem.id)
+        } label: {
+            ZStack(alignment: .bottomTrailing) {
+                AssetMediaView(item: railItem.item, contentMode: .fit)
+                    .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
+                    .background(StudioColor.panelRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .opacity(isHovered && !isCurrent ? 0.86 : 1)
+
+                if railItem.item.assetKind == .video {
+                    Image(systemName: "play.fill")
+                        .font(StudioFont.symbol(8, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(Color.black.opacity(0.54)))
+                        .padding(4)
+                }
+            }
+            .frame(width: Self.buttonSize, height: Self.buttonSize)
+            .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredItemID = hovering ? railItem.id : nil
+        }
+        .accessibilityLabel(railItem.item.title)
+    }
+}
+
 private struct OverlayCloseButton: View {
     var help = "关闭"
     let action: () -> Void
@@ -2835,6 +2993,7 @@ private struct OverlayVideoPlayer: NSViewRepresentable {
         nsView.player = nil
     }
 
+    @MainActor
     final class Coordinator {
         private var currentPath: String?
         private var player: AVPlayer?
@@ -2952,20 +3111,13 @@ private struct MarkdownEditorKeyMonitor: NSViewRepresentable {
     }
 }
 
-enum PreviewNavigationDirection: Equatable {
-    case left
-    case right
-    case up
-    case down
-}
-
 private struct PreviewInputMonitor: NSViewRepresentable {
     let onExit: () -> Void
-    let onNavigate: (PreviewNavigationDirection) -> Void
+    let onNavigateStep: (PreviewStepDirection) -> Void
     let onZoom: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onExit: onExit, onNavigate: onNavigate, onZoom: onZoom)
+        Coordinator(onExit: onExit, onNavigateStep: onNavigateStep, onZoom: onZoom)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -2975,24 +3127,29 @@ private struct PreviewInputMonitor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onExit = onExit
-        context.coordinator.onNavigate = onNavigate
+        context.coordinator.onNavigateStep = onNavigateStep
         context.coordinator.onZoom = onZoom
     }
 
     final class Coordinator {
         var onExit: () -> Void
-        var onNavigate: (PreviewNavigationDirection) -> Void
+        var onNavigateStep: (PreviewStepDirection) -> Void
         var onZoom: (CGFloat) -> Void
         private var keyMonitor: Any?
         private var scrollMonitor: Any?
+        private var scrollNavigationAccumulator: CGFloat = 0
+        private var scrollNavigationSign: CGFloat = 0
+        private var lastScrollNavigationTime: TimeInterval = 0
+        private static let scrollNavigationThreshold: CGFloat = 18
+        private static let scrollNavigationCooldown: TimeInterval = 0.08
 
         init(
             onExit: @escaping () -> Void,
-            onNavigate: @escaping (PreviewNavigationDirection) -> Void,
+            onNavigateStep: @escaping (PreviewStepDirection) -> Void,
             onZoom: @escaping (CGFloat) -> Void
         ) {
             self.onExit = onExit
-            self.onNavigate = onNavigate
+            self.onNavigateStep = onNavigateStep
             self.onZoom = onZoom
         }
 
@@ -3012,8 +3169,9 @@ private struct PreviewInputMonitor: NSViewRepresentable {
                         self?.onExit()
                         return nil
                     }
-                    if let direction = Self.navigationDirection(for: event) {
-                        self?.onNavigate(direction)
+                    if let direction = Self.stepDirection(for: event) {
+                        guard !Self.isTextInputActive() else { return event }
+                        self?.onNavigateStep(direction)
                         return nil
                     }
                     return event
@@ -3022,28 +3180,97 @@ private struct PreviewInputMonitor: NSViewRepresentable {
 
             if scrollMonitor == nil {
                 scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                    guard event.modifierFlags.contains(.command) else { return event }
-                    let rawDelta = event.scrollingDeltaY == 0 ? -event.deltaY : event.scrollingDeltaY
-                    guard rawDelta != 0 else { return nil }
-                    let normalized = max(-0.45, min(0.45, CGFloat(rawDelta) / 120))
-                    self?.onZoom(normalized)
+                    guard let self else { return event }
+                    if event.modifierFlags.contains(.command) {
+                        self.resetScrollNavigation()
+                        guard !Self.isTextInputActive() else { return event }
+                        let rawDelta = Self.verticalScrollDelta(for: event)
+                        guard rawDelta != 0 else { return nil }
+                        let normalized = max(-0.45, min(0.45, CGFloat(rawDelta) / 120))
+                        self.onZoom(normalized)
+                        return nil
+                    }
+
+                    guard Self.isPlainScroll(event) else {
+                        self.resetScrollNavigation()
+                        return event
+                    }
+                    guard !Self.isTextInputActive(),
+                          !Self.shouldPreserveScrollableTarget(for: event) else {
+                        self.resetScrollNavigation()
+                        return event
+                    }
+                    let rawDelta = Self.verticalScrollDelta(for: event)
+                    self.handleScrollNavigation(delta: rawDelta, timestamp: event.timestamp)
                     return nil
                 }
             }
         }
 
-        private static func navigationDirection(for event: NSEvent) -> PreviewNavigationDirection? {
+        private func handleScrollNavigation(delta: CGFloat, timestamp: TimeInterval) {
+            guard delta != 0 else { return }
+            let sign: CGFloat = delta < 0 ? -1 : 1
+            if sign != scrollNavigationSign {
+                scrollNavigationAccumulator = 0
+                scrollNavigationSign = sign
+            }
+
+            scrollNavigationAccumulator += delta
+            guard abs(scrollNavigationAccumulator) >= Self.scrollNavigationThreshold else { return }
+
+            if timestamp - lastScrollNavigationTime >= Self.scrollNavigationCooldown {
+                onNavigateStep(scrollNavigationAccumulator < 0 ? .next : .previous)
+                lastScrollNavigationTime = timestamp
+                scrollNavigationAccumulator = 0
+            } else {
+                scrollNavigationAccumulator = sign * Self.scrollNavigationThreshold
+            }
+        }
+
+        private func resetScrollNavigation() {
+            scrollNavigationAccumulator = 0
+            scrollNavigationSign = 0
+        }
+
+        private static func isTextInputActive() -> Bool {
+            return MainActor.assumeIsolated {
+                AppKitBridge.isTextInputActive()
+            }
+        }
+
+        private static func isPlainScroll(_ event: NSEvent) -> Bool {
+            let reservedModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+            return event.modifierFlags.intersection(reservedModifiers).isEmpty
+        }
+
+        private static func verticalScrollDelta(for event: NSEvent) -> CGFloat {
+            let delta = event.scrollingDeltaY == 0 ? -event.deltaY : event.scrollingDeltaY
+            return CGFloat(delta)
+        }
+
+        private static func shouldPreserveScrollableTarget(for event: NSEvent) -> Bool {
+            let window = event.window
+            let location = event.locationInWindow
+            return MainActor.assumeIsolated {
+                guard let contentView = window?.contentView,
+                      let hitView = contentView.hitTest(location) else {
+                    return false
+                }
+                if hitView is NSTextView || hitView.enclosingScrollView?.documentView is NSTextView {
+                    return true
+                }
+                return hitView.enclosingScrollView != nil
+            }
+        }
+
+        private static func stepDirection(for event: NSEvent) -> PreviewStepDirection? {
             let reservedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
             guard event.modifierFlags.intersection(reservedModifiers).isEmpty else { return nil }
             switch event.keyCode {
-            case 123:
-                return .left
-            case 124:
-                return .right
-            case 125:
-                return .down
-            case 126:
-                return .up
+            case 123, 126:
+                return .previous
+            case 124, 125:
+                return .next
             default:
                 return nil
             }
