@@ -355,6 +355,9 @@ struct PromptStudioView: View {
         case .folderDeleteConfirmation(let request):
             FolderDeleteConfirmationSheet(request: request)
                 .environmentObject(state)
+        case .permanentDeleteConfirmation(let request):
+            PermanentDeleteConfirmationSheet(request: request)
+                .environmentObject(state)
         case .externalFileOpen(let request):
             ExternalFileOpenSheet(request: request)
                 .environmentObject(state)
@@ -3851,6 +3854,16 @@ private struct AssetCardView: View {
                 }
             } label: {
                 Label("恢复", systemImage: "arrow.uturn.backward")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                runContextAction {
+                    state.beginPermanentDeleteSelectedTrashItems()
+                }
+            } label: {
+                Label("彻底删除...", systemImage: "trash.slash")
             }
         } else {
             Button {

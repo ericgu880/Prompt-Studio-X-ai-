@@ -1674,6 +1674,42 @@ struct FolderDeleteConfirmationSheet: View {
     }
 }
 
+struct PermanentDeleteConfirmationSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    let request: AppState.PermanentDeleteRequest
+
+    var body: some View {
+        PromptFormShell(title: "彻底删除") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(titleText)
+                    .font(StudioFont.font(14, weight: .semibold))
+                Text("这会从资料库中移除记录，并删除源文件。操作不可撤销。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } footer: {
+            Button("取消") { dismiss() }
+                .buttonStyle(TextHoverButtonStyle())
+            Button("彻底删除", role: .destructive) {
+                state.confirmPermanentDelete(request)
+                dismiss()
+            }
+            .buttonStyle(CapsuleButtonStyle(filled: true))
+        }
+        .frame(width: 500, height: 300)
+    }
+
+    private var titleText: String {
+        if let itemTitle = request.itemTitle {
+            "确定彻底删除「\(itemTitle)」？"
+        } else {
+            "确定彻底删除 \(request.itemCount) 个项目？"
+        }
+    }
+}
+
 private struct ModelFilterEditorRow: View {
     @EnvironmentObject private var state: AppState
     let model: ModelProfile

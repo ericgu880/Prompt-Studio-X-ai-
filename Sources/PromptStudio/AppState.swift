@@ -132,6 +132,14 @@ final class AppState: ObservableObject {
         let itemCount: Int
     }
 
+    struct PermanentDeleteRequest: Identifiable, Equatable {
+        let id = UUID()
+        let itemIDs: Set<String>
+        let itemTitle: String?
+
+        var itemCount: Int { itemIDs.count }
+    }
+
     enum PromptComposerMode: Identifiable, Equatable {
         case create
         case edit(String)
@@ -164,6 +172,7 @@ final class AppState: ObservableObject {
         case modelFilterManager
         case folderEditor(FolderEditorRequest)
         case folderDeleteConfirmation(FolderDeleteRequest)
+        case permanentDeleteConfirmation(PermanentDeleteRequest)
         case externalFileOpen(ExternalFileOpenRequest)
         case temporaryTextPreview(TemporaryTextPreviewRequest)
         case preview
@@ -184,6 +193,7 @@ final class AppState: ObservableObject {
             case .modelFilterManager: "modelFilterManager"
             case .folderEditor(let request): "folderEditor-\(request.id)"
             case .folderDeleteConfirmation(let request): "folderDelete-\(request.id)"
+            case .permanentDeleteConfirmation(let request): "permanentDelete-\(request.id)"
             case .externalFileOpen(let request): "externalFileOpen-\(request.id)"
             case .temporaryTextPreview(let request): "temporaryTextPreview-\(request.id)"
             case .preview: "preview"
@@ -886,21 +896,92 @@ final class AppState: ObservableObject {
         }
     }
 
+    func beginPermanentDeleteSelectedTrashItems() {
+        let ids = selectedTrashItemIDs()
+        guard !ids.isEmpty else { return }
+        let title = ids.count == 1 ? ids.first.flatMap { itemsByID[$0]?.title } : nil
+        modal = .permanentDeleteConfirmation(
+            PermanentDeleteRequest(itemIDs: ids, itemTitle: title)
+        )
+    }
+
+    func confirmPermanentDelete(_ request: PermanentDeleteRequest) {
+        permanentlyDeleteTrashItems(withIDs: request.itemIDs, emptyTrashMessage: false)
+    }
+
     func emptyTrash() {
         let deletedItems = items.filter(\.isDeleted)
         guard !deletedItems.isEmpty else {
             showToast("回收站为空")
             return
         }
+        permanentlyDeleteTrashItems(withIDs: Set(deletedItems.map(\.id)), emptyTrashMessage: true)
+    }
+
+    private func selectedTrashItemIDs() -> Set<String> {
+        let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
+        return Set(ids.filter { itemsByID[$0]?.isDeleted == true })
+    }
+
+    private func permanentlyDeleteTrashItems(withIDs ids: Set<String>, emptyTrashMessage: Bool) {
+        let deletedItems = ids.compactMap { itemsByID[$0] }.filter(\.isDeleted)
+        guard !deletedItems.isEmpty else { return }
+
+        var deletedIDs: Set<String> = []
+        var failures: [String] = []
         do {
             for item in deletedItems {
+                do {
+                    try deleteFilesForPermanentDeletion(of: item)
+                } catch {
+                    failures.append("\(item.title)：\(error.localizedDescription)")
+                    continue
+                }
                 try repository?.permanentlyDelete(itemID: item.id)
+                deletedIDs.insert(item.id)
             }
-            reload()
-            showToast("回收站已清空")
         } catch {
             modal = .error(error.localizedDescription)
+            return
         }
+
+        if !deletedIDs.isEmpty {
+            reload(selecting: filteredItems.first(where: { !deletedIDs.contains($0.id) })?.id)
+            if failures.isEmpty {
+                if emptyTrashMessage {
+                    showToast("回收站已清空")
+                } else {
+                    showToast(deletedIDs.count > 1 ? "已彻底删除 \(deletedIDs.count) 个项目" : "已彻底删除")
+                }
+            } else {
+                showToast("已删除 \(deletedIDs.count) 个项目，\(failures.count) 个失败")
+            }
+        }
+
+        if !failures.isEmpty {
+            modal = .error(failures.prefix(3).joined(separator: "\n"))
+        }
+    }
+
+    private func deleteFilesForPermanentDeletion(of item: PromptItem) throws {
+        try removePrimaryAssetFileIfNeeded(path: item.assetPath)
+        removeGeneratedThumbnailIfNeeded(for: item)
+    }
+
+    private func removePrimaryAssetFileIfNeeded(path: String) throws {
+        guard !path.isEmpty else { return }
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: path) else { return }
+        try fileManager.removeItem(at: URL(fileURLWithPath: path))
+    }
+
+    private func removeGeneratedThumbnailIfNeeded(for item: PromptItem) {
+        guard item.thumbnailPath != item.assetPath,
+              !item.thumbnailPath.isEmpty,
+              FileManager.default.fileExists(atPath: item.thumbnailPath) else {
+            return
+        }
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: item.thumbnailPath))
     }
 
     func savePrompt(
