@@ -2755,6 +2755,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var selectedFolderID: String?
         private var lastReloadKey: ReloadKey?
         private var lastEntryIDs: [String] = []
+        private var itemIndexPathsByID: [String: IndexPath] = [:]
+        private var folderIndexPathsByID: [String: IndexPath] = [:]
+        private var lastRenderedSelectedItemIDs: Set<String> = []
         private var lastAvailableWidthBucket: Int?
         private var currentThumbnailScale = 1.0
         private var lastVisibleThumbnailCandidateIDs: [String] = []
@@ -2808,6 +2811,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let shouldResetScroll = !lastEntryIDs.isEmpty && nextEntryIDs != lastEntryIDs
 
             entries = nextEntries
+            rebuildIndexPathMaps()
             itemWidth = nextItemWidth
             layout?.configure(entries: nextEntries, columnCount: columnCount, itemWidth: nextItemWidth)
 
@@ -2820,6 +2824,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             if reloadKey != lastReloadKey {
                 collectionView?.reloadData()
                 lastReloadKey = reloadKey
+                lastRenderedSelectedItemIDs = state.selectedIDs
+            } else {
+                syncExternalSelectionChange(state.selectedIDs)
             }
             lastEntryIDs = nextEntryIDs
 
@@ -2852,6 +2859,35 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             onPreviewNavigationSnapshotChange(
                 PreviewNavigationSnapshot(visualItemIDs: layout?.visualItemIDs ?? [])
             )
+        }
+
+        private func rebuildIndexPathMaps() {
+            itemIndexPathsByID = [:]
+            folderIndexPathsByID = [:]
+            for (index, entry) in entries.enumerated() {
+                let indexPath = IndexPath(item: index, section: 0)
+                switch entry {
+                case .folder(let row):
+                    folderIndexPathsByID[row.id] = indexPath
+                case .item(let item):
+                    itemIndexPathsByID[item.id] = indexPath
+                }
+            }
+        }
+
+        private func syncExternalSelectionChange(_ selectedItemIDs: Set<String>) {
+            guard selectedItemIDs != lastRenderedSelectedItemIDs else { return }
+            let previousFolderID = selectedFolderID
+            if !selectedItemIDs.isEmpty {
+                selectedFolderID = nil
+            }
+            reloadSelectionChanges(
+                previousItemIDs: lastRenderedSelectedItemIDs,
+                nextItemIDs: selectedItemIDs,
+                previousFolderID: previousFolderID,
+                nextFolderID: selectedFolderID
+            )
+            lastRenderedSelectedItemIDs = selectedItemIDs
         }
 
         func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -2887,13 +2923,22 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         }
 
         private func selectFolderCard(_ folderID: String) {
+            let previousFolderID = selectedFolderID
+            let previousItemIDs = state?.selectedIDs ?? []
             selectedFolderID = folderID
             state?.selectItems(ids: [])
-            lastReloadKey = nil
-            collectionView?.reloadData()
+            reloadSelectionChanges(
+                previousItemIDs: previousItemIDs,
+                nextItemIDs: [],
+                previousFolderID: previousFolderID,
+                nextFolderID: folderID
+            )
+            lastRenderedSelectedItemIDs = []
         }
 
         private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags) {
+            let previousFolderID = selectedFolderID
+            let previousItemIDs = state?.selectedIDs ?? []
             selectedFolderID = nil
             let visualItemIDs = layout?.visualItemIDs ?? entries.compactMap { entry in
                 guard case .item(let item) = entry else { return nil }
@@ -2912,8 +2957,13 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 } else {
                     state?.select(item)
                 }
-                lastReloadKey = nil
-                collectionView?.reloadData()
+                reloadSelectionChanges(
+                    previousItemIDs: previousItemIDs,
+                    nextItemIDs: state?.selectedIDs ?? [],
+                    previousFolderID: previousFolderID,
+                    nextFolderID: nil
+                )
+                lastRenderedSelectedItemIDs = state?.selectedIDs ?? []
                 return
             }
 
@@ -2922,8 +2972,37 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let rangeIDs = Set(visualItemIDs[lowerBound...upperBound])
             let nextIDs = isCommand ? state.selectedIDs.union(rangeIDs) : rangeIDs
             state.selectItems(ids: nextIDs, primaryID: item.id)
-            lastReloadKey = nil
-            collectionView?.reloadData()
+            reloadSelectionChanges(
+                previousItemIDs: previousItemIDs,
+                nextItemIDs: state.selectedIDs,
+                previousFolderID: previousFolderID,
+                nextFolderID: nil
+            )
+            lastRenderedSelectedItemIDs = state.selectedIDs
+        }
+
+        private func reloadSelectionChanges(
+            previousItemIDs: Set<String>,
+            nextItemIDs: Set<String>,
+            previousFolderID: String?,
+            nextFolderID: String?
+        ) {
+            var indexPaths = Set<IndexPath>()
+            for itemID in previousItemIDs.symmetricDifference(nextItemIDs) {
+                if let indexPath = itemIndexPathsByID[itemID] {
+                    indexPaths.insert(indexPath)
+                }
+            }
+            if previousFolderID != nextFolderID {
+                if let previousFolderID, let indexPath = folderIndexPathsByID[previousFolderID] {
+                    indexPaths.insert(indexPath)
+                }
+                if let nextFolderID, let indexPath = folderIndexPathsByID[nextFolderID] {
+                    indexPaths.insert(indexPath)
+                }
+            }
+            guard !indexPaths.isEmpty else { return }
+            collectionView?.reloadItems(at: indexPaths)
         }
 
         private func prepareVisibleThumbnails() {
@@ -3089,6 +3168,7 @@ private final class FlippedMasonryCollectionView: NSCollectionView {
 private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
     private var hostingView: NSHostingView<AnyView>?
+    private var markdownCardView: NativeMarkdownCardView?
 
     override func loadView() {
         view = NSView()
@@ -3105,6 +3185,76 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         selectItem: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void
     ) {
         let height = entry.totalHeight(width: width)
+        view.frame.size = CGSize(width: width, height: height)
+
+        if case .item(let item) = entry, item.isTextDocumentLike {
+            hostingView?.removeFromSuperview()
+            hostingView = nil
+            let cardView: NativeMarkdownCardView
+            if let markdownCardView {
+                cardView = markdownCardView
+            } else {
+                cardView = NativeMarkdownCardView(frame: view.bounds)
+                cardView.autoresizingMask = [.width, .height]
+                view.addSubview(cardView)
+                markdownCardView = cardView
+            }
+            cardView.frame = view.bounds
+            cardView.configure(
+                item: item,
+                isSelected: state.selectedIDs.contains(item.id),
+                selectAction: { modifiers in
+                    selectItem(item, modifiers)
+                },
+                previewAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.previewSelected()
+                },
+                editAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.requestInlineEdit(item)
+                },
+                copyAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.copyItemContent(item)
+                },
+                openAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.openSelectedInDefaultApplication()
+                },
+                revealAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.revealSelectedInFinder()
+                },
+                copyPathAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.copySelectedFilePath()
+                },
+                trashAction: {
+                    if !state.selectedIDs.contains(item.id) {
+                        selectItem(item, [])
+                    }
+                    state.moveSelectedToTrash()
+                }
+            )
+            return
+        }
+
+        markdownCardView?.removeFromSuperview()
+        markdownCardView = nil
+
         let rootView: AnyView
         switch entry {
         case .folder(let row):
@@ -3136,7 +3286,6 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             )
         }
 
-        view.frame.size = CGSize(width: width, height: height)
         if let hostingView {
             hostingView.rootView = rootView
             hostingView.frame = view.bounds
@@ -3149,6 +3298,296 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             view.addSubview(hostingView)
             self.hostingView = hostingView
         }
+    }
+}
+
+private final class NativeMarkdownCardView: NSView {
+    private let contentView = NSView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let metadataLabel = NSTextField(labelWithString: "")
+    private let editButton = NativeMarkdownIconButton(symbolName: "pencil", toolTip: "编辑")
+    private let copyButton = NativeMarkdownIconButton(symbolName: "doc.on.doc", toolTip: "复制文档信息")
+    private var summaryLabels: [NSTextField] = []
+    private var chipLabels: [NSTextField] = []
+    private var loadTask: Task<Void, Never>?
+    private var representedKey = ""
+    private var isCardSelected = false
+    private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
+    private var previewAction: (() -> Void)?
+    private var editAction: (() -> Void)?
+    private var copyAction: (() -> Void)?
+    private var openAction: (() -> Void)?
+    private var revealAction: (() -> Void)?
+    private var copyPathAction: (() -> Void)?
+    private var trashAction: (() -> Void)?
+    private var menuTargets: [NativeMarkdownMenuActionTarget] = []
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    deinit {
+        loadTask?.cancel()
+    }
+
+    override var isFlipped: Bool { true }
+
+    func configure(
+        item: PromptItem,
+        isSelected: Bool,
+        selectAction: @escaping (NSEvent.ModifierFlags) -> Void,
+        previewAction: @escaping () -> Void,
+        editAction: @escaping () -> Void,
+        copyAction: @escaping () -> Void,
+        openAction: @escaping () -> Void,
+        revealAction: @escaping () -> Void,
+        copyPathAction: @escaping () -> Void,
+        trashAction: @escaping () -> Void
+    ) {
+        let snapshot = TextAssetCardSnapshot(item: item)
+        let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        self.selectAction = selectAction
+        self.previewAction = previewAction
+        self.editAction = editAction
+        self.copyAction = copyAction
+        self.openAction = openAction
+        self.revealAction = revealAction
+        self.copyPathAction = copyPathAction
+        self.trashAction = trashAction
+        editButton.actionHandler = editAction
+        copyButton.actionHandler = copyAction
+        setSelected(isSelected)
+
+        if representedKey != key {
+            representedKey = key
+            apply(TextAssetCardData.placeholder(snapshot: snapshot))
+            loadTask?.cancel()
+            loadTask = Task { [weak self] in
+                let data = await TextAssetCardDataCache.shared.data(snapshot: snapshot)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.representedKey == key else { return }
+                    self.apply(data)
+                }
+            }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let contentFrame = bounds.insetBy(dx: AssetCardMetrics.selectionOutset, dy: AssetCardMetrics.selectionOutset)
+        contentView.frame = contentFrame
+
+        let horizontalInset: CGFloat = 14
+        let contentWidth = max(0, contentFrame.width - horizontalInset * 2)
+        titleLabel.frame = CGRect(x: horizontalInset, y: 14, width: contentWidth, height: 38)
+
+        var y: CGFloat = titleLabel.frame.maxY + 8
+        for label in summaryLabels {
+            label.frame = CGRect(x: horizontalInset, y: y, width: contentWidth, height: 18)
+            y += 21
+        }
+
+        let buttonSize: CGFloat = 28
+        let buttonY = max(14, contentFrame.height - buttonSize - 12)
+        copyButton.frame = CGRect(
+            x: contentFrame.width - horizontalInset - buttonSize,
+            y: buttonY,
+            width: buttonSize,
+            height: buttonSize
+        )
+        editButton.frame = CGRect(
+            x: copyButton.frame.minX - buttonSize - 8,
+            y: buttonY,
+            width: buttonSize,
+            height: buttonSize
+        )
+
+        var chipX = horizontalInset
+        let chipY = max(y + 10, contentFrame.height - 52)
+        let maxChipX = editButton.frame.minX - 10
+        for chip in chipLabels {
+            let fittingWidth = min(chip.intrinsicContentSize.width + 14, max(48, maxChipX - chipX))
+            guard chipX + fittingWidth <= maxChipX else {
+                chip.isHidden = true
+                continue
+            }
+            chip.isHidden = false
+            chip.frame = CGRect(x: chipX, y: chipY, width: fittingWidth, height: 20)
+            chipX += fittingWidth + 6
+        }
+        metadataLabel.frame = CGRect(
+            x: horizontalInset,
+            y: contentFrame.height - 27,
+            width: max(0, editButton.frame.minX - horizontalInset - 10),
+            height: 16
+        )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 {
+            selectAction?([])
+            previewAction?()
+        } else {
+            selectAction?(event.modifierFlags)
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        selectAction?(event.modifierFlags)
+        let menu = NSMenu()
+        menuTargets = []
+        addMenuItem("预览", symbolName: "eye", to: menu, action: previewAction)
+        addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu, action: openAction)
+        addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu, action: revealAction)
+        menu.addItem(.separator())
+        addMenuItem("编辑 Prompt", symbolName: "pencil", to: menu, action: editAction)
+        addMenuItem("复制文档信息", symbolName: "doc.on.doc", to: menu, action: copyAction)
+        addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu, action: copyPathAction)
+        menu.addItem(.separator())
+        addMenuItem("移到回收站", symbolName: "trash", to: menu, action: trashAction)
+        return menu
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = SubfolderCardMetrics.selectionCornerRadius
+        layer?.masksToBounds = false
+
+        contentView.wantsLayer = true
+        contentView.layer?.cornerRadius = AssetCardMetrics.cardCornerRadius
+        contentView.layer?.backgroundColor = NSColor(hex: 0x141414).cgColor
+        contentView.layer?.borderWidth = 1
+        contentView.layer?.borderColor = NSColor(hex: 0x363A3F).cgColor
+        addSubview(contentView)
+
+        configureLabel(titleLabel, font: .systemFont(ofSize: 15, weight: .medium), color: .white, lines: 2)
+        configureLabel(metadataLabel, font: .systemFont(ofSize: 11), color: NSColor(hex: 0xBDBEC0).withAlphaComponent(0.72), lines: 1)
+        contentView.addSubview(titleLabel)
+        contentView.addSubview(metadataLabel)
+
+        editButton.actionHandler = { [weak self] in self?.editAction?() }
+        copyButton.actionHandler = { [weak self] in self?.copyAction?() }
+        contentView.addSubview(editButton)
+        contentView.addSubview(copyButton)
+    }
+
+    private func apply(_ data: TextAssetCardData) {
+        titleLabel.stringValue = data.title
+        setSummaryLines(data.displaySummaryLines(limit: 3))
+        setChips(Array(data.chips.prefix(3)))
+        metadataLabel.stringValue = data.metadata
+        needsLayout = true
+    }
+
+    private func setSelected(_ isSelected: Bool) {
+        isCardSelected = isSelected
+        layer?.borderWidth = isSelected ? 1.5 : 0
+        layer?.borderColor = isSelected ? NSColor.white.withAlphaComponent(0.72).cgColor : NSColor.clear.cgColor
+    }
+
+    private func setSummaryLines(_ lines: [String]) {
+        while summaryLabels.count < lines.count {
+            let label = NSTextField(labelWithString: "")
+            configureLabel(label, font: .systemFont(ofSize: 12), color: NSColor(hex: 0xBDBEC0), lines: 1)
+            contentView.addSubview(label)
+            summaryLabels.append(label)
+        }
+        for (index, label) in summaryLabels.enumerated() {
+            label.isHidden = index >= lines.count
+            label.stringValue = index < lines.count ? lines[index] : ""
+        }
+    }
+
+    private func setChips(_ chips: [String]) {
+        chipLabels.forEach { $0.removeFromSuperview() }
+        chipLabels = chips.map { chip in
+            let label = NSTextField(labelWithString: chip)
+            configureLabel(label, font: .systemFont(ofSize: 10, weight: .medium), color: NSColor(hex: 0xBDBEC0), lines: 1)
+            label.alignment = .center
+            label.wantsLayer = true
+            label.layer?.cornerRadius = 7
+            label.layer?.backgroundColor = NSColor(hex: 0x1F1F1F).cgColor
+            label.layer?.borderWidth = 1
+            label.layer?.borderColor = NSColor(hex: 0x363A3F).cgColor
+            contentView.addSubview(label)
+            return label
+        }
+    }
+
+    private func configureLabel(_ label: NSTextField, font: NSFont, color: NSColor, lines: Int) {
+        label.font = font
+        label.textColor = color
+        label.maximumNumberOfLines = lines
+        label.lineBreakMode = .byTruncatingTail
+        label.isEditable = false
+        label.isBordered = false
+        label.drawsBackground = false
+    }
+
+    private func addMenuItem(_ title: String, symbolName: String, to menu: NSMenu, action: (() -> Void)?) {
+        guard let action else { return }
+        let target = NativeMarkdownMenuActionTarget(action: action)
+        menuTargets.append(target)
+        let item = NSMenuItem(title: title, action: #selector(NativeMarkdownMenuActionTarget.run), keyEquivalent: "")
+        item.target = target
+        item.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        menu.addItem(item)
+    }
+}
+
+private final class NativeMarkdownIconButton: NSButton {
+    var actionHandler: (() -> Void)?
+
+    init(symbolName: String, toolTip: String) {
+        super.init(frame: .zero)
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: toolTip)
+        self.toolTip = toolTip
+        title = ""
+        bezelStyle = .regularSquare
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.backgroundColor = NSColor(hex: 0x1F1F1F).cgColor
+        target = self
+        action = #selector(runAction)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    @objc private func runAction() {
+        actionHandler?()
+    }
+}
+
+private final class NativeMarkdownMenuActionTarget: NSObject {
+    private let actionHandler: () -> Void
+
+    init(action: @escaping () -> Void) {
+        self.actionHandler = action
+    }
+
+    @objc func run() {
+        actionHandler()
+    }
+}
+
+private extension NSColor {
+    convenience init(hex: UInt32) {
+        self.init(
+            calibratedRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
     }
 }
 

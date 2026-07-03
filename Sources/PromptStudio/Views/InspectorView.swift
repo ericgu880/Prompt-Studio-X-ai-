@@ -11,6 +11,7 @@ struct InspectorView: View {
     @State private var draftNegativePrompt = ""
     @State private var markdownDocumentText = ""
     @State private var markdownDocumentItemID = ""
+    @State private var markdownDocumentLoadTask: Task<Void, Never>?
     @State private var isPromptExpanded = false
     @State private var isNegativePromptExpanded = false
     @State private var mediaPromptHovered = false
@@ -43,6 +44,8 @@ struct InspectorView: View {
             if let item = state.items.first(where: { $0.id == selectedID }), item.isTextDocumentLike {
                 loadMarkdownDocument(item)
             } else {
+                markdownDocumentLoadTask?.cancel()
+                markdownDocumentLoadTask = nil
                 markdownDocumentText = ""
                 markdownDocumentItemID = ""
             }
@@ -56,6 +59,10 @@ struct InspectorView: View {
                   let item = state.selectedItem,
                   request.itemID == item.id else { return }
             startEditing(item)
+        }
+        .onDisappear {
+            markdownDocumentLoadTask?.cancel()
+            markdownDocumentLoadTask = nil
         }
     }
 
@@ -774,8 +781,20 @@ struct InspectorView: View {
 
     private func loadMarkdownDocument(_ item: PromptItem) {
         guard item.isTextDocumentLike, markdownDocumentItemID != item.id else { return }
-        markdownDocumentText = state.markdownDocumentText(for: item)
+        markdownDocumentLoadTask?.cancel()
+        markdownDocumentText = "正在加载文档..."
         markdownDocumentItemID = item.id
+        let itemID = item.id
+        let snapshot = MarkdownDocumentTextSnapshot(item: item)
+        markdownDocumentLoadTask = Task {
+            let text = await MarkdownDocumentTextCache.shared.text(snapshot: snapshot)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard markdownDocumentItemID == itemID else { return }
+                markdownDocumentText = text
+                markdownDocumentLoadTask = nil
+            }
+        }
     }
 
     private func markdownMetadata(for item: PromptItem) -> String {

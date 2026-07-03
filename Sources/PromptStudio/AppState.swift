@@ -28,6 +28,60 @@ struct TemporaryTextPreviewRequest: Identifiable, Equatable {
     let text: String
 }
 
+struct MarkdownDocumentTextSnapshot: Sendable {
+    let assetPath: String
+    let updatedAt: Date
+    let fallbackText: String
+
+    init(item: PromptItem) {
+        assetPath = item.assetPath
+        updatedAt = item.updatedAt
+        fallbackText = item.currentVersion?.prompt ?? ""
+    }
+}
+
+actor MarkdownDocumentTextCache {
+    static let shared = MarkdownDocumentTextCache()
+
+    private static let cacheLimit = 256
+    private var cachedTextByKey: [String: String] = [:]
+    private var cacheKeyOrder: [String] = []
+
+    func text(snapshot: MarkdownDocumentTextSnapshot) -> String {
+        let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        if let cached = cachedTextByKey[key] {
+            markKeyUsed(key)
+            return cached
+        }
+
+        let text = Self.loadText(snapshot: snapshot)
+        cachedTextByKey[key] = text
+        markKeyUsed(key)
+        enforceCacheLimit()
+        return text
+    }
+
+    private func markKeyUsed(_ key: String) {
+        cacheKeyOrder.removeAll { $0 == key }
+        cacheKeyOrder.append(key)
+    }
+
+    private func enforceCacheLimit() {
+        while cachedTextByKey.count > Self.cacheLimit, let oldestKey = cacheKeyOrder.first {
+            cacheKeyOrder.removeFirst()
+            cachedTextByKey.removeValue(forKey: oldestKey)
+        }
+    }
+
+    private static func loadText(snapshot: MarkdownDocumentTextSnapshot) -> String {
+        if !snapshot.assetPath.isEmpty,
+           let text = AppKitBridge.readDocumentText(from: URL(fileURLWithPath: snapshot.assetPath)) {
+            return text
+        }
+        return snapshot.fallbackText
+    }
+}
+
 enum PromptStudioExportFormat: String, CaseIterable, Identifiable {
     case imagePNG
     case imageJPEG
