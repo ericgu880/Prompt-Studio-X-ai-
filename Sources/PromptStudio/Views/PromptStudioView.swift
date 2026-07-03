@@ -4,6 +4,8 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 
+private let useNativeMasonryCollectionView = true
+
 struct PromptStudioView: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var shortcutStore: AppShortcutStore
@@ -2009,6 +2011,14 @@ private struct MainContentView: View {
                         EmptyStateView()
                     } else if state.isListView && childFolders.isEmpty {
                         PromptListView(items: state.filteredItems)
+                    } else if useNativeMasonryCollectionView {
+                        MasonryCollectionGridView(
+                            folders: childFolders,
+                            items: state.filteredItems,
+                            isSplitResizing: isSplitResizing,
+                            onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
+                        )
+                        .padding(.horizontal, Self.contentHorizontalInset)
                     } else {
                         MasonryGridView(
                             folders: childFolders,
@@ -2673,6 +2683,472 @@ private struct CompactFilterChip: View {
         .onHover { isHovered = $0 }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .accessibilityLabel("筛选：\(filter.title)")
+    }
+}
+
+private struct MasonryCollectionGridView: NSViewRepresentable {
+    @EnvironmentObject private var state: AppState
+    @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
+    let folders: [AppState.FolderRow]
+    let items: [PromptItem]
+    let isSplitResizing: Bool
+    let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let layout = MasonryCollectionLayout()
+        let collectionView = FlippedMasonryCollectionView(frame: .zero)
+        collectionView.collectionViewLayout = layout
+        collectionView.dataSource = context.coordinator
+        collectionView.delegate = context.coordinator
+        collectionView.register(
+            MasonryCollectionItem.self,
+            forItemWithIdentifier: MasonryCollectionItem.reuseIdentifier
+        )
+        collectionView.backgroundColors = [.clear]
+        collectionView.isSelectable = false
+        collectionView.allowsEmptySelection = true
+        collectionView.wantsLayer = true
+        collectionView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.documentView = collectionView
+
+        context.coordinator.collectionView = collectionView
+        context.coordinator.layout = layout
+        context.coordinator.observeBounds(of: scrollView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.update(
+            folders: folders,
+            items: items,
+            state: state,
+            thumbnailScale: thumbnailScale,
+            scrollView: scrollView,
+            onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
+        )
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.invalidateObservers()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
+        weak var collectionView: NSCollectionView?
+        weak var layout: MasonryCollectionLayout?
+        private weak var observedContentView: NSClipView?
+        private var boundsObserver: NSObjectProtocol?
+        private var state: AppState?
+        private var entries: [MasonryGridEntry] = []
+        private var itemWidth: CGFloat = 250
+        private var selectedFolderID: String?
+        private var lastReloadKey: ReloadKey?
+        private var lastEntryIDs: [String] = []
+        private var lastAvailableWidthBucket: Int?
+        private var currentThumbnailScale = 1.0
+        private var lastVisibleThumbnailCandidateIDs: [String] = []
+        private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
+
+        func invalidateObservers() {
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+                self.boundsObserver = nil
+            }
+        }
+
+        func observeBounds(of scrollView: NSScrollView) {
+            guard observedContentView !== scrollView.contentView else { return }
+            if let boundsObserver {
+                NotificationCenter.default.removeObserver(boundsObserver)
+            }
+            observedContentView = scrollView.contentView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.relayoutIfWidthChanged()
+                    self?.prepareVisibleThumbnails()
+                }
+            }
+        }
+
+        func update(
+            folders: [AppState.FolderRow],
+            items: [PromptItem],
+            state: AppState,
+            thumbnailScale: Double,
+            scrollView: NSScrollView,
+            onPreviewNavigationSnapshotChange: @escaping (PreviewNavigationSnapshot) -> Void
+        ) {
+            self.state = state
+            self.onPreviewNavigationSnapshotChange = onPreviewNavigationSnapshotChange
+            currentThumbnailScale = thumbnailScale
+            observeBounds(of: scrollView)
+
+            let availableWidth = max(1, scrollView.contentView.bounds.width)
+            lastAvailableWidthBucket = Self.widthBucket(for: availableWidth)
+            let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
+            let nextItemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
+            let nextEntries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
+            let nextEntryIDs = nextEntries.map(\.id)
+            let shouldResetScroll = !lastEntryIDs.isEmpty && nextEntryIDs != lastEntryIDs
+
+            entries = nextEntries
+            itemWidth = nextItemWidth
+            layout?.configure(entries: nextEntries, columnCount: columnCount, itemWidth: nextItemWidth)
+
+            let reloadKey = ReloadKey(
+                entries: nextEntries,
+                selectedFolderID: selectedFolderID,
+                widthBucket: Int((nextItemWidth * 100).rounded()),
+                columnCount: columnCount
+            )
+            if reloadKey != lastReloadKey {
+                collectionView?.reloadData()
+                lastReloadKey = reloadKey
+            }
+            lastEntryIDs = nextEntryIDs
+
+            if shouldResetScroll {
+                scrollView.contentView.scroll(to: .zero)
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+
+            onPreviewNavigationSnapshotChange(
+                PreviewNavigationSnapshot(visualItemIDs: layout?.visualItemIDs ?? [])
+            )
+            prepareVisibleThumbnails()
+        }
+
+        private func relayoutIfWidthChanged() {
+            guard let collectionView,
+                  let scrollView = collectionView.enclosingScrollView else {
+                return
+            }
+            let availableWidth = max(1, scrollView.contentView.bounds.width)
+            let widthBucket = Self.widthBucket(for: availableWidth)
+            guard widthBucket != lastAvailableWidthBucket else { return }
+
+            lastAvailableWidthBucket = widthBucket
+            let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
+            itemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
+            layout?.configure(entries: entries, columnCount: columnCount, itemWidth: itemWidth)
+            lastReloadKey = nil
+            collectionView.reloadData()
+            onPreviewNavigationSnapshotChange(
+                PreviewNavigationSnapshot(visualItemIDs: layout?.visualItemIDs ?? [])
+            )
+        }
+
+        func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+            entries.count
+        }
+
+        func collectionView(
+            _ collectionView: NSCollectionView,
+            itemForRepresentedObjectAt indexPath: IndexPath
+        ) -> NSCollectionViewItem {
+            let item = collectionView.makeItem(
+                withIdentifier: MasonryCollectionItem.reuseIdentifier,
+                for: indexPath
+            )
+            guard let masonryItem = item as? MasonryCollectionItem,
+                  entries.indices.contains(indexPath.item),
+                  let state else {
+                return item
+            }
+            masonryItem.configure(
+                entry: entries[indexPath.item],
+                width: itemWidth,
+                state: state,
+                selectedFolderID: selectedFolderID,
+                selectFolder: { [weak self] folderID in
+                    self?.selectFolderCard(folderID)
+                },
+                selectItem: { [weak self] item, modifiers in
+                    self?.selectItem(item, modifiers: modifiers)
+                }
+            )
+            return masonryItem
+        }
+
+        private func selectFolderCard(_ folderID: String) {
+            selectedFolderID = folderID
+            state?.selectItems(ids: [])
+            lastReloadKey = nil
+            collectionView?.reloadData()
+        }
+
+        private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags) {
+            selectedFolderID = nil
+            let visualItemIDs = layout?.visualItemIDs ?? entries.compactMap { entry in
+                guard case .item(let item) = entry else { return nil }
+                return item.id
+            }
+            let isCommand = modifiers.contains(.command)
+            let isShift = modifiers.contains(.shift)
+
+            guard let state,
+                  isShift,
+                  let anchorID = state.selectedID,
+                  let anchorIndex = visualItemIDs.firstIndex(of: anchorID),
+                  let targetIndex = visualItemIDs.firstIndex(of: item.id) else {
+                if isCommand {
+                    state?.toggleSelection(item)
+                } else {
+                    state?.select(item)
+                }
+                lastReloadKey = nil
+                collectionView?.reloadData()
+                return
+            }
+
+            let lowerBound = min(anchorIndex, targetIndex)
+            let upperBound = max(anchorIndex, targetIndex)
+            let rangeIDs = Set(visualItemIDs[lowerBound...upperBound])
+            let nextIDs = isCommand ? state.selectedIDs.union(rangeIDs) : rangeIDs
+            state.selectItems(ids: nextIDs, primaryID: item.id)
+            lastReloadKey = nil
+            collectionView?.reloadData()
+        }
+
+        private func prepareVisibleThumbnails() {
+            guard let collectionView, let state else { return }
+            let visibleRect = collectionView.visibleRect
+            let indexPaths = layout?.indexPathsForItems(in: visibleRect) ?? []
+            let candidateIDs = indexPaths.compactMap { indexPath -> String? in
+                guard entries.indices.contains(indexPath.item),
+                      case .item(let item) = entries[indexPath.item],
+                      item.supportsGeneratedThumbnail,
+                      !item.isTextDocumentLike,
+                      item.thumbnailPath.isEmpty
+                          || item.thumbnailPath == item.assetPath
+                          || !FileManager.default.fileExists(atPath: item.thumbnailPath) else {
+                    return nil
+                }
+                return item.id
+            }
+            guard candidateIDs != lastVisibleThumbnailCandidateIDs else { return }
+            lastVisibleThumbnailCandidateIDs = candidateIDs
+            state.prepareVisibleThumbnails(for: candidateIDs)
+        }
+
+        private static func columnCount(for availableWidth: CGFloat, thumbnailScale: Double) -> Int {
+            let targetWidth = 250 * CGFloat(thumbnailScale)
+            let proposed = Int((availableWidth + 12) / (targetWidth + 12))
+            return max(2, min(6, proposed))
+        }
+
+        private static func itemWidth(for availableWidth: CGFloat, columnCount: Int) -> CGFloat {
+            max(120, (availableWidth - CGFloat(columnCount - 1) * 12) / CGFloat(columnCount))
+        }
+
+        private static func widthBucket(for availableWidth: CGFloat) -> Int {
+            Int((availableWidth * 100).rounded())
+        }
+    }
+
+    private struct ReloadKey: Equatable {
+        let ids: [String]
+        let layoutHeights: [Int]
+        let contentVersions: [String]
+        let selectedFolderID: String?
+        let widthBucket: Int
+        let columnCount: Int
+
+        init(
+            entries: [MasonryGridEntry],
+            selectedFolderID: String?,
+            widthBucket: Int,
+            columnCount: Int
+        ) {
+            ids = entries.map(\.id)
+            layoutHeights = entries.map { Int(($0.totalHeight(width: CGFloat(widthBucket) / 100) * 100).rounded()) }
+            contentVersions = entries.map { entry in
+                switch entry {
+                case .folder(let row):
+                    return "\(row.folder.name)|\(row.count)"
+                case .item(let item):
+                    return "\(item.title)|\(item.thumbnailPath)|\(item.updatedAt.timeIntervalSinceReferenceDate)"
+                }
+            }
+            self.selectedFolderID = selectedFolderID
+            self.widthBucket = widthBucket
+            self.columnCount = columnCount
+        }
+    }
+}
+
+private final class MasonryCollectionLayout: NSCollectionViewLayout {
+    private let itemSpacing: CGFloat = 12
+    private var attributesByIndexPath: [IndexPath: NSCollectionViewLayoutAttributes] = [:]
+    private var visibleIndexPaths: [(IndexPath, CGRect)] = []
+    private var contentSize: CGSize = .zero
+    private(set) var visualItemIDs: [String] = []
+
+    func configure(entries: [MasonryGridEntry], columnCount: Int, itemWidth: CGFloat) {
+        attributesByIndexPath = [:]
+        visibleIndexPaths = []
+        visualItemIDs = []
+        guard columnCount > 0 else {
+            contentSize = .zero
+            invalidateLayout()
+            return
+        }
+
+        var columnHeights = Array(repeating: CGFloat.zero, count: columnCount)
+        var placements: [(entry: MasonryGridEntry, frame: CGRect)] = []
+        for (index, entry) in entries.enumerated() {
+            let column = shortestColumnIndex(in: columnHeights)
+            let height = entry.totalHeight(width: itemWidth)
+            let frame = CGRect(
+                x: CGFloat(column) * (itemWidth + itemSpacing),
+                y: columnHeights[column],
+                width: itemWidth,
+                height: height
+            )
+            let indexPath = IndexPath(item: index, section: 0)
+            let attributes = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
+            attributes.frame = frame
+            attributesByIndexPath[indexPath] = attributes
+            visibleIndexPaths.append((indexPath, frame))
+            placements.append((entry, frame))
+            columnHeights[column] += height + itemSpacing
+        }
+
+        let laidOutWidth = CGFloat(columnCount) * itemWidth + CGFloat(max(0, columnCount - 1)) * itemSpacing
+        contentSize = CGSize(
+            width: max(collectionView?.bounds.width ?? 0, laidOutWidth),
+            height: max(0, (columnHeights.max() ?? itemSpacing) - itemSpacing + 24)
+        )
+        visualItemIDs = placements
+            .compactMap { placement -> (id: String, x: CGFloat, y: CGFloat)? in
+                guard case .item(let item) = placement.entry else { return nil }
+                return (item.id, placement.frame.minX, placement.frame.minY)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.y - rhs.y) > 0.5 {
+                    return lhs.y < rhs.y
+                }
+                return lhs.x < rhs.x
+            }
+            .map(\.id)
+        invalidateLayout()
+    }
+
+    override var collectionViewContentSize: NSSize {
+        contentSize
+    }
+
+    override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
+        visibleIndexPaths.compactMap { indexPath, frame in
+            frame.intersects(rect) ? attributesByIndexPath[indexPath] : nil
+        }
+    }
+
+    override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
+        attributesByIndexPath[indexPath]
+    }
+
+    func indexPathsForItems(in rect: CGRect) -> [IndexPath] {
+        visibleIndexPaths.compactMap { indexPath, frame in
+            frame.intersects(rect) ? indexPath : nil
+        }
+    }
+
+    private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
+        heights.indices.min { lhs, rhs in
+            let leftHeight = heights[lhs]
+            let rightHeight = heights[rhs]
+            if leftHeight == rightHeight {
+                return lhs < rhs
+            }
+            return leftHeight < rightHeight
+        } ?? 0
+    }
+}
+
+private final class FlippedMasonryCollectionView: NSCollectionView {
+    override var isFlipped: Bool { true }
+}
+
+private final class MasonryCollectionItem: NSCollectionViewItem {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
+    private var hostingView: NSHostingView<AnyView>?
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    func configure(
+        entry: MasonryGridEntry,
+        width: CGFloat,
+        state: AppState,
+        selectedFolderID: String?,
+        selectFolder: @escaping (String) -> Void,
+        selectItem: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void
+    ) {
+        let height = entry.totalHeight(width: width)
+        let rootView: AnyView
+        switch entry {
+        case .folder(let row):
+            rootView = AnyView(
+                SubfolderCardView(
+                    row: row,
+                    width: width,
+                    isSelected: selectedFolderID == row.id,
+                    onSelect: {
+                        selectFolder(row.id)
+                    }
+                )
+                .environmentObject(state)
+                .frame(width: width, height: height)
+            )
+        case .item(let item):
+            rootView = AnyView(
+                AssetCardView(
+                    item: item,
+                    width: width,
+                    isReorderingEnabled: false,
+                    selectionAction: selectItem,
+                    reorderDragChangedAction: { _, _ in },
+                    reorderDragEndedAction: { _ in }
+                )
+                .environmentObject(state)
+                .coordinateSpace(name: MasonryGridView.gridCoordinateSpace)
+                .frame(width: width, height: height)
+            )
+        }
+
+        view.frame.size = CGSize(width: width, height: height)
+        if let hostingView {
+            hostingView.rootView = rootView
+            hostingView.frame = view.bounds
+        } else {
+            let hostingView = NSHostingView(rootView: rootView)
+            hostingView.frame = view.bounds
+            hostingView.autoresizingMask = [.width, .height]
+            hostingView.wantsLayer = true
+            hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+            view.addSubview(hostingView)
+            self.hostingView = hostingView
+        }
     }
 }
 
