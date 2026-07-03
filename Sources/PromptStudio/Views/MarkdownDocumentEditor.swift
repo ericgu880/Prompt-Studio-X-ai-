@@ -12,6 +12,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
     let revealsScrollerOnHover: Bool
     let onCopyAll: (() -> Void)?
     let onCopySelection: ((String) -> Void)?
+    let onBoundaryScroll: ((PreviewStepDirection) -> Void)?
 
     init(
         text: Binding<String>,
@@ -21,7 +22,8 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         syntaxMode: TextSyntaxMode = .markdown,
         revealsScrollerOnHover: Bool = false,
         onCopyAll: (() -> Void)? = nil,
-        onCopySelection: ((String) -> Void)? = nil
+        onCopySelection: ((String) -> Void)? = nil,
+        onBoundaryScroll: ((PreviewStepDirection) -> Void)? = nil
     ) {
         self._text = text
         self.isEditable = isEditable
@@ -31,6 +33,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         self.revealsScrollerOnHover = revealsScrollerOnHover
         self.onCopyAll = onCopyAll
         self.onCopySelection = onCopySelection
+        self.onBoundaryScroll = onBoundaryScroll
     }
 
     func makeCoordinator() -> Coordinator {
@@ -46,6 +49,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.string = text
         textView.isEditable = isEditable
+        containerView.onBoundaryScroll = onBoundaryScroll
         containerView.setCopyHandlers(onCopyAll: onCopyAll, onCopySelection: onCopySelection, isEditable: isEditable)
         TextSyntaxHighlighter.apply(to: textView, mode: syntaxMode, contentFontSize: contentFontSize)
         if let scrollResetID {
@@ -62,6 +66,7 @@ struct MarkdownDocumentEditor: NSViewRepresentable {
         textView.isEditable = isEditable
         textView.insertionPointColor = MarkdownEditorPalette.strongText
         containerView.setRevealScrollerOnHover(revealsScrollerOnHover)
+        containerView.onBoundaryScroll = onBoundaryScroll
         containerView.setCopyHandlers(onCopyAll: onCopyAll, onCopySelection: onCopySelection, isEditable: isEditable)
         let fontSizeChanged = containerView.updateContentFontSize(contentFontSize)
         let syntaxModeChanged = context.coordinator.lastSyntaxMode != syntaxMode
@@ -118,9 +123,16 @@ final class MarkdownEditorContainerView: NSView {
     let textView: CopyingMarkdownTextView
     let scrollView: NSScrollView
     let gutterView: MarkdownLineNumberGutterView
+    var onBoundaryScroll: ((PreviewStepDirection) -> Void)?
 
     private let gutterWidth: CGFloat = 44
     private(set) var contentFontSize: CGFloat
+    private var boundaryScrollMonitor: LocalEventMonitor?
+    private var boundaryScrollAccumulator: CGFloat = 0
+    private var boundaryScrollSign: CGFloat = 0
+    private var lastBoundaryScrollTime: TimeInterval = 0
+    private static let boundaryScrollThreshold: CGFloat = 18
+    private static let boundaryScrollCooldown: TimeInterval = 0.08
 
     init(
         contentFontSize: CGFloat = 14,
@@ -191,6 +203,7 @@ final class MarkdownEditorContainerView: NSView {
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
         )
+        installBoundaryScrollMonitor()
     }
 
     func updateContentFontSize(_ size: CGFloat) -> Bool {
@@ -251,6 +264,104 @@ final class MarkdownEditorContainerView: NSView {
             scrollView.contentView.scroll(to: .zero)
             scrollView.reflectScrolledClipView(scrollView.contentView)
             gutterView.needsDisplay = true
+        }
+    }
+
+    private func installBoundaryScrollMonitor() {
+        boundaryScrollMonitor = LocalEventMonitor(matching: .scrollWheel) { [weak self] event in
+            guard let self,
+                  self.onBoundaryScroll != nil,
+                  Self.isPlainScroll(event),
+                  self.isEventInsideDocumentScrollView(event) else {
+                self?.resetBoundaryScroll()
+                return event
+            }
+
+            guard let direction = self.boundaryDirection(for: event) else {
+                self.resetBoundaryScroll()
+                return event
+            }
+
+            self.handleBoundaryScroll(direction: direction, delta: Self.verticalScrollDelta(for: event), timestamp: event.timestamp)
+            return nil
+        }
+    }
+
+    private func isEventInsideDocumentScrollView(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window else { return false }
+        let pointInWindow = event.locationInWindow
+        let localPoint = scrollView.convert(pointInWindow, from: nil)
+        return scrollView.bounds.contains(localPoint)
+    }
+
+    private func boundaryDirection(for event: NSEvent) -> PreviewStepDirection? {
+        let delta = Self.verticalScrollDelta(for: event)
+        guard delta != 0 else { return nil }
+        if delta < 0, isScrolledToBottom {
+            return .next
+        }
+        if delta > 0, isScrolledToTop {
+            return .previous
+        }
+        return nil
+    }
+
+    private var isScrolledToTop: Bool {
+        scrollView.contentView.bounds.origin.y <= 1
+    }
+
+    private var isScrolledToBottom: Bool {
+        let viewportHeight = scrollView.contentView.bounds.height
+        let contentHeight = scrollView.documentView?.bounds.height ?? 0
+        guard contentHeight > viewportHeight + 1 else { return true }
+        return scrollView.contentView.bounds.maxY >= contentHeight - 1
+    }
+
+    private func handleBoundaryScroll(direction: PreviewStepDirection, delta: CGFloat, timestamp: TimeInterval) {
+        let sign: CGFloat = delta < 0 ? -1 : 1
+        if sign != boundaryScrollSign {
+            boundaryScrollAccumulator = 0
+            boundaryScrollSign = sign
+        }
+
+        boundaryScrollAccumulator += delta
+        guard abs(boundaryScrollAccumulator) >= Self.boundaryScrollThreshold else { return }
+
+        if timestamp - lastBoundaryScrollTime >= Self.boundaryScrollCooldown {
+            onBoundaryScroll?(direction)
+            lastBoundaryScrollTime = timestamp
+            boundaryScrollAccumulator = 0
+        } else {
+            boundaryScrollAccumulator = sign * Self.boundaryScrollThreshold
+        }
+    }
+
+    private func resetBoundaryScroll() {
+        boundaryScrollAccumulator = 0
+        boundaryScrollSign = 0
+    }
+
+    private static func isPlainScroll(_ event: NSEvent) -> Bool {
+        let reservedModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        return event.modifierFlags.intersection(reservedModifiers).isEmpty
+    }
+
+    private static func verticalScrollDelta(for event: NSEvent) -> CGFloat {
+        let delta = event.scrollingDeltaY == 0 ? -event.deltaY : event.scrollingDeltaY
+        return CGFloat(delta)
+    }
+}
+
+private final class LocalEventMonitor {
+    private var monitor: Any?
+
+    init(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> NSEvent?) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)
+    }
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
         }
     }
 }

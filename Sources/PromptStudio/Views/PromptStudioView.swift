@@ -254,7 +254,9 @@ struct PromptStudioView: View {
 
     private func selectPreviewRailItem(_ itemID: String) {
         guard let item = state.items.first(where: { $0.id == itemID && !$0.isDeleted }) else { return }
+        let start = DebugPerformanceProbe.now()
         state.select(item)
+        DebugPerformanceProbe.recordDuration("preview.selection.update.ms", startedAt: start)
     }
 
     private func navigatePreviewStep(_ direction: PreviewStepDirection) {
@@ -263,7 +265,9 @@ struct PromptStudioView: View {
               let nextItem = state.items.first(where: { $0.id == nextID && !$0.isDeleted }) else {
             return
         }
+        let start = DebugPerformanceProbe.now()
         state.select(nextItem)
+        DebugPerformanceProbe.recordDuration("preview.selection.update.ms", startedAt: start)
     }
 
     private func constrainedLayout(totalWidth: CGFloat) -> (sidebar: CGFloat, inspector: CGFloat) {
@@ -2705,6 +2709,7 @@ private struct MasonryGridView: View {
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
             let renderedPlacements = layout.placements.filter { $0.intersectsYRange(renderRange) }
             let visibleThumbnailCandidateIDs = thumbnailCandidateIDs(in: renderedPlacements)
+            let _ = recordMasonryRenderSample(renderedPlacementsCount: renderedPlacements.count, thumbnailCandidateCount: visibleThumbnailCandidateIDs.count)
             let scrollContentHeight = max(layout.height + Self.contentBottomPadding, proxy.size.height)
             let gridContentHeight = max(1, scrollContentHeight - Self.contentBottomPadding)
             TransparentOverlayScrollView(
@@ -2713,7 +2718,10 @@ private struct MasonryGridView: View {
                 verticalScrollerRightInset: -Self.scrollbarLaneWidth,
                 revealsScrollerOnHover: true,
                 onOffsetChange: { offsetY in
-                    contentOffsetY = offsetY
+                    DebugPerformanceProbe.record("masonry.offset.event")
+                    let nextOffsetY = quantizedRenderOffset(offsetY)
+                    guard nextOffsetY != contentOffsetY else { return }
+                    contentOffsetY = nextOffsetY
                 }
             ) {
                 ZStack(alignment: .topLeading) {
@@ -2821,6 +2829,7 @@ private struct MasonryGridView: View {
                 clearItemReorder()
             }
             .task(id: visibleThumbnailCandidateIDs) {
+                DebugPerformanceProbe.record("masonry.thumbnail.prefetch.count", value: Double(visibleThumbnailCandidateIDs.count))
                 state.prepareVisibleThumbnails(for: visibleThumbnailCandidateIDs)
             }
             .onChange(of: isSplitResizing) { _, resizing in
@@ -2852,9 +2861,21 @@ private struct MasonryGridView: View {
     fileprivate static let gridCoordinateSpace = "masonry-grid-coordinate-space"
     private static let scrollbarLaneWidth: CGFloat = 18
     private static let contentBottomPadding: CGFloat = 24
+    private static let renderOffsetBucket: CGFloat = 12
 
     private func gridContentWidth(for availableWidth: CGFloat) -> CGFloat {
         max(0, availableWidth)
+    }
+
+    private func quantizedRenderOffset(_ offsetY: CGFloat) -> CGFloat {
+        let clamped = max(0, offsetY)
+        return floor(clamped / Self.renderOffsetBucket) * Self.renderOffsetBucket
+    }
+
+    private func recordMasonryRenderSample(renderedPlacementsCount: Int, thumbnailCandidateCount: Int) -> Bool {
+        DebugPerformanceProbe.record("masonry.rendered.placements.count", value: Double(renderedPlacementsCount))
+        DebugPerformanceProbe.record("masonry.visible.thumbnail.candidates.count", value: Double(thumbnailCandidateCount))
+        return true
     }
 
     private func previewNavigationSnapshot(for layout: MasonryLayoutResult) -> PreviewNavigationSnapshot {

@@ -1,5 +1,6 @@
 import AVKit
 import AppKit
+import ImageIO
 import SwiftUI
 import PromptStudioCore
 import UniformTypeIdentifiers
@@ -56,7 +57,8 @@ struct ImmersivePreviewOverlay: View {
                 MarkdownDocumentPreviewContent(
                     item: item,
                     railItems: railItems,
-                    onSelectRailItemID: onSelectRailItemID
+                    onSelectRailItemID: onSelectRailItemID,
+                    onNavigateStep: onNavigateStep
                 )
                     .environmentObject(state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,6 +69,11 @@ struct ImmersivePreviewOverlay: View {
                         from: railItems,
                         currentItemID: item.id,
                         availableHeight: proxy.size.height
+                    )
+                    let railThumbnailPrefetchIDs = PreviewRailVisibleWindow.prefetchItemIDs(
+                        from: railItems,
+                        currentItemID: item.id,
+                        visibleItemIDs: visibleRailItems.map(\.id)
                     )
                     HStack(spacing: 0) {
                         previewMedia
@@ -83,8 +90,9 @@ struct ImmersivePreviewOverlay: View {
                             )
                             .frame(width: PreviewThumbnailRail.railWidth)
                             .frame(maxHeight: .infinity)
-                            .task(id: visibleRailItems.map(\.id)) {
-                                state.prepareVisibleThumbnails(for: visibleRailItems.map(\.id))
+                            .task(id: railThumbnailPrefetchIDs) {
+                                DebugPerformanceProbe.record("preview.rail.thumbnail.prefetch.count", value: Double(railThumbnailPrefetchIDs.count))
+                                state.prepareVisibleThumbnails(for: railThumbnailPrefetchIDs)
                             }
                         }
 
@@ -135,6 +143,9 @@ struct ImmersivePreviewOverlay: View {
         .onChange(of: item.id) { _, _ in
             resetImageTransform()
         }
+        .task(id: previewImagePreloadPaths(currentID: item.id)) {
+            await OverlayImageLoader.preload(paths: previewImagePreloadPaths(currentID: item.id))
+        }
     }
 
     private func shouldShowRail(size: CGSize) -> Bool {
@@ -148,6 +159,24 @@ struct ImmersivePreviewOverlay: View {
     private func resetImageTransform() {
         imageScale = 1.0
         imageOffset = .zero
+    }
+
+    private func previewImagePreloadPaths(currentID: String) -> [String] {
+        guard item.assetKind == .image,
+              let currentIndex = railItems.firstIndex(where: { $0.id == currentID }) else {
+            return []
+        }
+
+        let lowerBound = max(0, currentIndex - 3)
+        let upperBound = min(railItems.count - 1, currentIndex + 3)
+        var paths: [String] = []
+        var seen = Set<String>()
+        for railItem in railItems[lowerBound...upperBound] where railItem.item.assetKind == .image {
+            let path = railItem.item.assetPath
+            guard !path.isEmpty, seen.insert(path).inserted else { continue }
+            paths.append(path)
+        }
+        return paths
     }
 
     private var activeImageOffset: CGSize {
@@ -370,6 +399,7 @@ private struct MarkdownDocumentPreviewContent: View {
     let item: PromptItem
     let railItems: [PreviewRailItem]
     let onSelectRailItemID: (String) -> Void
+    let onNavigateStep: (PreviewStepDirection) -> Void
     @State private var text = ""
     @State private var loadedItemID = ""
 
@@ -380,6 +410,11 @@ private struct MarkdownDocumentPreviewContent: View {
                 from: railItems,
                 currentItemID: item.id,
                 availableHeight: proxy.size.height
+            )
+            let railThumbnailPrefetchIDs = PreviewRailVisibleWindow.prefetchItemIDs(
+                from: railItems,
+                currentItemID: item.id,
+                visibleItemIDs: visibleRailItems.map(\.id)
             )
             HStack(spacing: 0) {
                 editorPane
@@ -396,8 +431,9 @@ private struct MarkdownDocumentPreviewContent: View {
                     )
                     .frame(width: PreviewThumbnailRail.railWidth)
                     .frame(maxHeight: .infinity)
-                    .task(id: visibleRailItems.map(\.id)) {
-                        state.prepareVisibleThumbnails(for: visibleRailItems.map(\.id))
+                    .task(id: railThumbnailPrefetchIDs) {
+                        DebugPerformanceProbe.record("preview.rail.thumbnail.prefetch.count", value: Double(railThumbnailPrefetchIDs.count))
+                        state.prepareVisibleThumbnails(for: railThumbnailPrefetchIDs)
                     }
                 }
 
@@ -427,7 +463,8 @@ private struct MarkdownDocumentPreviewContent: View {
                 isEditable: false,
                 scrollResetID: item.id,
                 contentFontSize: 13,
-                syntaxMode: TextSyntaxMode.infer(for: item)
+                syntaxMode: TextSyntaxMode.infer(for: item),
+                onBoundaryScroll: onNavigateStep
             )
 
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2808,12 +2845,74 @@ private struct OverlayImagePreview: View {
 
 @MainActor
 private final class OverlayImageLoader: ObservableObject {
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 24
+        cache.totalCostLimit = 180 * 1_024 * 1_024
+        return cache
+    }()
+
     @Published var image: NSImage?
 
     func load(_ path: String) async {
-        image = await Task.detached(priority: .utility) {
-            NSImage(contentsOfFile: path)
+        let key = path as NSString
+        if let cached = Self.cache.object(forKey: key) {
+            DebugPerformanceProbe.record("preview.image.cache.hit")
+            image = cached
+            return
+        }
+
+        let start = DebugPerformanceProbe.now()
+        let loaded = await Task.detached(priority: .userInitiated) {
+            Self.decodedImage(path: path)
         }.value
+        guard !Task.isCancelled else { return }
+        if let loaded {
+            Self.cache.setObject(loaded, forKey: key, cost: Self.imageCost(loaded))
+        }
+        DebugPerformanceProbe.recordDuration("preview.image.decode.ms", startedAt: start)
+        image = loaded
+    }
+
+    static func preload(paths: [String]) async {
+        guard !paths.isEmpty else { return }
+        DebugPerformanceProbe.record("preview.image.prefetch.count", value: Double(paths.count))
+        for path in paths {
+            let key = path as NSString
+            guard cache.object(forKey: key) == nil else { continue }
+            let loaded = await Task.detached(priority: .utility) {
+                Self.decodedImage(path: path)
+            }.value
+            guard !Task.isCancelled else { return }
+            if let loaded {
+                cache.setObject(loaded, forKey: key, cost: Self.imageCost(loaded))
+            }
+        }
+    }
+
+    nonisolated private static func decodedImage(path: String) -> NSImage? {
+        let url = URL(fileURLWithPath: path) as CFURL
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url, sourceOptions) else {
+            return NSImage(contentsOfFile: path)
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_400,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            return NSImage(contentsOfFile: path)
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    nonisolated private static func imageCost(_ image: NSImage) -> Int {
+        let width = max(1, Int(image.size.width))
+        let height = max(1, Int(image.size.height))
+        return width * height * 4
     }
 }
 
@@ -2839,6 +2938,29 @@ private enum PreviewRailVisibleWindow {
         let lowerBound = max(0, currentIndex - itemsEachSide)
         let upperBound = min(items.count - 1, currentIndex + itemsEachSide)
         return Array(items[lowerBound...upperBound])
+    }
+
+    static func prefetchItemIDs(
+        from items: [PreviewRailItem],
+        currentItemID: String,
+        visibleItemIDs: [String]
+    ) -> [String] {
+        guard let currentIndex = items.firstIndex(where: { $0.id == currentItemID }) else {
+            return visibleItemIDs
+        }
+
+        var orderedIDs: [String] = []
+        var seen = Set<String>()
+        func append(_ id: String) {
+            guard seen.insert(id).inserted else { return }
+            orderedIDs.append(id)
+        }
+
+        visibleItemIDs.forEach(append)
+        let lowerBound = max(0, currentIndex - 8)
+        let upperBound = min(items.count - 1, currentIndex + 8)
+        items[lowerBound...upperBound].map(\.id).forEach(append)
+        return orderedIDs
     }
 }
 
@@ -2943,7 +3065,7 @@ private struct PreviewThumbnailRail: View {
             onSelect(railItem.id)
         } label: {
             ZStack(alignment: .bottomTrailing) {
-                AssetMediaView(item: railItem.item, contentMode: .fit)
+                AssetMediaView(item: railItem.item, contentMode: .fill)
                     .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
                     .background(StudioColor.panelRaised)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -3218,8 +3340,8 @@ private struct PreviewInputMonitor: NSViewRepresentable {
         private var scrollNavigationAccumulator: CGFloat = 0
         private var scrollNavigationSign: CGFloat = 0
         private var lastScrollNavigationTime: TimeInterval = 0
-        private static let scrollNavigationThreshold: CGFloat = 18
-        private static let scrollNavigationCooldown: TimeInterval = 0.08
+        private static let scrollNavigationThreshold: CGFloat = 8
+        private static let scrollNavigationCooldown: TimeInterval = 0.055
 
         init(
             onExit: @escaping () -> Void,
@@ -3259,6 +3381,7 @@ private struct PreviewInputMonitor: NSViewRepresentable {
             if scrollMonitor == nil {
                 scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
                     guard let self else { return event }
+                    DebugPerformanceProbe.record("preview.scroll.event")
                     if event.modifierFlags.contains(.command) {
                         self.resetScrollNavigation()
                         guard !Self.isTextInputActive() else { return event }
@@ -3278,8 +3401,8 @@ private struct PreviewInputMonitor: NSViewRepresentable {
                         self.resetScrollNavigation()
                         return event
                     }
-                    let rawDelta = Self.verticalScrollDelta(for: event)
-                    self.handleScrollNavigation(delta: rawDelta, timestamp: event.timestamp)
+                    let navigationDelta = Self.navigationScrollDelta(for: event)
+                    self.handleScrollNavigation(delta: navigationDelta, timestamp: event.timestamp)
                     return nil
                 }
             }
@@ -3297,6 +3420,7 @@ private struct PreviewInputMonitor: NSViewRepresentable {
             guard abs(scrollNavigationAccumulator) >= Self.scrollNavigationThreshold else { return }
 
             if timestamp - lastScrollNavigationTime >= Self.scrollNavigationCooldown {
+                DebugPerformanceProbe.record("preview.scroll.navigate")
                 onNavigateStep(scrollNavigationAccumulator < 0 ? .next : .previous)
                 lastScrollNavigationTime = timestamp
                 scrollNavigationAccumulator = 0
@@ -3324,6 +3448,14 @@ private struct PreviewInputMonitor: NSViewRepresentable {
         private static func verticalScrollDelta(for event: NSEvent) -> CGFloat {
             let delta = event.scrollingDeltaY == 0 ? -event.deltaY : event.scrollingDeltaY
             return CGFloat(delta)
+        }
+
+        private static func navigationScrollDelta(for event: NSEvent) -> CGFloat {
+            let rawDelta = verticalScrollDelta(for: event)
+            guard rawDelta != 0 else { return 0 }
+            guard !event.hasPreciseScrollingDeltas else { return rawDelta }
+            let magnitude = max(abs(rawDelta), scrollNavigationThreshold)
+            return rawDelta < 0 ? -magnitude : magnitude
         }
 
         private static func shouldPreserveScrollableTarget(for event: NSEvent) -> Bool {
