@@ -4379,21 +4379,34 @@ private actor TextAssetCardDataCache {
 
     private static let previewByteLimit = 32 * 1024
     private static let previewCharacterLimit = 8_000
+    private static let cacheLimit = 512
     private var cachedDataByKey: [String: TextAssetCardData] = [:]
+    private var cacheKeyOrder: [String] = []
 
     func data(snapshot: TextAssetCardSnapshot) -> TextAssetCardData {
         let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
         if let cached = cachedDataByKey[key] {
+            markKeyUsed(key)
             return cached
         }
         let loadedText = Self.loadPreviewText(path: snapshot.assetPath, fallback: snapshot.fallbackText)
         let data = TextAssetCardData(snapshot: snapshot, text: loadedText)
         cachedDataByKey[key] = data
-        if cachedDataByKey.count > 160 {
-            cachedDataByKey.removeAll(keepingCapacity: true)
-            cachedDataByKey[key] = data
-        }
+        markKeyUsed(key)
+        enforceCacheLimit()
         return data
+    }
+
+    private func markKeyUsed(_ key: String) {
+        cacheKeyOrder.removeAll { $0 == key }
+        cacheKeyOrder.append(key)
+    }
+
+    private func enforceCacheLimit() {
+        while cachedDataByKey.count > Self.cacheLimit, let oldestKey = cacheKeyOrder.first {
+            cacheKeyOrder.removeFirst()
+            cachedDataByKey.removeValue(forKey: oldestKey)
+        }
     }
 
     private static func loadPreviewText(path: String, fallback: String) -> String {

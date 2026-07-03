@@ -2456,7 +2456,6 @@ final class AppState: ObservableObject {
         let libraryURL = libraryURL
         var candidates: [PromptItem] = []
         var existingGenerated: [(String, String)] = []
-        var invalidatedGenerated: [(String, String)] = []
         for item in items {
             guard item.supportsGeneratedThumbnail else { continue }
             if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
@@ -2465,15 +2464,10 @@ final class AppState: ObservableObject {
                 }
                 continue
             }
-            if item.isTextDocumentLike {
-                ThumbnailService.invalidateGeneratedThumbnail(for: item, libraryURL: libraryURL)
-                if item.thumbnailPath != item.assetPath {
-                    invalidatedGenerated.append((item.id, item.assetPath))
-                }
-                candidates.append(item)
-            }
+            guard !item.isTextDocumentLike else { continue }
+            candidates.append(item)
         }
-        applyGeneratedThumbnails(existingGenerated + invalidatedGenerated)
+        applyGeneratedThumbnails(existingGenerated)
         guard !candidates.isEmpty else { return }
         startThumbnailGeneration(for: candidates)
     }
