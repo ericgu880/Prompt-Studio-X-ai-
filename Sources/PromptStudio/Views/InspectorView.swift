@@ -12,6 +12,7 @@ struct InspectorView: View {
     @State private var markdownDocumentText = ""
     @State private var markdownDocumentItemID = ""
     @State private var markdownDocumentLoadTask: Task<Void, Never>?
+    @State private var isMarkdownDocumentLoading = false
     @State private var isPromptExpanded = false
     @State private var isNegativePromptExpanded = false
     @State private var mediaPromptHovered = false
@@ -48,6 +49,7 @@ struct InspectorView: View {
                 markdownDocumentLoadTask = nil
                 markdownDocumentText = ""
                 markdownDocumentItemID = ""
+                isMarkdownDocumentLoading = false
             }
             isPromptExpanded = false
             isNegativePromptExpanded = false
@@ -63,6 +65,7 @@ struct InspectorView: View {
         .onDisappear {
             markdownDocumentLoadTask?.cancel()
             markdownDocumentLoadTask = nil
+            isMarkdownDocumentLoading = false
         }
     }
 
@@ -784,24 +787,30 @@ struct InspectorView: View {
         markdownDocumentLoadTask?.cancel()
         markdownDocumentText = "正在加载文档..."
         markdownDocumentItemID = item.id
+        isMarkdownDocumentLoading = true
         let itemID = item.id
         let snapshot = MarkdownDocumentTextSnapshot(item: item)
         markdownDocumentLoadTask = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
             let text = await MarkdownDocumentTextCache.shared.text(snapshot: snapshot)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard markdownDocumentItemID == itemID else { return }
                 markdownDocumentText = text
+                isMarkdownDocumentLoading = false
                 markdownDocumentLoadTask = nil
             }
         }
     }
 
     private func markdownMetadata(for item: PromptItem) -> String {
-        let lineCount = max(1, activeMarkdownText.components(separatedBy: .newlines).count)
+        let lineCountText = isMarkdownDocumentLoading
+            ? "加载中"
+            : "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行"
         let fileName = URL(fileURLWithPath: item.assetPath).lastPathComponent
         let format = item.format.isEmpty ? "MD" : item.format
-        return [format, "\(lineCount) 行", fileSizeText(item.fileSize), fileName]
+        return [format, lineCountText, fileSizeText(item.fileSize), fileName]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
     }

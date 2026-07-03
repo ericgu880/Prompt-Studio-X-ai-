@@ -2753,12 +2753,13 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var entries: [MasonryGridEntry] = []
         private var itemWidth: CGFloat = 250
         private var selectedFolderID: String?
-        private var lastReloadKey: ReloadKey?
+        private var lastLayoutInputKey: LayoutInputKey?
         private var lastEntryIDs: [String] = []
         private var itemIndexPathsByID: [String: IndexPath] = [:]
         private var folderIndexPathsByID: [String: IndexPath] = [:]
         private var lastRenderedSelectedItemIDs: Set<String> = []
         private var lastAvailableWidthBucket: Int?
+        private var lastPreviewVisualItemIDs: [String] = []
         private var currentThumbnailScale = 1.0
         private var lastVisibleThumbnailCandidateIDs: [String] = []
         private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
@@ -2803,9 +2804,23 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             observeBounds(of: scrollView)
 
             let availableWidth = max(1, scrollView.contentView.bounds.width)
-            lastAvailableWidthBucket = Self.widthBucket(for: availableWidth)
+            let widthBucket = Self.widthBucket(for: availableWidth)
+            lastAvailableWidthBucket = widthBucket
             let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
             let nextItemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
+            let layoutInputKey = LayoutInputKey(
+                folders: folders,
+                items: items,
+                widthBucket: widthBucket,
+                columnCount: columnCount,
+                thumbnailScaleBucket: Int((thumbnailScale * 100).rounded())
+            )
+            guard layoutInputKey != lastLayoutInputKey else {
+                syncExternalSelectionChange(state.selectedIDs)
+                prepareVisibleThumbnails()
+                return
+            }
+
             let nextEntries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
             let nextEntryIDs = nextEntries.map(\.id)
             let shouldResetScroll = !lastEntryIDs.isEmpty && nextEntryIDs != lastEntryIDs
@@ -2814,20 +2829,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             rebuildIndexPathMaps()
             itemWidth = nextItemWidth
             layout?.configure(entries: nextEntries, columnCount: columnCount, itemWidth: nextItemWidth)
-
-            let reloadKey = ReloadKey(
-                entries: nextEntries,
-                selectedFolderID: selectedFolderID,
-                widthBucket: Int((nextItemWidth * 100).rounded()),
-                columnCount: columnCount
-            )
-            if reloadKey != lastReloadKey {
-                collectionView?.reloadData()
-                lastReloadKey = reloadKey
-                lastRenderedSelectedItemIDs = state.selectedIDs
-            } else {
-                syncExternalSelectionChange(state.selectedIDs)
-            }
+            collectionView?.reloadData()
+            lastLayoutInputKey = layoutInputKey
+            lastRenderedSelectedItemIDs = state.selectedIDs
             lastEntryIDs = nextEntryIDs
 
             if shouldResetScroll {
@@ -2835,9 +2839,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 scrollView.reflectScrolledClipView(scrollView.contentView)
             }
 
-            onPreviewNavigationSnapshotChange(
-                PreviewNavigationSnapshot(visualItemIDs: layout?.visualItemIDs ?? [])
-            )
+            publishPreviewNavigationSnapshotIfNeeded()
             prepareVisibleThumbnails()
         }
 
@@ -2854,11 +2856,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
             itemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
             layout?.configure(entries: entries, columnCount: columnCount, itemWidth: itemWidth)
-            lastReloadKey = nil
+            lastLayoutInputKey = nil
             collectionView.reloadData()
-            onPreviewNavigationSnapshotChange(
-                PreviewNavigationSnapshot(visualItemIDs: layout?.visualItemIDs ?? [])
-            )
+            publishPreviewNavigationSnapshotIfNeeded()
         }
 
         private func rebuildIndexPathMaps() {
@@ -3002,7 +3002,36 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 }
             }
             guard !indexPaths.isEmpty else { return }
-            collectionView?.reloadItems(at: indexPaths)
+            var reloadIndexPaths = Set<IndexPath>()
+            for indexPath in indexPaths {
+                guard entries.indices.contains(indexPath.item) else { continue }
+                switch entries[indexPath.item] {
+                case .item(let item) where item.isTextDocumentLike:
+                    updateVisibleMarkdownSelection(itemID: item.id, isSelected: nextItemIDs.contains(item.id))
+                default:
+                    reloadIndexPaths.insert(indexPath)
+                }
+            }
+            if !reloadIndexPaths.isEmpty {
+                collectionView?.reloadItems(at: reloadIndexPaths)
+            }
+        }
+
+        private func updateVisibleMarkdownSelection(itemID: String, isSelected: Bool) {
+            guard let indexPath = itemIndexPathsByID[itemID],
+                  let item = collectionView?.item(at: indexPath) as? MasonryCollectionItem else {
+                return
+            }
+            item.setMarkdownSelected(isSelected)
+        }
+
+        private func publishPreviewNavigationSnapshotIfNeeded() {
+            let visualItemIDs = layout?.visualItemIDs ?? []
+            guard visualItemIDs != lastPreviewVisualItemIDs else { return }
+            lastPreviewVisualItemIDs = visualItemIDs
+            onPreviewNavigationSnapshotChange(
+                PreviewNavigationSnapshot(visualItemIDs: visualItemIDs)
+            )
         }
 
         private func prepareVisibleThumbnails() {
@@ -3041,33 +3070,61 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         }
     }
 
-    private struct ReloadKey: Equatable {
-        let ids: [String]
-        let layoutHeights: [Int]
-        let contentVersions: [String]
-        let selectedFolderID: String?
+    private struct LayoutInputKey: Equatable {
+        let folderKeys: [FolderKey]
+        let itemKeys: [ItemKey]
         let widthBucket: Int
         let columnCount: Int
+        let thumbnailScaleBucket: Int
 
         init(
-            entries: [MasonryGridEntry],
-            selectedFolderID: String?,
+            folders: [AppState.FolderRow],
+            items: [PromptItem],
             widthBucket: Int,
-            columnCount: Int
+            columnCount: Int,
+            thumbnailScaleBucket: Int
         ) {
-            ids = entries.map(\.id)
-            layoutHeights = entries.map { Int(($0.totalHeight(width: CGFloat(widthBucket) / 100) * 100).rounded()) }
-            contentVersions = entries.map { entry in
-                switch entry {
-                case .folder(let row):
-                    return "\(row.folder.name)|\(row.count)"
-                case .item(let item):
-                    return "\(item.title)|\(item.thumbnailPath)|\(item.updatedAt.timeIntervalSinceReferenceDate)"
-                }
-            }
-            self.selectedFolderID = selectedFolderID
+            folderKeys = folders.map(FolderKey.init)
+            itemKeys = items.map(ItemKey.init)
             self.widthBucket = widthBucket
             self.columnCount = columnCount
+            self.thumbnailScaleBucket = thumbnailScaleBucket
+        }
+
+        struct FolderKey: Equatable {
+            let id: String
+            let name: String
+            let count: Int
+
+            init(row: AppState.FolderRow) {
+                id = row.id
+                name = row.folder.name
+                count = row.count
+            }
+        }
+
+        struct ItemKey: Equatable {
+            let id: String
+            let title: String
+            let thumbnailPath: String
+            let updatedAt: TimeInterval
+            let assetKind: AssetKind
+            let previewMode: AssetPreviewMode
+            let width: Int
+            let height: Int
+            let aspectRatio: String
+
+            init(item: PromptItem) {
+                id = item.id
+                title = item.title
+                thumbnailPath = item.thumbnailPath
+                updatedAt = item.updatedAt.timeIntervalSinceReferenceDate
+                assetKind = item.assetKind
+                previewMode = item.previewMode
+                width = item.width
+                height = item.height
+                aspectRatio = item.displayAspectRatio
+            }
         }
     }
 }
@@ -3174,6 +3231,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    func setMarkdownSelected(_ isSelected: Bool) {
+        markdownCardView?.setSelected(isSelected)
     }
 
     func configure(
@@ -3486,7 +3547,7 @@ private final class NativeMarkdownCardView: NSView {
         needsLayout = true
     }
 
-    private func setSelected(_ isSelected: Bool) {
+    func setSelected(_ isSelected: Bool) {
         isCardSelected = isSelected
         layer?.borderWidth = isSelected ? 1.5 : 0
         layer?.borderColor = isSelected ? NSColor.white.withAlphaComponent(0.72).cgColor : NSColor.clear.cgColor
