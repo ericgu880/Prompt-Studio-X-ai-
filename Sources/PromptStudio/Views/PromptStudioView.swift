@@ -3363,6 +3363,42 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
 }
 
 private final class NativeMarkdownCardView: NSView {
+    private enum Metrics {
+        static let selectionOutset = AssetCardMetrics.selectionOutset
+        static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
+        static let selectionCornerRadius = AssetCardMetrics.selectionCornerRadius
+        static let horizontalInset: CGFloat = 14
+        static let verticalInset: CGFloat = 14
+        static let titleHeight: CGFloat = 38
+        static let titleSummarySpacing: CGFloat = 10
+        static let summaryLineHeight: CGFloat = 17
+        static let summaryLineSpacing: CGFloat = 5
+        static let footerSpacing: CGFloat = 8
+        static let chipHeight: CGFloat = 24
+        static let chipSpacing: CGFloat = 6
+        static let chipHorizontalPadding: CGFloat = 16
+        static let metadataHeight: CGFloat = 16
+        static let actionButtonSize: CGFloat = 28
+        static let actionButtonSpacing: CGFloat = 8
+        static let actionTrailingInset: CGFloat = 10
+        static let actionBottomInset: CGFloat = 10
+    }
+
+    private enum Palette {
+        static let background = NSColor(hex: 0x141414)
+        static let border = NSColor(hex: 0x363A3F)
+        static let title = NSColor.white
+        static let text = NSColor(hex: 0xBDBEC0)
+        static let summary = NSColor.white.withAlphaComponent(0.76)
+        static let mutedText = NSColor(hex: 0xBDBEC0).withAlphaComponent(0.72)
+        static let chipText = NSColor.white.withAlphaComponent(0.82)
+        static let chipBackground = NSColor(hex: 0x1E1E1E).withAlphaComponent(0.92)
+        static let chipBorder = NSColor(hex: 0x212327).withAlphaComponent(0.7)
+        static let actionBackground = NSColor(hex: 0x1F1F1F)
+        static let actionBorder = NSColor(hex: 0x212327)
+        static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
+    }
+
     private let contentView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -3442,52 +3478,68 @@ private final class NativeMarkdownCardView: NSView {
 
     override func layout() {
         super.layout()
-        let contentFrame = bounds.insetBy(dx: AssetCardMetrics.selectionOutset, dy: AssetCardMetrics.selectionOutset)
+        let contentFrame = bounds.insetBy(dx: Metrics.selectionOutset, dy: Metrics.selectionOutset)
         contentView.frame = contentFrame
 
-        let horizontalInset: CGFloat = 14
-        let contentWidth = max(0, contentFrame.width - horizontalInset * 2)
-        titleLabel.frame = CGRect(x: horizontalInset, y: 14, width: contentWidth, height: 38)
+        let contentWidth = max(0, contentFrame.width - Metrics.horizontalInset * 2)
+        titleLabel.frame = CGRect(
+            x: Metrics.horizontalInset,
+            y: Metrics.verticalInset,
+            width: contentWidth,
+            height: Metrics.titleHeight
+        )
 
-        var y: CGFloat = titleLabel.frame.maxY + 8
+        var y = titleLabel.frame.maxY + Metrics.titleSummarySpacing
         for label in summaryLabels {
-            label.frame = CGRect(x: horizontalInset, y: y, width: contentWidth, height: 18)
-            y += 21
+            guard !label.isHidden else { continue }
+            label.frame = CGRect(
+                x: Metrics.horizontalInset,
+                y: y,
+                width: contentWidth,
+                height: Metrics.summaryLineHeight
+            )
+            y += Metrics.summaryLineHeight + Metrics.summaryLineSpacing
         }
 
-        let buttonSize: CGFloat = 28
-        let buttonY = max(14, contentFrame.height - buttonSize - 12)
+        let buttonY = max(
+            Metrics.verticalInset,
+            contentFrame.height - Metrics.actionButtonSize - Metrics.actionBottomInset
+        )
         copyButton.frame = CGRect(
-            x: contentFrame.width - horizontalInset - buttonSize,
+            x: contentFrame.width - Metrics.actionTrailingInset - Metrics.actionButtonSize,
             y: buttonY,
-            width: buttonSize,
-            height: buttonSize
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
         )
         editButton.frame = CGRect(
-            x: copyButton.frame.minX - buttonSize - 8,
+            x: copyButton.frame.minX - Metrics.actionButtonSize - Metrics.actionButtonSpacing,
             y: buttonY,
-            width: buttonSize,
-            height: buttonSize
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
         )
 
-        var chipX = horizontalInset
-        let chipY = max(y + 10, contentFrame.height - 52)
-        let maxChipX = editButton.frame.minX - 10
+        let metadataY = contentFrame.height - Metrics.verticalInset - Metrics.metadataHeight
+        let chipY = metadataY - Metrics.footerSpacing - Metrics.chipHeight
+        var chipX = Metrics.horizontalInset
+        let maxChipX = max(Metrics.horizontalInset, editButton.frame.minX - Metrics.chipSpacing)
         for chip in chipLabels {
-            let fittingWidth = min(chip.intrinsicContentSize.width + 14, max(48, maxChipX - chipX))
+            let fittingWidth = min(
+                chip.intrinsicContentSize.width + Metrics.chipHorizontalPadding,
+                max(48, maxChipX - chipX)
+            )
             guard chipX + fittingWidth <= maxChipX else {
                 chip.isHidden = true
                 continue
             }
             chip.isHidden = false
-            chip.frame = CGRect(x: chipX, y: chipY, width: fittingWidth, height: 20)
-            chipX += fittingWidth + 6
+            chip.frame = CGRect(x: chipX, y: chipY, width: fittingWidth, height: Metrics.chipHeight)
+            chipX += fittingWidth + Metrics.chipSpacing
         }
         metadataLabel.frame = CGRect(
-            x: horizontalInset,
-            y: contentFrame.height - 27,
-            width: max(0, editButton.frame.minX - horizontalInset - 10),
-            height: 16
+            x: Metrics.horizontalInset,
+            y: metadataY,
+            width: max(0, editButton.frame.minX - Metrics.horizontalInset - Metrics.chipSpacing),
+            height: Metrics.metadataHeight
         )
     }
 
@@ -3518,23 +3570,25 @@ private final class NativeMarkdownCardView: NSView {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = SubfolderCardMetrics.selectionCornerRadius
+        layer?.cornerRadius = Metrics.selectionCornerRadius
         layer?.masksToBounds = false
 
         contentView.wantsLayer = true
-        contentView.layer?.cornerRadius = AssetCardMetrics.cardCornerRadius
-        contentView.layer?.backgroundColor = NSColor(hex: 0x141414).cgColor
+        contentView.layer?.cornerRadius = Metrics.contentCornerRadius
+        contentView.layer?.backgroundColor = Palette.background.cgColor
         contentView.layer?.borderWidth = 1
-        contentView.layer?.borderColor = NSColor(hex: 0x363A3F).cgColor
+        contentView.layer?.borderColor = Palette.border.cgColor
         addSubview(contentView)
 
-        configureLabel(titleLabel, font: .systemFont(ofSize: 15, weight: .medium), color: .white, lines: 2)
-        configureLabel(metadataLabel, font: .systemFont(ofSize: 11), color: NSColor(hex: 0xBDBEC0).withAlphaComponent(0.72), lines: 1)
+        configureLabel(titleLabel, font: .systemFont(ofSize: 15, weight: .medium), color: Palette.title, lines: 2)
+        configureLabel(metadataLabel, font: .systemFont(ofSize: 11), color: Palette.mutedText, lines: 1)
         contentView.addSubview(titleLabel)
         contentView.addSubview(metadataLabel)
 
         editButton.actionHandler = { [weak self] in self?.editAction?() }
         copyButton.actionHandler = { [weak self] in self?.copyAction?() }
+        editButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
+        copyButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
         contentView.addSubview(editButton)
         contentView.addSubview(copyButton)
     }
@@ -3550,13 +3604,13 @@ private final class NativeMarkdownCardView: NSView {
     func setSelected(_ isSelected: Bool) {
         isCardSelected = isSelected
         layer?.borderWidth = isSelected ? 1.5 : 0
-        layer?.borderColor = isSelected ? NSColor.white.withAlphaComponent(0.72).cgColor : NSColor.clear.cgColor
+        layer?.borderColor = isSelected ? Palette.selectedBorder.cgColor : NSColor.clear.cgColor
     }
 
     private func setSummaryLines(_ lines: [String]) {
         while summaryLabels.count < lines.count {
             let label = NSTextField(labelWithString: "")
-            configureLabel(label, font: .systemFont(ofSize: 12), color: NSColor(hex: 0xBDBEC0), lines: 1)
+            configureLabel(label, font: .systemFont(ofSize: 12), color: Palette.summary, lines: 1)
             contentView.addSubview(label)
             summaryLabels.append(label)
         }
@@ -3570,13 +3624,13 @@ private final class NativeMarkdownCardView: NSView {
         chipLabels.forEach { $0.removeFromSuperview() }
         chipLabels = chips.map { chip in
             let label = NSTextField(labelWithString: chip)
-            configureLabel(label, font: .systemFont(ofSize: 10, weight: .medium), color: NSColor(hex: 0xBDBEC0), lines: 1)
+            configureLabel(label, font: .systemFont(ofSize: 10, weight: .regular), color: Palette.chipText, lines: 1)
             label.alignment = .center
             label.wantsLayer = true
-            label.layer?.cornerRadius = 7
-            label.layer?.backgroundColor = NSColor(hex: 0x1F1F1F).cgColor
+            label.layer?.cornerRadius = Metrics.chipHeight / 2
+            label.layer?.backgroundColor = Palette.chipBackground.cgColor
             label.layer?.borderWidth = 1
-            label.layer?.borderColor = NSColor(hex: 0x363A3F).cgColor
+            label.layer?.borderColor = Palette.chipBorder.cgColor
             contentView.addSubview(label)
             return label
         }
@@ -3590,6 +3644,7 @@ private final class NativeMarkdownCardView: NSView {
         label.isEditable = false
         label.isBordered = false
         label.drawsBackground = false
+        label.usesSingleLineMode = lines == 1
     }
 
     private func addMenuItem(_ title: String, symbolName: String, to menu: NSMenu, action: (() -> Void)?) {
@@ -3609,13 +3664,14 @@ private final class NativeMarkdownIconButton: NSButton {
     init(symbolName: String, toolTip: String) {
         super.init(frame: .zero)
         image = NSImage(systemSymbolName: symbolName, accessibilityDescription: toolTip)
+        imagePosition = .imageOnly
         self.toolTip = toolTip
         title = ""
         bezelStyle = .regularSquare
         isBordered = false
         wantsLayer = true
         layer?.cornerRadius = 14
-        layer?.backgroundColor = NSColor(hex: 0x1F1F1F).cgColor
+        layer?.borderWidth = 1
         target = self
         action = #selector(runAction)
     }
@@ -3626,6 +3682,12 @@ private final class NativeMarkdownIconButton: NSButton {
 
     @objc private func runAction() {
         actionHandler?()
+    }
+
+    func applyPalette(background: NSColor, border: NSColor) {
+        layer?.backgroundColor = background.cgColor
+        layer?.borderColor = border.cgColor
+        contentTintColor = NSColor.white.withAlphaComponent(0.9)
     }
 }
 
