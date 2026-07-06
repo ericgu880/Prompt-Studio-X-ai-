@@ -3409,6 +3409,7 @@ private final class NativeMarkdownCardView: NSView {
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
     private var isCardSelected = false
+    private var areActionsVisible = false
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var previewAction: (() -> Void)?
     private var editAction: (() -> Void)?
@@ -3521,7 +3522,7 @@ private final class NativeMarkdownCardView: NSView {
         let metadataY = contentFrame.height - Metrics.verticalInset - Metrics.metadataHeight
         let chipY = metadataY - Metrics.footerSpacing - Metrics.chipHeight
         var chipX = Metrics.horizontalInset
-        let maxChipX = max(Metrics.horizontalInset, editButton.frame.minX - Metrics.chipSpacing)
+        let maxChipX = Metrics.horizontalInset + contentWidth
         for chip in chipLabels {
             let fittingWidth = min(
                 chip.intrinsicContentSize.width + Metrics.chipHorizontalPadding,
@@ -3538,7 +3539,7 @@ private final class NativeMarkdownCardView: NSView {
         metadataLabel.frame = CGRect(
             x: Metrics.horizontalInset,
             y: metadataY,
-            width: max(0, editButton.frame.minX - Metrics.horizontalInset - Metrics.chipSpacing),
+            width: contentWidth,
             height: Metrics.metadataHeight
         )
     }
@@ -3589,6 +3590,8 @@ private final class NativeMarkdownCardView: NSView {
         copyButton.actionHandler = { [weak self] in self?.copyAction?() }
         editButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
         copyButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
+        editButton.isHidden = true
+        copyButton.isHidden = true
         contentView.addSubview(editButton)
         contentView.addSubview(copyButton)
     }
@@ -3605,6 +3608,14 @@ private final class NativeMarkdownCardView: NSView {
         isCardSelected = isSelected
         layer?.borderWidth = isSelected ? 1.5 : 0
         layer?.borderColor = isSelected ? Palette.selectedBorder.cgColor : NSColor.clear.cgColor
+        setActionsVisible(isSelected)
+    }
+
+    private func setActionsVisible(_ isVisible: Bool) {
+        guard areActionsVisible != isVisible else { return }
+        areActionsVisible = isVisible
+        editButton.isHidden = !isVisible
+        copyButton.isHidden = !isVisible
     }
 
     private func setSummaryLines(_ lines: [String]) {
