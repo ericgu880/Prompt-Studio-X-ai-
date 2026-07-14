@@ -3936,6 +3936,8 @@ private struct MasonryGridView: View {
     @State private var selectionDragCurrent: CGPoint?
     @State private var selectionDragBaseIDs: Set<String> = []
     @State private var contentOffsetY: CGFloat = 0
+    @State private var pendingRenderOffsetY: CGFloat?
+    @State private var isRenderOffsetUpdateScheduled = false
     @State private var layoutCache = MasonryLayoutCache()
     @State private var scrollResetID = UUID()
 
@@ -3966,8 +3968,7 @@ private struct MasonryGridView: View {
                 onOffsetChange: { offsetY in
                     DebugPerformanceProbe.record("masonry.offset.event")
                     let nextOffsetY = quantizedRenderOffset(offsetY)
-                    guard nextOffsetY != contentOffsetY else { return }
-                    contentOffsetY = nextOffsetY
+                    scheduleRenderOffsetUpdate(nextOffsetY)
                 }
             ) {
                 ZStack(alignment: .topLeading) {
@@ -4060,6 +4061,8 @@ private struct MasonryGridView: View {
             }
             .onChange(of: state.filter) { _, _ in
                 contentOffsetY = 0
+                pendingRenderOffsetY = nil
+                isRenderOffsetUpdateScheduled = false
                 scrollResetID = UUID()
                 selectedFolderID = nil
                 clearSelectionDrag()
@@ -4116,6 +4119,20 @@ private struct MasonryGridView: View {
     private func quantizedRenderOffset(_ offsetY: CGFloat) -> CGFloat {
         let clamped = max(0, offsetY)
         return floor(clamped / Self.renderOffsetBucket) * Self.renderOffsetBucket
+    }
+
+    private func scheduleRenderOffsetUpdate(_ nextOffsetY: CGFloat) {
+        guard nextOffsetY != contentOffsetY else { return }
+        pendingRenderOffsetY = nextOffsetY
+        guard !isRenderOffsetUpdateScheduled else { return }
+        isRenderOffsetUpdateScheduled = true
+        DispatchQueue.main.async {
+            isRenderOffsetUpdateScheduled = false
+            guard let pendingRenderOffsetY else { return }
+            self.pendingRenderOffsetY = nil
+            guard pendingRenderOffsetY != contentOffsetY else { return }
+            contentOffsetY = pendingRenderOffsetY
+        }
     }
 
     private func recordMasonryRenderSample(renderedPlacementsCount: Int, thumbnailCandidateCount: Int) -> Bool {
