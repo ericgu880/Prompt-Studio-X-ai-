@@ -306,27 +306,12 @@ struct InspectorView: View {
     }
 
     private func markdownHeaderChips(_ item: PromptItem) -> some View {
-        FlowLayout(spacing: 8) {
-            metadataChip(item.format.isEmpty ? "MD" : item.format.uppercased())
-            metadataChip("\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行")
-            metadataChip(item.currentVersion?.version ?? "V1.0")
-            ForEach(item.tags.prefix(4), id: \.self) { tag in
-                metadataChip(tag)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func metadataChip(_ text: String) -> some View {
-        Text(text)
-            .font(StudioFont.font(11))
-            .foregroundStyle(StudioColor.secondaryText)
-            .lineLimit(nil)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(StudioColor.control))
-            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+        let texts = [
+            item.format.isEmpty ? "MD" : item.format.uppercased(),
+            "\(max(1, activeMarkdownText.components(separatedBy: .newlines).count)) 行",
+            item.currentVersion?.version ?? "V1.0"
+        ] + Array(item.tags.prefix(4))
+        return SidePanelChipFlow(texts: texts)
     }
 
     private func header(_ item: PromptItem) -> some View {
@@ -1177,6 +1162,7 @@ private struct FlowLayout<Content: View>: View {
         WrappingLayout(spacing: spacing) {
             content
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
