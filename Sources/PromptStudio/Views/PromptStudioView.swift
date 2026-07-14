@@ -2764,6 +2764,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         weak var layout: MasonryCollectionLayout?
         private weak var observedContentView: NSClipView?
         private var boundsObserver: NSObjectProtocol?
+        private var frameObserver: NSObjectProtocol?
         private var state: AppState?
         private var entries: [MasonryGridEntry] = []
         private var itemWidth: CGFloat = 250
@@ -2784,6 +2785,10 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 NotificationCenter.default.removeObserver(boundsObserver)
                 self.boundsObserver = nil
             }
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+                self.frameObserver = nil
+            }
         }
 
         func observeBounds(of scrollView: NSScrollView) {
@@ -2791,18 +2796,35 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             if let boundsObserver {
                 NotificationCenter.default.removeObserver(boundsObserver)
             }
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+            }
             observedContentView = scrollView.contentView
             scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
             boundsObserver = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
                 object: scrollView.contentView,
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.relayoutIfWidthChanged()
-                    self?.prepareVisibleThumbnails()
+                    self?.handleViewportChange()
                 }
             }
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handleViewportChange()
+                }
+            }
+        }
+
+        private func handleViewportChange() {
+            relayoutIfWidthChanged()
+            prepareVisibleThumbnails()
         }
 
         func update(
