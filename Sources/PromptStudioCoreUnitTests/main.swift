@@ -180,6 +180,36 @@ func testSearchFiltering() throws {
     try expect(PromptFiltering.apply([item, other], filter: PromptFilter(collection: .tag("插画"))).map(\.id) == [item.id], "tag collection should isolate illustration item")
 }
 
+func testThumbnailDecodeSizing() throws {
+    try expect(ThumbnailDecodeSizing.bucket(for: 1) == 256, "small thumbnails should use the 256px bucket")
+    try expect(ThumbnailDecodeSizing.bucket(for: 256) == 256, "bucket boundaries should stay stable")
+    try expect(ThumbnailDecodeSizing.bucket(for: 257) == 512, "medium thumbnails should use the 512px bucket")
+    try expect(ThumbnailDecodeSizing.bucket(for: 900) == 1024, "large thumbnails should use the 1024px bucket")
+    try expect(ThumbnailDecodeSizing.bucket(for: 4096) == 1024, "thumbnail decoding should cap at 1024px")
+    try expect(
+        ThumbnailDecodeSizing.reusableBuckets(for: 257) == [512, 1024],
+        "a larger cached image should satisfy a smaller request"
+    )
+}
+
+func testPromptSelectionResolver() throws {
+    let first = sampleItem(title: "First", prompt: "first")
+    let selected = sampleItem(title: "Selected", prompt: "selected")
+    let items = [first, selected]
+    try expect(
+        PromptSelectionResolver.selectedID(preserving: selected.id, in: items, allowEmptySelection: false) == selected.id,
+        "filtering should preserve a selection that remains visible"
+    )
+    try expect(
+        PromptSelectionResolver.selectedID(preserving: "missing", in: items, allowEmptySelection: false) == first.id,
+        "filtering should select the first result when the previous selection disappears"
+    )
+    try expect(
+        PromptSelectionResolver.selectedID(preserving: "missing", in: items, allowEmptySelection: true) == nil,
+        "filtering should allow an empty selection when requested"
+    )
+}
+
 func testFilteringPerformanceWith1000Items() throws {
     let items = (0..<1_000).map(performanceItem(index:))
     let target = try expect(items.first { $0.title == "Forest Product Shot" } != nil, "performance fixture should include target")
@@ -809,6 +839,8 @@ do {
     try testLibraryURLResolution()
     try testExistingLibraryValidationDoesNotCreateDatabase()
     try testSearchFiltering()
+    try testThumbnailDecodeSizing()
+    try testPromptSelectionResolver()
     try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
     try testPrimaryPromptAssetsAndAttachments()

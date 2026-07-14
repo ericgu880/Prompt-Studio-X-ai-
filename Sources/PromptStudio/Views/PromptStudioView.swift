@@ -2778,9 +2778,22 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var lastPreviewVisualItemIDs: [String] = []
         private var currentThumbnailScale = 1.0
         private var lastVisibleThumbnailCandidateIDs: [String] = []
+        private var lastPrefetchedImageRequests: [ThumbnailImageRequest] = []
+        private var pendingDatasetUpdate: PendingDatasetUpdate?
+        private var isDatasetUpdateScheduled = false
+        private var isInvalidated = false
         private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
 
+        private struct PendingDatasetUpdate {
+            let folders: [AppState.FolderRow]
+            let items: [PromptItem]
+            let thumbnailScale: Double
+            let scrollView: NSScrollView
+        }
+
         func invalidateObservers() {
+            isInvalidated = true
+            pendingDatasetUpdate = nil
             if let boundsObserver {
                 NotificationCenter.default.removeObserver(boundsObserver)
                 self.boundsObserver = nil
@@ -2835,6 +2848,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             scrollView: NSScrollView,
             onPreviewNavigationSnapshotChange: @escaping (PreviewNavigationSnapshot) -> Void
         ) {
+            isInvalidated = false
             self.state = state
             self.onPreviewNavigationSnapshotChange = onPreviewNavigationSnapshotChange
             currentThumbnailScale = thumbnailScale
@@ -2844,7 +2858,6 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let widthBucket = Self.widthBucket(for: availableWidth)
             lastAvailableWidthBucket = widthBucket
             let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
-            let nextItemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
             let layoutInputKey = LayoutInputKey(
                 folders: folders,
                 items: items,
@@ -2853,31 +2866,78 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 thumbnailScaleBucket: Int((thumbnailScale * 100).rounded())
             )
             guard layoutInputKey != lastLayoutInputKey else {
+                pendingDatasetUpdate = nil
+                syncExternalSelectionChange(state.selectedIDs)
+                prepareVisibleThumbnails()
+                return
+            }
+            pendingDatasetUpdate = PendingDatasetUpdate(
+                folders: folders,
+                items: items,
+                thumbnailScale: thumbnailScale,
+                scrollView: scrollView
+            )
+            scheduleDatasetUpdate()
+        }
+
+        private func scheduleDatasetUpdate() {
+            guard !isDatasetUpdateScheduled else { return }
+            isDatasetUpdateScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isDatasetUpdateScheduled = false
+                self.applyPendingDatasetUpdate()
+            }
+        }
+
+        private func applyPendingDatasetUpdate() {
+            guard !isInvalidated,
+                  let update = pendingDatasetUpdate,
+                  let collectionView,
+                  let state else {
+                pendingDatasetUpdate = nil
+                return
+            }
+            pendingDatasetUpdate = nil
+            let start = DebugPerformanceProbe.now()
+            let availableWidth = max(1, update.scrollView.contentView.bounds.width)
+            let widthBucket = Self.widthBucket(for: availableWidth)
+            let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: update.thumbnailScale)
+            let nextItemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
+            let layoutInputKey = LayoutInputKey(
+                folders: update.folders,
+                items: update.items,
+                widthBucket: widthBucket,
+                columnCount: columnCount,
+                thumbnailScaleBucket: Int((update.thumbnailScale * 100).rounded())
+            )
+            guard layoutInputKey != lastLayoutInputKey else {
                 syncExternalSelectionChange(state.selectedIDs)
                 prepareVisibleThumbnails()
                 return
             }
 
-            let nextEntries = folders.map(MasonryGridEntry.folder) + items.map(MasonryGridEntry.item)
+            let nextEntries = update.folders.map(MasonryGridEntry.folder) + update.items.map(MasonryGridEntry.item)
             let nextEntryIDs = nextEntries.map(\.id)
             let shouldResetScroll = !lastEntryIDs.isEmpty && nextEntryIDs != lastEntryIDs
-
             entries = nextEntries
             rebuildIndexPathMaps()
             itemWidth = nextItemWidth
+            currentThumbnailScale = update.thumbnailScale
+            lastAvailableWidthBucket = widthBucket
             layout?.configure(entries: nextEntries, columnCount: columnCount, itemWidth: nextItemWidth)
-            collectionView?.reloadData()
+            collectionView.reloadData()
             lastLayoutInputKey = layoutInputKey
             lastRenderedSelectedItemIDs = state.selectedIDs
             lastEntryIDs = nextEntryIDs
 
             if shouldResetScroll {
-                scrollView.contentView.scroll(to: .zero)
-                scrollView.reflectScrolledClipView(scrollView.contentView)
+                update.scrollView.contentView.scroll(to: .zero)
+                update.scrollView.reflectScrolledClipView(update.scrollView.contentView)
             }
-
             publishPreviewNavigationSnapshotIfNeeded()
             prepareVisibleThumbnails()
+            DebugPerformanceProbe.recordDuration("masonry.dataset.apply.ms", startedAt: start)
         }
 
         private func relayoutIfWidthChanged() {
@@ -2885,6 +2945,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                   let scrollView = collectionView.enclosingScrollView else {
                 return
             }
+            guard pendingDatasetUpdate == nil else { return }
             let availableWidth = max(1, scrollView.contentView.bounds.width)
             let widthBucket = Self.widthBucket(for: availableWidth)
             guard widthBucket != lastAvailableWidthBucket else { return }
@@ -3097,9 +3158,31 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 }
                 return item.id
             }
-            guard candidateIDs != lastVisibleThumbnailCandidateIDs else { return }
-            lastVisibleThumbnailCandidateIDs = candidateIDs
-            state.prepareVisibleThumbnails(for: candidateIDs)
+            if candidateIDs != lastVisibleThumbnailCandidateIDs {
+                lastVisibleThumbnailCandidateIDs = candidateIDs
+                state.prepareVisibleThumbnails(for: candidateIDs)
+            }
+
+            let prefetchRect = visibleRect.insetBy(dx: 0, dy: -visibleRect.height)
+            let displayScale = collectionView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            let prefetchRequests = (layout?.indexPathsForItems(in: prefetchRect) ?? []).compactMap { indexPath -> ThumbnailImageRequest? in
+                guard entries.indices.contains(indexPath.item),
+                      case .item(let item) = entries[indexPath.item],
+                      item.assetKind == .image else {
+                    return nil
+                }
+                let path = item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath
+                let height = AssetCardMetrics.contentHeight(for: item, width: itemWidth)
+                let maxPixelSize = Int((max(itemWidth, height) * displayScale).rounded(.up))
+                return ThumbnailImageRequest(
+                    path: path,
+                    contentVersion: item.updatedAt.timeIntervalSinceReferenceDate,
+                    maxPixelSize: maxPixelSize
+                )
+            }
+            guard prefetchRequests != lastPrefetchedImageRequests else { return }
+            lastPrefetchedImageRequests = prefetchRequests
+            SharedThumbnailImageCache.shared.prefetch(prefetchRequests)
         }
 
         private static func columnCount(for availableWidth: CGFloat, thumbnailScale: Double) -> Int {
@@ -3273,6 +3356,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
     private var hostingView: NSHostingView<AnyView>?
     private var markdownCardView: NativeMarkdownCardView?
+    private var imageCardView: NativeImageCardView?
     private let mediaSelectionState = AssetCardSelectionState(isSelected: false)
 
     override func loadView() {
@@ -3286,6 +3370,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     }
 
     func setMediaSelected(_ isSelected: Bool) {
+        if let imageCardView {
+            imageCardView.setSelected(isSelected)
+            return
+        }
         mediaSelectionState.isSelected = isSelected
     }
 
@@ -3303,6 +3391,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         if case .item(let item) = entry, item.isTextDocumentLike {
             hostingView?.removeFromSuperview()
             hostingView = nil
+            imageCardView?.removeFromSuperview()
+            imageCardView = nil
             let cardView: NativeMarkdownCardView
             if let markdownCardView {
                 cardView = markdownCardView
@@ -3368,6 +3458,33 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         markdownCardView?.removeFromSuperview()
         markdownCardView = nil
 
+        if case .item(let item) = entry, item.assetKind == .image {
+            hostingView?.removeFromSuperview()
+            hostingView = nil
+            let cardView: NativeImageCardView
+            if let imageCardView {
+                cardView = imageCardView
+            } else {
+                cardView = NativeImageCardView(frame: view.bounds)
+                cardView.autoresizingMask = [.width, .height]
+                view.addSubview(cardView)
+                imageCardView = cardView
+            }
+            cardView.frame = view.bounds
+            cardView.configure(
+                item: item,
+                state: state,
+                isSelected: state.selectedIDs.contains(item.id),
+                selectAction: { modifiers in
+                    selectItem(item, modifiers)
+                }
+            )
+            return
+        }
+
+        imageCardView?.removeFromSuperview()
+        imageCardView = nil
+
         let rootView: AnyView
         switch entry {
         case .folder(let row):
@@ -3413,6 +3530,330 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             view.addSubview(hostingView)
             self.hostingView = hostingView
         }
+    }
+}
+
+private final class NativeImageCardContentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+private final class NativeImageCardView: NSView, NSDraggingSource {
+    private enum Metrics {
+        static let selectionOutset = AssetCardMetrics.selectionOutset
+        static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
+        static let selectionCornerRadius = AssetCardMetrics.selectionCornerRadius
+        static let overlayHeight: CGFloat = 82
+        static let horizontalInset: CGFloat = 10
+        static let bottomInset: CGFloat = 10
+        static let actionButtonSize: CGFloat = 28
+        static let actionButtonSpacing: CGFloat = 8
+    }
+
+    private enum Palette {
+        static let placeholder = NSColor(hex: 0x1E1E1E)
+        static let actionBackground = NSColor(hex: 0x1F1F1F)
+        static let actionBorder = NSColor(hex: 0x212327)
+        static let actionHoverBorder = NSColor.white.withAlphaComponent(0.42)
+        static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
+    }
+
+    private let contentView = NativeImageCardContentView()
+    private let imageLayer = CALayer()
+    private let gradientLayer = CAGradientLayer()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let editButton = NativeMarkdownIconButton(icon: .pencil, toolTip: "编辑")
+    private let copyButton = NativeMarkdownIconButton(icon: .copy, toolTip: "复制提示词")
+    private weak var state: AppState?
+    private var representedRequest: ThumbnailImageRequest?
+    private var loadTask: Task<Void, Never>?
+    private var item: PromptItem?
+    private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
+    private var menuTargets: [NativeMarkdownMenuActionTarget] = []
+    private var dragStartLocation: NSPoint?
+    private var hasStartedDragging = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    deinit {
+        loadTask?.cancel()
+    }
+
+    override var isFlipped: Bool { true }
+
+    func configure(
+        item: PromptItem,
+        state: AppState,
+        isSelected: Bool,
+        selectAction: @escaping (NSEvent.ModifierFlags) -> Void
+    ) {
+        self.item = item
+        self.state = state
+        self.selectAction = selectAction
+        titleLabel.stringValue = item.title
+        editButton.actionHandler = { [weak self] in
+            self?.runSelectedAction { state, item in
+                state.requestInlineEdit(item)
+            }
+        }
+        copyButton.actionHandler = { [weak self] in
+            self?.runSelectedAction { state, item in
+                state.copyItemContent(item)
+            }
+        }
+        setSelected(isSelected)
+
+        let path = item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath
+        let displayScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let contentSize = bounds.insetBy(dx: Metrics.selectionOutset, dy: Metrics.selectionOutset).size
+        let requestedPixels = Int((max(contentSize.width, contentSize.height) * displayScale).rounded(.up))
+        let request = ThumbnailImageRequest(
+            path: path,
+            contentVersion: item.updatedAt.timeIntervalSinceReferenceDate,
+            maxPixelSize: max(256, requestedPixels)
+        )
+        guard representedRequest != request else { return }
+        representedRequest = request
+        loadTask?.cancel()
+        if let cached = SharedThumbnailImageCache.shared.cachedImage(for: request) {
+            imageLayer.contents = cached
+            return
+        }
+        imageLayer.contents = nil
+        loadTask = Task { [weak self] in
+            let image = await SharedThumbnailImageCache.shared.image(for: request)
+            guard !Task.isCancelled, let self, self.representedRequest == request else { return }
+            self.imageLayer.contents = image
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let contentFrame = bounds.insetBy(dx: Metrics.selectionOutset, dy: Metrics.selectionOutset)
+        contentView.frame = contentFrame
+        imageLayer.frame = contentView.bounds
+        gradientLayer.frame = CGRect(
+            x: 0,
+            y: max(0, contentFrame.height - Metrics.overlayHeight),
+            width: contentFrame.width,
+            height: min(Metrics.overlayHeight, contentFrame.height)
+        )
+
+        let buttonY = max(0, contentFrame.height - Metrics.bottomInset - Metrics.actionButtonSize)
+        copyButton.frame = CGRect(
+            x: contentFrame.width - Metrics.horizontalInset - Metrics.actionButtonSize,
+            y: buttonY,
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
+        )
+        editButton.frame = CGRect(
+            x: copyButton.frame.minX - Metrics.actionButtonSpacing - Metrics.actionButtonSize,
+            y: buttonY,
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
+        )
+        titleLabel.frame = CGRect(
+            x: Metrics.horizontalInset,
+            y: buttonY + 3,
+            width: max(0, editButton.frame.minX - Metrics.horizontalInset * 2),
+            height: 22
+        )
+    }
+
+    func setSelected(_ isSelected: Bool) {
+        let start = DebugPerformanceProbe.now()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.borderWidth = isSelected ? 1.5 : 0
+        layer?.borderColor = isSelected ? Palette.selectedBorder.cgColor : NSColor.clear.cgColor
+        gradientLayer.isHidden = !isSelected
+        titleLabel.isHidden = !isSelected
+        editButton.isHidden = !isSelected
+        copyButton.isHidden = !isSelected
+        CATransaction.commit()
+        DebugPerformanceProbe.recordDuration("image.selection.update.ms", startedAt: start)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartLocation = event.locationInWindow
+        hasStartedDragging = false
+        if event.clickCount >= 2 {
+            selectAction?([])
+            state?.previewSelected()
+        } else {
+            selectAction?(event.modifierFlags)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !hasStartedDragging,
+              let item,
+              !item.isDeleted,
+              let dragStartLocation else {
+            return
+        }
+        let deltaX = event.locationInWindow.x - dragStartLocation.x
+        let deltaY = event.locationInWindow.y - dragStartLocation.y
+        guard hypot(deltaX, deltaY) >= 6 else { return }
+
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(item.id, forType: .string)
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        hasStartedDragging = true
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStartLocation = nil
+        hasStartedDragging = false
+        super.mouseUp(with: event)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let state, let item else { return nil }
+        selectAction?(event.modifierFlags)
+        let menu = NSMenu()
+        menuTargets = []
+        addMenuItem("预览", symbolName: "eye", to: menu) { state.previewSelected() }
+        addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu) { state.openSelectedInDefaultApplication() }
+        addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu) { state.revealSelectedInFinder() }
+        menu.addItem(.separator())
+        if !item.isDeleted {
+            addMoveToFolderMenu(item: item, state: state, to: menu)
+            addMenuItem("导出...", symbolName: "square.and.arrow.up", to: menu) { state.modal = .export }
+            menu.addItem(.separator())
+        }
+        addMenuItem("编辑 Prompt", symbolName: "pencil", to: menu) { state.requestInlineEdit(item) }
+        let copyPromptItem = addMenuItem("复制提示词", symbolName: "doc.on.doc", to: menu) { state.copyItemContent(item) }
+        copyPromptItem?.isEnabled = item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        addMenuItem("复制文件", symbolName: "doc", to: menu) { state.copySelectedFile() }
+        addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu) { state.copySelectedFilePath() }
+        menu.addItem(.separator())
+        addMenuItem("历史版本", symbolName: "clock", to: menu) { state.modal = .versionHistory }
+        addMenuItem("参考资产管理", symbolName: "photo.on.rectangle", to: menu) { state.modal = .references }
+        menu.addItem(.separator())
+        if item.isDeleted {
+            addMenuItem("恢复", symbolName: "arrow.uturn.backward", to: menu) { state.restoreSelected() }
+            menu.addItem(.separator())
+            addMenuItem("彻底删除...", symbolName: "trash.slash", to: menu) { state.beginPermanentDeleteSelectedTrashItems() }
+        } else {
+            addMenuItem("移到回收站", symbolName: "trash", to: menu) { state.moveSelectedToTrash() }
+        }
+        return menu
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = Metrics.selectionCornerRadius
+        layer?.masksToBounds = false
+
+        contentView.wantsLayer = true
+        contentView.layer?.cornerRadius = Metrics.contentCornerRadius
+        contentView.layer?.masksToBounds = true
+        contentView.layer?.backgroundColor = Palette.placeholder.cgColor
+        addSubview(contentView)
+
+        imageLayer.contentsGravity = .resizeAspectFill
+        imageLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        contentView.layer?.addSublayer(imageLayer)
+
+        gradientLayer.colors = [
+            NSColor.black.withAlphaComponent(0).cgColor,
+            NSColor.black.withAlphaComponent(0.42).cgColor,
+            NSColor.black.withAlphaComponent(0.68).cgColor
+        ]
+        gradientLayer.locations = [0, 0.52, 1]
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        contentView.layer?.addSublayer(gradientLayer)
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
+        titleLabel.drawsBackground = false
+        titleLabel.isBordered = false
+        titleLabel.isEditable = false
+        contentView.addSubview(titleLabel)
+
+        editButton.applyPalette(
+            background: Palette.actionBackground,
+            border: Palette.actionBorder,
+            hoverBorder: Palette.actionHoverBorder
+        )
+        copyButton.applyPalette(
+            background: Palette.actionBackground,
+            border: Palette.actionBorder,
+            hoverBorder: Palette.actionHoverBorder
+        )
+        contentView.addSubview(editButton)
+        contentView.addSubview(copyButton)
+        setSelected(false)
+    }
+
+    private func runSelectedAction(_ action: (AppState, PromptItem) -> Void) {
+        guard let state, let item else { return }
+        if !state.selectedIDs.contains(item.id) {
+            selectAction?([])
+        }
+        action(state, item)
+    }
+
+    @discardableResult
+    private func addMenuItem(
+        _ title: String,
+        symbolName: String,
+        to menu: NSMenu,
+        action: @escaping () -> Void
+    ) -> NSMenuItem? {
+        let target = NativeMarkdownMenuActionTarget(action: action)
+        menuTargets.append(target)
+        let menuItem = NSMenuItem(title: title, action: #selector(NativeMarkdownMenuActionTarget.run), keyEquivalent: "")
+        menuItem.target = target
+        menuItem.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        menu.addItem(menuItem)
+        return menuItem
+    }
+
+    private func addMoveToFolderMenu(item: PromptItem, state: AppState, to menu: NSMenu) {
+        let rootItem = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
+        rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
+        let submenu = NSMenu(title: "移动到文件夹")
+        for row in state.folderRows() {
+            let menuItem = addMenuItem(row.folder.name, symbolName: "folder", to: submenu) {
+                state.moveItem(item.id, toFolderID: row.folder.id)
+            }
+            menuItem?.state = item.folderId == row.folder.id ? .on : .off
+            menuItem?.isEnabled = item.folderId != row.folder.id
+        }
+        rootItem.submenu = submenu
+        menu.addItem(rootItem)
+    }
+
+    private func dragPreviewImage() -> NSImage {
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return NSImage(size: bounds.size)
+        }
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
+        return image
     }
 }
 
@@ -6046,13 +6487,20 @@ struct AssetMediaView: View {
 
     var body: some View {
         if item.supportsGeneratedThumbnail, let thumbnailPath {
-            ThumbnailImage(path: thumbnailPath, contentMode: contentMode)
+            ThumbnailImage(
+                path: thumbnailPath,
+                contentVersion: item.updatedAt.timeIntervalSinceReferenceDate,
+                contentMode: contentMode
+            )
         } else {
             FileKindPlaceholder(assetKind: item.assetKind, format: item.format)
         }
     }
 
     private var thumbnailPath: String? {
+        if item.assetKind == .image {
+            return item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath
+        }
         if item.thumbnailPath != item.assetPath,
            !item.thumbnailPath.isEmpty,
            FileManager.default.fileExists(atPath: item.thumbnailPath) {
@@ -6117,14 +6565,20 @@ private struct FileKindPlaceholder: View {
 
 struct ThumbnailImage: View {
     let path: String
+    var contentVersion: TimeInterval = 0
     var contentMode: ContentMode = .fill
     @Environment(\.displayScale) private var displayScale
-    @StateObject private var loader = CachedImageLoader()
+    @StateObject private var loader = SharedThumbnailImageLoader()
 
     var body: some View {
         GeometryReader { proxy in
             let maxPixelSize = Self.maxPixelSize(for: proxy.size, displayScale: displayScale)
-            let cachedImage = CachedImageLoader.cachedImage(for: path, maxPixelSize: maxPixelSize)
+            let request = ThumbnailImageRequest(
+                path: path,
+                contentVersion: contentVersion,
+                maxPixelSize: maxPixelSize
+            )
+            let cachedImage = SharedThumbnailImageCache.shared.cachedImage(for: request)
             Group {
                 if let image = loader.image ?? cachedImage {
                     Image(nsImage: image)
@@ -6141,8 +6595,8 @@ struct ThumbnailImage: View {
             }
             .clipped()
             .background(StudioColor.panelRaised)
-            .task(id: "\(path)|\(maxPixelSize)") {
-                await loader.load(path, maxPixelSize: maxPixelSize)
+            .task(id: request) {
+                await loader.load(request)
             }
         }
     }
@@ -6151,97 +6605,5 @@ struct ThumbnailImage: View {
         let longestSide = max(size.width, size.height)
         guard longestSide > 0 else { return 900 }
         return max(240, min(1024, Int((longestSide * displayScale).rounded(.up))))
-    }
-}
-
-@MainActor
-private final class CachedImageLoader: ObservableObject {
-    @Published var image: NSImage?
-
-    private static let cache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 360
-        cache.totalCostLimit = 160 * 1024 * 1024
-        return cache
-    }()
-    private static var inFlightLoads: [NSString: Task<NSImage?, Never>] = [:]
-    private var path: String = ""
-    private var maxPixelSize: Int = 0
-    private var task: Task<Void, Never>?
-
-    static func cachedImage(for path: String, maxPixelSize: Int) -> NSImage? {
-        cache.object(forKey: cacheKey(path: path, maxPixelSize: maxPixelSize))
-    }
-
-    func load(_ path: String, maxPixelSize: Int) async {
-        task?.cancel()
-        self.path = path
-        self.maxPixelSize = maxPixelSize
-        guard !path.isEmpty else {
-            image = nil
-            return
-        }
-
-        let key = Self.cacheKey(path: path, maxPixelSize: maxPixelSize)
-        if let cached = Self.cache.object(forKey: key) {
-            image = cached
-            return
-        }
-
-        image = nil
-        task = Task {
-            let loaded = await Self.loadImage(at: path, maxPixelSize: maxPixelSize, cacheKey: key)
-            guard !Task.isCancelled, self.path == path, self.maxPixelSize == maxPixelSize else { return }
-            if let loaded {
-                Self.cache.setObject(loaded, forKey: key, cost: Self.cacheCost(for: loaded))
-            }
-            image = loaded
-        }
-    }
-
-    private static func loadImage(at path: String, maxPixelSize: Int, cacheKey: NSString) async -> NSImage? {
-        if let task = inFlightLoads[cacheKey] {
-            return await task.value
-        }
-
-        let task = Task.detached(priority: .utility) {
-            decodeThumbnail(at: path, maxPixelSize: maxPixelSize)
-        }
-        inFlightLoads[cacheKey] = task
-        let image = await task.value
-        inFlightLoads[cacheKey] = nil
-        return image
-    }
-
-    private nonisolated static func decodeThumbnail(at path: String, maxPixelSize: Int) -> NSImage? {
-        let url = URL(fileURLWithPath: path)
-        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
-            return nil
-        }
-
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-        ]
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
-            return nil
-        }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-    }
-
-    private static func cacheKey(path: String, maxPixelSize: Int) -> NSString {
-        let modification = ((try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date)?
-            .timeIntervalSinceReferenceDate ?? 0
-        return "\(path)|\(maxPixelSize)|\(modification)" as NSString
-    }
-
-    private static func cacheCost(for image: NSImage) -> Int {
-        if let representation = image.representations.first {
-            return max(1, representation.pixelsWide * representation.pixelsHigh * 4)
-        }
-        return max(1, Int(image.size.width * image.size.height * 4))
     }
 }

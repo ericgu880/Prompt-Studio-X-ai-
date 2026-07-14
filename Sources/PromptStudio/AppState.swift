@@ -689,7 +689,7 @@ final class AppState: ObservableObject {
     func setCollection(_ collection: LibraryCollection) {
         guard filter.collection != collection else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.collection = collection
         }
     }
@@ -702,7 +702,7 @@ final class AppState: ObservableObject {
             || filter.assetKindFilter != nil
             || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.collection = .all
             filter.type = nil
             filter.modelId = nil
@@ -716,7 +716,7 @@ final class AppState: ObservableObject {
         let normalizedModelID = modelId == "all" ? nil : modelId
         guard filter.modelId != normalizedModelID || filter.textFormat != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.modelId = normalizedModelID
             filter.textFormat = nil
             filter.assetKindFilter = nil
@@ -731,7 +731,7 @@ final class AppState: ObservableObject {
     func setPromptType(_ type: PromptType?) {
         guard filter.type != type || filter.modelId != nil || filter.textFormat != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.type = type
             filter.requiredTag = nil
             filter.assetKindFilter = nil
@@ -757,7 +757,7 @@ final class AppState: ObservableObject {
     func setTextFormat(_ textFormat: TextFormatFilter?) {
         guard filter.textFormat != textFormat || filter.type != .text || filter.modelId != nil || filter.assetKindFilter != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.type = .text
             filter.modelId = nil
             filter.textFormat = textFormat
@@ -769,7 +769,7 @@ final class AppState: ObservableObject {
     func setAssetKindFilter(_ assetKindFilter: AssetKindFilter?) {
         guard filter.assetKindFilter != assetKindFilter || filter.modelId != nil || filter.textFormat != nil || filter.requiredTag != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.type = nil
             filter.modelId = nil
             filter.textFormat = nil
@@ -783,7 +783,7 @@ final class AppState: ObservableObject {
         let nextTag = normalizedTag?.isEmpty == false ? normalizedTag : nil
         guard filter.requiredTag != nextTag || filter.type != nil || filter.modelId != nil || filter.textFormat != nil || filter.assetKindFilter != nil else { return }
         pushCurrentNavigationSnapshot()
-        updateFilterSelectingFirst {
+        updateFilterPreservingSelection { filter in
             filter.type = nil
             filter.modelId = nil
             filter.textFormat = nil
@@ -2435,11 +2435,13 @@ final class AppState: ObservableObject {
         itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     }
 
-    private func updateFilterSelectingFirst(_ updates: () -> Void) {
+    private func updateFilterPreservingSelection(_ updates: (inout PromptFilter) -> Void) {
+        var nextFilter = filter
+        updates(&nextFilter)
         isBatchingFilterUpdate = true
-        updates()
+        filter = nextFilter
         isBatchingFilterUpdate = false
-        refreshFilteredItems(preserveExistingSelection: false)
+        refreshFilteredItems(preserveExistingSelection: true)
     }
 
     private func currentNavigationSnapshot() -> NavigationSnapshot {
@@ -2474,17 +2476,22 @@ final class AppState: ObservableObject {
         preserveExistingSelection: Bool = true,
         allowEmptySelection: Bool = false
     ) {
+        let start = DebugPerformanceProbe.now()
         let nextFilteredItems = filteredItems(for: filter)
+        DebugPerformanceProbe.recordDuration("filter.apply.ms", startedAt: start)
         filteredItems = nextFilteredItems
 
         if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
+            guard requestedID != selectedID else { return }
             selectedID = requestedID
-        } else if preserveExistingSelection, let selectedID, nextFilteredItems.contains(where: { $0.id == selectedID }) {
-            return
-        } else if allowEmptySelection {
-            selectedID = nil
         } else {
-            selectedID = nextFilteredItems.first?.id
+            let nextSelectedID = PromptSelectionResolver.selectedID(
+                preserving: preserveExistingSelection ? selectedID : nil,
+                in: nextFilteredItems,
+                allowEmptySelection: allowEmptySelection
+            )
+            guard nextSelectedID != selectedID else { return }
+            selectedID = nextSelectedID
         }
     }
 

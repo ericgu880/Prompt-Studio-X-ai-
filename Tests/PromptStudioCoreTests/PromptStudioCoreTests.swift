@@ -30,4 +30,8 @@ func promptStudioCoreTestsTargetLoads() -> Bool {
         && TextSyntaxRules.tokenKinds(in: #"{"count":1,"ok":true}"#, mode: .json).contains(.jsonKey)
         && PromptImportParser.parse(text: "Prompt: forest --no text", assetKind: .text).negativePrompt == "text"
         && PromptFiltering.apply([], filter: PromptFilter()).isEmpty
+        && ThumbnailDecodeSizing.bucket(for: 1) == 256
+        && ThumbnailDecodeSizing.bucket(for: 257) == 512
+        && ThumbnailDecodeSizing.reusableBuckets(for: 257) == [512, 1024]
+        && PromptSelectionResolver.selectedID(preserving: "missing", in: [attachment], allowEmptySelection: false) == attachment.id
 }
