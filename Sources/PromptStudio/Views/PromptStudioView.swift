@@ -2923,7 +2923,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             currentThumbnailScale = update.thumbnailScale
             lastAvailableWidthBucket = widthBucket
             layout?.configure(entries: nextEntries, columnCount: columnCount, itemWidth: nextItemWidth)
-            collectionView.reloadData()
+            reloadDataWithoutAnimation(collectionView)
             lastLayoutInputKey = layoutInputKey
             lastRenderedSelectedItemIDs = state.selectedIDs
             lastEntryIDs = nextEntryIDs
@@ -2952,8 +2952,20 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             itemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
             layout?.configure(entries: entries, columnCount: columnCount, itemWidth: itemWidth)
             lastLayoutInputKey = nil
-            collectionView.reloadData()
+            reloadDataWithoutAnimation(collectionView)
             publishPreviewNavigationSnapshotIfNeeded()
+        }
+
+        private func reloadDataWithoutAnimation(_ collectionView: NSCollectionView) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                collectionView.reloadData()
+                collectionView.layoutSubtreeIfNeeded()
+                CATransaction.commit()
+            }
         }
 
         private func rebuildIndexPathMaps() {
@@ -3360,6 +3372,12 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.layer?.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "transform": NSNull(),
+            "opacity": NSNull()
+        ]
     }
 
     func setMarkdownSelected(_ isSelected: Bool) {
@@ -3758,11 +3776,23 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         wantsLayer = true
         layer?.cornerRadius = Metrics.selectionCornerRadius
         layer?.masksToBounds = false
+        layer?.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "transform": NSNull(),
+            "opacity": NSNull()
+        ]
 
         contentView.wantsLayer = true
         contentView.layer?.cornerRadius = Metrics.contentCornerRadius
         contentView.layer?.masksToBounds = true
         contentView.layer?.backgroundColor = Palette.placeholder.cgColor
+        contentView.layer?.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "transform": NSNull(),
+            "opacity": NSNull()
+        ]
         addSubview(contentView)
 
         imageLayer.contentsGravity = .resizeAspectFill
