@@ -172,10 +172,6 @@ enum StudioMotion {
         reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.98))
     }
 
-    static func contentTransition(reduceMotion: Bool) -> AnyTransition {
-        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985))
-    }
-
     static func inspectorTransition(reduceMotion: Bool) -> AnyTransition {
         reduceMotion ? .opacity : .asymmetric(
             insertion: .move(edge: .trailing).combined(with: .opacity),

@@ -1977,7 +1977,6 @@ private struct RecentRow: View {
 
 private struct MainContentView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
     let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
@@ -2037,10 +2036,8 @@ private struct MainContentView: View {
                 clearTextFocus()
             })
             .id(contentStateKey)
-            .transition(StudioMotion.contentTransition(reduceMotion: reduceMotion))
         }
         .background(StudioColor.previewBackground)
-        .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: contentStateKey)
     }
 
     private var contentFrameAlignment: Alignment {
@@ -3770,8 +3767,17 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
 
         imageLayer.contentsGravity = .resizeAspectFill
         imageLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        imageLayer.actions = [
+            "contents": NSNull(),
+            "bounds": NSNull(),
+            "position": NSNull()
+        ]
         contentView.layer?.addSublayer(imageLayer)
 
+        gradientLayer.actions = [
+            "bounds": NSNull(),
+            "position": NSNull()
+        ]
         gradientLayer.colors = [
             NSColor.black.withAlphaComponent(0).cgColor,
             NSColor.black.withAlphaComponent(0.42).cgColor,
