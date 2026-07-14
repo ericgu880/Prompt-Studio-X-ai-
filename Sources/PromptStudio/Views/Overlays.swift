@@ -792,6 +792,8 @@ struct PromptComposerOverlay: View {
     @State private var showCloseConfirmation = false
     @State private var isPreviewImageDropTarget = false
     @State private var isReferenceDropTarget = false
+    @State private var isPreviewImageHovered = false
+    @State private var isReferenceHovered = false
     @FocusState private var focusedCreateInput: CreateComposerInputField?
 
     private var editingItem: PromptItem? {
@@ -843,21 +845,19 @@ struct PromptComposerOverlay: View {
 
     private var createWorkspacePane: some View {
         GeometryReader { geometry in
-            let horizontalPadding: CGFloat = 42
-            let verticalPadding: CGFloat = 42
-            let headerHeight: CGFloat = 34
-            let headerGap: CGFloat = 18
-            let panelPadding: CGFloat = 24
-            let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 40 : 28
+            let horizontalPadding: CGFloat = 36
+            let verticalPadding: CGFloat = 32
+            let headerHeight: CGFloat = 40
+            let headerGap: CGFloat = 22
+            let columnSpacing: CGFloat = geometry.size.width >= 1_250 ? 32 : 24
             let panelWidth = max(0, geometry.size.width - horizontalPadding * 2)
             let panelHeight = max(0, geometry.size.height - verticalPadding * 2 - headerHeight - headerGap)
-            let contentWidth = max(0, panelWidth - panelPadding * 2)
-            let contentHeight = max(0, panelHeight - panelPadding * 2)
+            let contentWidth = panelWidth
+            let contentHeight = panelHeight
             let showsUploadColumn = type != .text
-            let uploadWidth = showsUploadColumn ? min(360, max(300, contentWidth * 0.34)) : 0
+            let uploadWidth = showsUploadColumn ? min(320, max(280, contentWidth * 0.28)) : 0
             let leftWidth = showsUploadColumn ? max(0, contentWidth - columnSpacing - uploadWidth) : contentWidth
-            let promptHeight = max(220, contentHeight - 226)
-            let uploadBoxHeight = max(150, (contentHeight - 76) / 2)
+            let promptHeight = max(240, contentHeight - 212)
 
             ZStack {
                 CreateComposerColor.workspace
@@ -866,7 +866,7 @@ struct PromptComposerOverlay: View {
                 VStack(alignment: .leading, spacing: headerGap) {
                     HStack(alignment: .center) {
                         Text(composerTitle)
-                            .font(StudioFont.font(14, weight: .semibold))
+                            .font(StudioFont.font(16, weight: .semibold))
                             .foregroundStyle(CreateComposerColor.primaryText)
                         Spacer()
                         Button(primaryActionTitle) {
@@ -876,31 +876,27 @@ struct PromptComposerOverlay: View {
                     }
                     .frame(width: panelWidth, height: headerHeight, alignment: .center)
 
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(alignment: .top, spacing: columnSpacing) {
-                            VStack(alignment: .leading, spacing: 28) {
-                                createHeaderControls(width: leftWidth)
+                    HStack(alignment: .top, spacing: columnSpacing) {
+                        VStack(alignment: .leading, spacing: 22) {
+                            createHeaderControls(width: leftWidth)
                                 .frame(width: leftWidth, alignment: .leading)
 
-                                createPromptColumn(promptHeight: promptHeight)
-                                    .frame(width: leftWidth, alignment: .topLeading)
-                            }
-
-                            if showsUploadColumn {
-                                createUploadColumn(boxHeight: uploadBoxHeight)
-                                    .frame(width: uploadWidth, alignment: .topLeading)
-                            }
+                            createPromptColumn(promptHeight: promptHeight)
+                                .frame(width: leftWidth, alignment: .topLeading)
                         }
-                        .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
+
+                        if showsUploadColumn {
+                            createUploadColumn(availableHeight: contentHeight)
+                                .frame(width: uploadWidth, alignment: .topLeading)
+                                .overlay(alignment: .leading) {
+                                    Rectangle()
+                                        .fill(StudioColor.hairline)
+                                        .frame(width: 1, height: contentHeight)
+                                        .offset(x: -columnSpacing / 2)
+                                }
+                        }
                     }
-                    .padding(panelPadding)
-                    .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
-                    .background(CreateComposerColor.documentBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(CreateComposerColor.documentBorder, lineWidth: 1)
-                    )
+                    .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
                 }
                 .frame(width: panelWidth, height: headerHeight + headerGap + panelHeight, alignment: .topLeading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -909,11 +905,11 @@ struct PromptComposerOverlay: View {
     }
 
     private func createHeaderControls(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             createTypeTabs
                 .frame(width: width, alignment: .leading)
 
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
                 createModelMenu
                     .frame(maxWidth: .infinity)
                 createFormatMenu
@@ -924,7 +920,7 @@ struct PromptComposerOverlay: View {
     }
 
     private func createPromptColumn(promptHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
             createField("标题") {
                 createTextInput("请输入标题", text: $title)
             }
@@ -935,24 +931,31 @@ struct PromptComposerOverlay: View {
         }
     }
 
-    private func createUploadColumn(boxHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
-            createField("上传提示词预览图") {
-                previewImageDropZone(height: boxHeight)
+    private func createUploadColumn(availableHeight: CGFloat) -> some View {
+        let previewHeight = min(236, max(180, availableHeight * 0.30))
+        let referenceHeight = min(280, max(180, availableHeight - previewHeight - 82))
+        return VStack(alignment: .leading, spacing: 22) {
+            createField("预览图") {
+                previewImageDropZone(height: previewHeight)
             }
 
-            createField("上传参考资产") {
-                referenceImagesDropZone(height: boxHeight)
+            createField("参考资产") {
+                referenceImagesDropZone(height: referenceHeight)
             }
         }
     }
 
     private var createTypeTabs: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 2) {
             ForEach(createTypeOptions) { option in
                 createTypeTab(option)
             }
         }
+        .padding(3)
+        .background(CreateComposerColor.inputBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+        .fixedSize()
     }
 
     private var createTypeOptions: [PromptType] {
@@ -969,15 +972,11 @@ struct PromptComposerOverlay: View {
         } label: {
             Text(title)
                 .font(StudioFont.font(12, weight: .medium))
-                .foregroundStyle(active ? CreateComposerColor.activeTabText : CreateComposerColor.secondaryText)
-                .frame(width: 70, height: 34)
-                .background(active ? StudioColor.primaryAction : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(active ? Color.clear : CreateComposerColor.border, lineWidth: 1)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .foregroundStyle(active ? CreateComposerColor.primaryText : CreateComposerColor.secondaryText)
+                .frame(width: 66, height: 30)
+                .background(active ? StudioColor.selection : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1016,7 +1015,7 @@ struct PromptComposerOverlay: View {
                     .foregroundStyle(CreateComposerColor.primaryText)
             }
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: 40)
             .background(CreateComposerColor.inputBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
@@ -1045,7 +1044,7 @@ struct PromptComposerOverlay: View {
                     .foregroundStyle(CreateComposerColor.primaryText)
             }
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: 40)
             .background(CreateComposerColor.inputBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
@@ -1057,9 +1056,9 @@ struct PromptComposerOverlay: View {
 
 
     private func createField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(StudioFont.font(14))
+                .font(StudioFont.font(12, weight: .semibold))
                 .foregroundStyle(CreateComposerColor.secondaryText)
             content()
         }
@@ -1081,7 +1080,7 @@ struct PromptComposerOverlay: View {
                 .padding(.horizontal, 16)
                 .focused($focusedCreateInput, equals: .title)
         }
-        .frame(height: 46)
+        .frame(height: 42)
         .background(CreateComposerColor.fieldBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
@@ -1115,8 +1114,14 @@ struct PromptComposerOverlay: View {
     private func previewImageDropZone(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isPreviewImageDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+                .fill(isPreviewImageDropTarget || isPreviewImageHovered ? CreateComposerColor.dropActive : CreateComposerColor.documentBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(
+                            isPreviewImageDropTarget ? StudioColor.primaryAction.opacity(0.55) : CreateComposerColor.border,
+                            style: StrokeStyle(lineWidth: 1, dash: previewImageURL == nil ? [6, 5] : [])
+                        )
+                )
 
             if let previewImageURL {
                 GeometryReader { proxy in
@@ -1143,26 +1148,37 @@ struct PromptComposerOverlay: View {
                 Button {
                     setPreviewImage(AppKitBridge.chooseReferenceImages())
                 } label: {
-                    createUploadPlaceholder("拖拽或点击添加预览图")
+                    createUploadPlaceholder("添加预览图")
                 }
                 .buttonStyle(.plain)
             }
         }
         .frame(height: height)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { isPreviewImageHovered = $0 }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isPreviewImageDropTarget, perform: handlePreviewImageDrop)
     }
 
     private func referenceImagesDropZone(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isReferenceDropTarget ? CreateComposerColor.dropActive : CreateComposerColor.fieldBackground)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+                .fill(isReferenceDropTarget || isReferenceHovered ? CreateComposerColor.dropActive : CreateComposerColor.documentBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(
+                            isReferenceDropTarget ? StudioColor.primaryAction.opacity(0.55) : CreateComposerColor.border,
+                            style: StrokeStyle(
+                                lineWidth: 1,
+                                dash: existingReferenceAssets.isEmpty && referenceURLs.isEmpty ? [6, 5] : []
+                            )
+                        )
+                )
 
             if existingReferenceAssets.isEmpty && referenceURLs.isEmpty {
                 Button {
                     appendReferenceImages(AppKitBridge.chooseReferenceAssets())
                 } label: {
-                    createUploadPlaceholder("拖拽或点击添加参考资产")
+                    createUploadPlaceholder("添加参考资产")
                 }
                 .buttonStyle(.plain)
             } else {
@@ -1191,39 +1207,51 @@ struct PromptComposerOverlay: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(18)
+                .padding(14)
             }
         }
         .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { isReferenceHovered = $0 }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isReferenceDropTarget, perform: handleReferenceDrop)
     }
 
     private func createUploadPlaceholder(_ text: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "photo.on.rectangle")
-                .font(StudioFont.symbol(20))
-                .foregroundStyle(CreateComposerColor.secondaryText)
+        VStack(spacing: 9) {
+            ZStack {
+                Circle()
+                    .fill(CreateComposerColor.inputBackground)
+                    .frame(width: 38, height: 38)
+                Image(systemName: "plus")
+                    .font(StudioFont.symbol(14, weight: .medium))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+            }
             Text(text)
-                .font(StudioFont.font(13))
+                .font(StudioFont.font(12, weight: .medium))
                 .foregroundStyle(CreateComposerColor.secondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var createPreviewPane: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center) {
-                Text("预览窗口")
-                    .font(StudioFont.font(16, weight: .semibold))
-                    .foregroundStyle(StudioColor.text)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("实时预览")
+                        .font(StudioFont.font(15, weight: .semibold))
+                        .foregroundStyle(StudioColor.text)
+                    Text(isEditing ? "编辑 Prompt" : "新建 Prompt")
+                        .font(StudioFont.font(11))
+                        .foregroundStyle(StudioColor.tertiaryText)
+                }
                 Spacer()
                 OverlayCloseButton {
                     requestClose()
                 }
             }
 
-            if hasCreatePreviewContent {
+            if hasMeaningfulPreviewContent {
                 if hasTitle {
                     Text(previewTitle)
                         .font(StudioFont.font(15, weight: .semibold))
@@ -1258,14 +1286,37 @@ struct PromptComposerOverlay: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
                 }
+            } else {
+                if !previewMetadataChips.isEmpty {
+                    SidePanelChipFlow(texts: previewMetadataChips)
+                }
+
+                Rectangle()
+                    .fill(StudioColor.hairline)
+                    .frame(height: 1)
+
+                VStack(spacing: 12) {
+                    Image(systemName: "rectangle.and.pencil.and.ellipsis")
+                        .font(StudioFont.symbol(24, weight: .regular))
+                        .foregroundStyle(StudioColor.tertiaryText)
+                    Text("尚无预览内容")
+                        .font(StudioFont.font(12, weight: .medium))
+                        .foregroundStyle(StudioColor.secondaryText)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.top, 34)
+        .padding(.top, 32)
         .padding(.horizontal, 24)
         .padding(.bottom, 28)
         .background(StudioColor.panel)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(StudioColor.hairline)
+                .frame(width: 1)
+        }
     }
 
     private var createPreviewReferenceSection: some View {
@@ -1281,8 +1332,8 @@ struct PromptComposerOverlay: View {
         prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
-    private var hasCreatePreviewContent: Bool {
-        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewAssets.isEmpty || !previewMetadataChips.isEmpty
+    private var hasMeaningfulPreviewContent: Bool {
+        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewAssets.isEmpty
     }
 
     private var previewImageSize: CGSize {
@@ -1899,7 +1950,7 @@ struct PromptComposerOverlay: View {
     }
 
     private var composerTitle: String {
-        isEditing ? "编辑Prompt" : "新建Prompt"
+        isEditing ? "编辑 Prompt" : "新建 Prompt"
     }
 
     private var primaryActionTitle: String {
@@ -2563,7 +2614,6 @@ private struct OPSReferenceThumb: View {
 private enum CreateComposerColor {
     static let workspace = StudioColor.appBackground
     static let documentBackground = Color(hex: 0x141414)
-    static let documentBorder = Color(hex: 0x363A3F)
     static let inputBackground = StudioColor.control
     static let fieldBackground = Color(hex: 0x2D2D2D)
     static let dropActive = StudioColor.panelRaised
@@ -2571,19 +2621,32 @@ private enum CreateComposerColor {
     static let primaryText = StudioColor.text
     static let secondaryText = StudioColor.secondaryText.opacity(0.92)
     static let placeholderText = StudioColor.tertiaryText
-    static let activeTabText = StudioColor.primaryActionText
 }
 
 private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        CreateComposerPrimaryButton(configuration: configuration)
+    }
+}
+
+private struct CreateComposerPrimaryButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let configuration: ButtonStyle.Configuration
+    @State private var isHovered = false
+
+    var body: some View {
         configuration.label
             .font(StudioFont.font(12, weight: .medium))
             .foregroundStyle(StudioColor.primaryActionText)
-            .frame(width: 120, height: 34)
-            .background(configuration.isPressed ? Color.white.opacity(0.82) : StudioColor.primaryAction)
+            .frame(width: 104, height: 36)
+            .background(configuration.isPressed ? Color.white.opacity(0.82) : (isHovered ? Color.white.opacity(0.90) : StudioColor.primaryAction))
             .clipShape(Capsule())
             .contentShape(Capsule())
             .opacity(configuration.isPressed ? 0.75 : 1)
+            .onHover { isHovered = $0 }
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+            .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 
