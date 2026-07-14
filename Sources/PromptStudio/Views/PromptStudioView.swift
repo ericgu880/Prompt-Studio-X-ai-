@@ -5390,9 +5390,9 @@ private struct EmptyStateView: View {
                 LucideIcon(kind: .trash2)
                     .frame(width: 58, height: 58)
                     .foregroundStyle(StudioColor.secondaryText)
-                Text("回收站为空")
+                Text(trashEmptyTitle)
                     .font(StudioFont.font(14))
-                Text("移入回收站的素材会显示在这里。")
+                Text(trashEmptyMessage)
                     .foregroundStyle(StudioColor.secondaryText)
             } else {
                 Image(systemName: "photo.on.rectangle.angled")
@@ -5414,6 +5414,14 @@ private struct EmptyStateView: View {
 
     private var isTrash: Bool {
         state.filter.collection == .trash
+    }
+
+    private var trashEmptyTitle: String {
+        state.trashCount > 0 ? "当前筛选下回收站为空" : "回收站为空"
+    }
+
+    private var trashEmptyMessage: String {
+        state.trashCount > 0 ? "切换到「全部」或取消当前筛选，可查看回收站中的其它素材。" : "移入回收站的素材会显示在这里。"
     }
 }
 
