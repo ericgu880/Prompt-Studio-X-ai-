@@ -3420,7 +3420,7 @@ private final class NativeMarkdownCardContentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class NativeMarkdownCardView: NSView {
+private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     private enum Metrics {
         static let selectionOutset = AssetCardMetrics.selectionOutset
         static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
@@ -3479,6 +3479,9 @@ private final class NativeMarkdownCardView: NSView {
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
     private var isCardSelected = false
+    private var draggedItemID: String?
+    private var dragStartLocation: NSPoint?
+    private var hasStartedDragging = false
     private var areActionsVisible = false
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var previewAction: (() -> Void)?
@@ -3520,6 +3523,7 @@ private final class NativeMarkdownCardView: NSView {
     ) {
         let snapshot = TextAssetCardSnapshot(item: item)
         let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        draggedItemID = item.isDeleted ? nil : item.id
         self.selectAction = selectAction
         self.previewAction = previewAction
         self.editAction = editAction
@@ -3599,12 +3603,45 @@ private final class NativeMarkdownCardView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        dragStartLocation = event.locationInWindow
+        hasStartedDragging = false
         if event.clickCount >= 2 {
             selectAction?([])
             previewAction?()
         } else {
             selectAction?(event.modifierFlags)
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !hasStartedDragging,
+              let draggedItemID,
+              let dragStartLocation else {
+            return
+        }
+        let deltaX = event.locationInWindow.x - dragStartLocation.x
+        let deltaY = event.locationInWindow.y - dragStartLocation.y
+        guard hypot(deltaX, deltaY) >= 6 else { return }
+
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(draggedItemID, forType: .string)
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        hasStartedDragging = true
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStartLocation = nil
+        hasStartedDragging = false
+        super.mouseUp(with: event)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .move : []
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -3656,6 +3693,16 @@ private final class NativeMarkdownCardView: NSView {
         copyButton.isHidden = true
         contentView.addSubview(editButton)
         contentView.addSubview(copyButton)
+    }
+
+    private func dragPreviewImage() -> NSImage {
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return NSImage(size: bounds.size)
+        }
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
+        return image
     }
 
     private func apply(_ data: TextAssetCardData) {
@@ -4779,6 +4826,22 @@ private final class AssetCardSelectionState: ObservableObject {
     }
 }
 
+private struct AssetCardExternalDragModifier: ViewModifier {
+    let itemID: String
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.onDrag {
+                NSItemProvider(object: itemID as NSString)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject private var selectionState: AssetCardSelectionState
@@ -4853,6 +4916,12 @@ private struct AssetCardView: View {
         .contextMenu {
             assetContextMenu
         }
+        .modifier(
+            AssetCardExternalDragModifier(
+                itemID: item.id,
+                isEnabled: !isReorderingEnabled && !item.isDeleted
+            )
+        )
         .simultaneousGesture(reorderGesture)
         .transaction { transaction in
             transaction.animation = nil
