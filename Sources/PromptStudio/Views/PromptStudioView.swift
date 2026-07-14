@@ -2687,6 +2687,8 @@ private struct CompactFilterChip: View {
 }
 
 private struct MasonryCollectionGridView: NSViewRepresentable {
+    private static let scrollbarLaneWidth: CGFloat = 18
+
     @EnvironmentObject private var state: AppState
     @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
     let folders: [AppState.FolderRow]
@@ -2714,12 +2716,25 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         collectionView.wantsLayer = true
         collectionView.layer?.backgroundColor = NSColor.clear.cgColor
 
-        let scrollView = NSScrollView()
+        let scrollView = HoverRevealScrollView()
+        scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
+        scrollView.verticalScroller = TransparentOverlayScroller()
         scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: -Self.scrollbarLaneWidth
+        )
+        scrollView.setRevealScrollerOnHover(true)
         scrollView.documentView = collectionView
 
         context.coordinator.collectionView = collectionView
@@ -3008,7 +3023,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 switch entries[indexPath.item] {
                 case .item(let item) where item.isTextDocumentLike:
                     updateVisibleMarkdownSelection(itemID: item.id, isSelected: nextItemIDs.contains(item.id))
-                default:
+                case .item(let item):
+                    updateVisibleMediaSelection(itemID: item.id, isSelected: nextItemIDs.contains(item.id))
+                case .folder:
                     reloadIndexPaths.insert(indexPath)
                 }
             }
@@ -3023,6 +3040,14 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 return
             }
             item.setMarkdownSelected(isSelected)
+        }
+
+        private func updateVisibleMediaSelection(itemID: String, isSelected: Bool) {
+            guard let indexPath = itemIndexPathsByID[itemID],
+                  let item = collectionView?.item(at: indexPath) as? MasonryCollectionItem else {
+                return
+            }
+            item.setMediaSelected(isSelected)
         }
 
         private func publishPreviewNavigationSnapshotIfNeeded() {
@@ -3226,6 +3251,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
     private var hostingView: NSHostingView<AnyView>?
     private var markdownCardView: NativeMarkdownCardView?
+    private let mediaSelectionState = AssetCardSelectionState(isSelected: false)
 
     override func loadView() {
         view = NSView()
@@ -3235,6 +3261,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
 
     func setMarkdownSelected(_ isSelected: Bool) {
         markdownCardView?.setSelected(isSelected)
+    }
+
+    func setMediaSelected(_ isSelected: Bool) {
+        mediaSelectionState.isSelected = isSelected
     }
 
     func configure(
@@ -3332,11 +3362,13 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 .frame(width: width, height: height)
             )
         case .item(let item):
+            mediaSelectionState.isSelected = state.selectedIDs.contains(item.id)
             rootView = AnyView(
                 AssetCardView(
                     item: item,
                     width: width,
                     isReorderingEnabled: false,
+                    selectionState: mediaSelectionState,
                     selectionAction: selectItem,
                     reorderDragChangedAction: { _, _ in },
                     reorderDragEndedAction: { _ in }
@@ -3362,6 +3394,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     }
 }
 
+private final class NativeMarkdownCardContentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private final class NativeMarkdownCardView: NSView {
     private enum Metrics {
         static let selectionOutset = AssetCardMetrics.selectionOutset
@@ -3373,10 +3409,6 @@ private final class NativeMarkdownCardView: NSView {
         static let titleSummarySpacing: CGFloat = 10
         static let summaryLineHeight: CGFloat = 17
         static let summaryLineSpacing: CGFloat = 5
-        static let footerSpacing: CGFloat = 8
-        static let chipHeight: CGFloat = 24
-        static let chipSpacing: CGFloat = 6
-        static let chipHorizontalPadding: CGFloat = 16
         static let metadataHeight: CGFloat = 16
         static let actionButtonSize: CGFloat = 28
         static let actionButtonSpacing: CGFloat = 8
@@ -3385,27 +3417,43 @@ private final class NativeMarkdownCardView: NSView {
     }
 
     private enum Palette {
-        static let background = NSColor(hex: 0x141414)
+        static let background = NSColor(
+            srgbRed: 45.0 / 255.0,
+            green: 45.0 / 255.0,
+            blue: 45.0 / 255.0,
+            alpha: 1
+        )
         static let border = NSColor(hex: 0x363A3F)
         static let title = NSColor.white
         static let text = NSColor(hex: 0xBDBEC0)
         static let summary = NSColor.white.withAlphaComponent(0.76)
         static let mutedText = NSColor(hex: 0xBDBEC0).withAlphaComponent(0.72)
-        static let chipText = NSColor.white.withAlphaComponent(0.82)
-        static let chipBackground = NSColor(hex: 0x1E1E1E).withAlphaComponent(0.92)
-        static let chipBorder = NSColor(hex: 0x212327).withAlphaComponent(0.7)
-        static let actionBackground = NSColor(hex: 0x1F1F1F)
-        static let actionBorder = NSColor(hex: 0x212327)
+        static let red = NSColor(hex: 0xFF5F57)
+        static let orange = NSColor(hex: 0xFF9F0A)
+        static let green = NSColor(hex: 0x37DD61)
+        static let blue = NSColor(hex: 0x41CBE0)
+        static let actionBackground = NSColor(
+            srgbRed: 31.0 / 255.0,
+            green: 31.0 / 255.0,
+            blue: 31.0 / 255.0,
+            alpha: 1
+        )
+        static let actionBorder = NSColor(
+            srgbRed: 33.0 / 255.0,
+            green: 35.0 / 255.0,
+            blue: 39.0 / 255.0,
+            alpha: 1
+        )
+        static let actionHoverBorder = NSColor.white.withAlphaComponent(0.42)
         static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
     }
 
-    private let contentView = NSView()
+    private let contentView = NativeMarkdownCardContentView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
-    private let editButton = NativeMarkdownIconButton(symbolName: "pencil", toolTip: "编辑")
-    private let copyButton = NativeMarkdownIconButton(symbolName: "doc.on.doc", toolTip: "复制文档信息")
+    private let editButton = NativeMarkdownIconButton(icon: .pencil, toolTip: "编辑")
+    private let copyButton = NativeMarkdownIconButton(icon: .copy, toolTip: "复制文档信息")
     private var summaryLabels: [NSTextField] = []
-    private var chipLabels: [NSTextField] = []
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
     private var isCardSelected = false
@@ -3520,22 +3568,6 @@ private final class NativeMarkdownCardView: NSView {
         )
 
         let metadataY = contentFrame.height - Metrics.verticalInset - Metrics.metadataHeight
-        let chipY = metadataY - Metrics.footerSpacing - Metrics.chipHeight
-        var chipX = Metrics.horizontalInset
-        let maxChipX = Metrics.horizontalInset + contentWidth
-        for chip in chipLabels {
-            let fittingWidth = min(
-                chip.intrinsicContentSize.width + Metrics.chipHorizontalPadding,
-                max(48, maxChipX - chipX)
-            )
-            guard chipX + fittingWidth <= maxChipX else {
-                chip.isHidden = true
-                continue
-            }
-            chip.isHidden = false
-            chip.frame = CGRect(x: chipX, y: chipY, width: fittingWidth, height: Metrics.chipHeight)
-            chipX += fittingWidth + Metrics.chipSpacing
-        }
         metadataLabel.frame = CGRect(
             x: Metrics.horizontalInset,
             y: metadataY,
@@ -3588,8 +3620,16 @@ private final class NativeMarkdownCardView: NSView {
 
         editButton.actionHandler = { [weak self] in self?.editAction?() }
         copyButton.actionHandler = { [weak self] in self?.copyAction?() }
-        editButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
-        copyButton.applyPalette(background: Palette.actionBackground, border: Palette.actionBorder)
+        editButton.applyPalette(
+            background: Palette.actionBackground,
+            border: Palette.actionBorder,
+            hoverBorder: Palette.actionHoverBorder
+        )
+        copyButton.applyPalette(
+            background: Palette.actionBackground,
+            border: Palette.actionBorder,
+            hoverBorder: Palette.actionHoverBorder
+        )
         editButton.isHidden = true
         copyButton.isHidden = true
         contentView.addSubview(editButton)
@@ -3599,7 +3639,6 @@ private final class NativeMarkdownCardView: NSView {
     private func apply(_ data: TextAssetCardData) {
         titleLabel.stringValue = data.title
         setSummaryLines(data.displaySummaryLines(limit: 3))
-        setChips(Array(data.chips.prefix(3)))
         metadataLabel.stringValue = data.metadata
         needsLayout = true
     }
@@ -3627,23 +3666,49 @@ private final class NativeMarkdownCardView: NSView {
         }
         for (index, label) in summaryLabels.enumerated() {
             label.isHidden = index >= lines.count
-            label.stringValue = index < lines.count ? lines[index] : ""
+            label.attributedStringValue = index < lines.count
+                ? attributedSummaryLine(lines[index])
+                : NSAttributedString(string: "")
         }
     }
 
-    private func setChips(_ chips: [String]) {
-        chipLabels.forEach { $0.removeFromSuperview() }
-        chipLabels = chips.map { chip in
-            let label = NSTextField(labelWithString: chip)
-            configureLabel(label, font: .systemFont(ofSize: 10, weight: .regular), color: Palette.chipText, lines: 1)
-            label.alignment = .center
-            label.wantsLayer = true
-            label.layer?.cornerRadius = Metrics.chipHeight / 2
-            label.layer?.backgroundColor = Palette.chipBackground.cgColor
-            label.layer?.borderWidth = 1
-            label.layer?.borderColor = Palette.chipBorder.cgColor
-            contentView.addSubview(label)
-            return label
+    private func attributedSummaryLine(_ line: String) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(
+            string: line,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: Palette.summary
+            ]
+        )
+        let fullRange = NSRange(location: 0, length: (line as NSString).length)
+        for rule in TextSyntaxRules.rules(for: .markdown, text: line) {
+            guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else { continue }
+            regex.enumerateMatches(in: line, range: fullRange) { match, _, _ in
+                guard let match else { return }
+                let targetRange = rule.captureGroup > 0 && rule.captureGroup < match.numberOfRanges
+                    ? match.range(at: rule.captureGroup)
+                    : match.range
+                guard targetRange.location != NSNotFound, targetRange.length > 0 else { return }
+                attributed.addAttribute(.foregroundColor, value: summaryColor(for: rule.token), range: targetRange)
+            }
+        }
+        return attributed
+    }
+
+    private func summaryColor(for token: TextSyntaxToken) -> NSColor {
+        switch token {
+        case .heading, .jsonKey, .yamlKey, .xmlTag, .timestamp, .infoLevel, .sourceKeyword:
+            Palette.blue
+        case .quoteMarker, .inlineCode, .string, .url, .path:
+            Palette.green
+        case .listMarker, .number, .punctuation, .xmlAttribute, .warningLevel:
+            Palette.orange
+        case .negativeConstraint, .literal, .errorLevel:
+            Palette.red
+        case .bold:
+            NSColor(hex: 0xEEEEEE)
+        case .comment, .muted:
+            Palette.text
         }
     }
 
@@ -3671,11 +3736,24 @@ private final class NativeMarkdownCardView: NSView {
 
 private final class NativeMarkdownIconButton: NSButton {
     var actionHandler: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+    private var normalBackground = NSColor.clear
+    private var normalBorder = NSColor.clear
+    private var hoverBorder = NSColor.clear
+    private var isHovered = false
+    private var isPressed = false
 
-    init(symbolName: String, toolTip: String) {
+    init(icon: LucideIcon.Kind, toolTip: String) {
         super.init(frame: .zero)
-        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: toolTip)
+        let renderer = ImageRenderer(
+            content: LucideIcon(kind: icon)
+                .foregroundStyle(Color.white)
+                .frame(width: 14, height: 14)
+        )
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        image = renderer.nsImage
         imagePosition = .imageOnly
+        imageScaling = .scaleNone
         self.toolTip = toolTip
         title = ""
         bezelStyle = .regularSquare
@@ -3685,6 +3763,7 @@ private final class NativeMarkdownIconButton: NSButton {
         layer?.borderWidth = 1
         target = self
         action = #selector(runAction)
+        setAccessibilityLabel(toolTip)
     }
 
     required init?(coder: NSCoder) {
@@ -3695,10 +3774,56 @@ private final class NativeMarkdownIconButton: NSButton {
         actionHandler?()
     }
 
-    func applyPalette(background: NSColor, border: NSColor) {
-        layer?.backgroundColor = background.cgColor
-        layer?.borderColor = border.cgColor
-        contentTintColor = NSColor.white.withAlphaComponent(0.9)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateAppearance(animated: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateAppearance(animated: true)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        updateAppearance(animated: true)
+        super.mouseDown(with: event)
+        isPressed = false
+        updateAppearance(animated: true)
+    }
+
+    func applyPalette(background: NSColor, border: NSColor, hoverBorder: NSColor) {
+        normalBackground = background
+        normalBorder = border
+        self.hoverBorder = hoverBorder
+        contentTintColor = .white
+        updateAppearance(animated: false)
+    }
+
+    private func updateAppearance(animated: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? StudioMotion.fastDuration : 0)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        layer?.backgroundColor = normalBackground.cgColor
+        layer?.borderColor = (isHovered ? hoverBorder : normalBorder).cgColor
+        layer?.opacity = isPressed ? 0.72 : 1
+        let scale: CGFloat = isPressed ? 0.985 : (isHovered ? 1.04 : 1)
+        layer?.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        CATransaction.commit()
     }
 }
 
@@ -4563,6 +4688,14 @@ private enum AssetCardMetrics {
         if item.isTextDocumentLike {
             return width
         }
+        if item.assetKind == .image {
+            if item.width > 0, item.height > 0 {
+                return width * CGFloat(item.height) / CGFloat(item.width)
+            }
+            let parts = item.displayAspectRatio.split(separator: ":").compactMap { Double($0) }
+            guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { return width * 1.25 }
+            return width * CGFloat(parts[1] / parts[0])
+        }
         switch item.previewMode {
         case .audio, .document, .reference, .generic:
             return width * 0.82
@@ -4616,18 +4749,49 @@ private struct MasonryPlacementOffsetModifier: ViewModifier {
     }
 }
 
+private final class AssetCardSelectionState: ObservableObject {
+    @Published var isSelected: Bool
+
+    init(isSelected: Bool) {
+        self.isSelected = isSelected
+    }
+}
+
 private struct AssetCardView: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject private var selectionState: AssetCardSelectionState
     let item: PromptItem
     let width: CGFloat
     let isReorderingEnabled: Bool
+    private let usesExplicitSelectionState: Bool
     let selectionAction: (PromptItem, NSEvent.ModifierFlags) -> Void
     let reorderDragChangedAction: (String, CGPoint) -> Void
     let reorderDragEndedAction: (String) -> Void
     @State private var lastClickAt: Date?
 
+    init(
+        item: PromptItem,
+        width: CGFloat,
+        isReorderingEnabled: Bool,
+        selectionState: AssetCardSelectionState? = nil,
+        selectionAction: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void,
+        reorderDragChangedAction: @escaping (String, CGPoint) -> Void,
+        reorderDragEndedAction: @escaping (String) -> Void
+    ) {
+        self.item = item
+        self.width = width
+        self.isReorderingEnabled = isReorderingEnabled
+        self.usesExplicitSelectionState = selectionState != nil
+        self.selectionAction = selectionAction
+        self.reorderDragChangedAction = reorderDragChangedAction
+        self.reorderDragEndedAction = reorderDragEndedAction
+        _selectionState = ObservedObject(
+            wrappedValue: selectionState ?? AssetCardSelectionState(isSelected: false)
+        )
+    }
+
     private var isSelected: Bool {
-        state.selectedIDs.contains(item.id)
+        usesExplicitSelectionState ? selectionState.isSelected : state.selectedIDs.contains(item.id)
     }
 
     var body: some View {
@@ -4977,8 +5141,10 @@ private struct AssetCardContentView: View, Equatable {
     var body: some View {
         if item.isTextDocumentLike {
             TextAssetCardCover(item: item)
+        } else if item.assetKind == .image {
+            AssetMediaView(item: item, contentMode: .fill)
         } else {
-            AssetMediaView(item: item)
+            AssetMediaView(item: item, contentMode: .fit)
         }
     }
 
@@ -5748,7 +5914,7 @@ private struct TextDocumentPreviewLine: View {
 }
 
 private enum TextDocumentCardPalette {
-    static let background = Color(hex: 0x141414)
+    static let background = Color(hex: 0x2D2D2D)
     static let border = Color(hex: 0x363A3F)
     static let text = Color(hex: 0xBDBEC0)
     static let mutedText = Color(hex: 0xBDBEC0).opacity(0.72)

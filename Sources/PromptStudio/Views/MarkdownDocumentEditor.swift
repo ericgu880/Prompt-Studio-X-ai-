@@ -519,7 +519,12 @@ private enum TextSyntaxHighlighter {
 
 @MainActor
 private enum MarkdownEditorPalette {
-    static let background = NSColor(hex: 0x141414)
+    static let background = NSColor(
+        srgbRed: 45.0 / 255.0,
+        green: 45.0 / 255.0,
+        blue: 45.0 / 255.0,
+        alpha: 1
+    )
     static let border = NSColor(hex: 0x363A3F)
     static let strongText = NSColor(hex: 0xFFFFFF)
     static let text = NSColor(hex: 0xFFFFFF)

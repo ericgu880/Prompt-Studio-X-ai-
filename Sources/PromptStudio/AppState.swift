@@ -410,7 +410,12 @@ final class AppState: ObservableObject {
     }
 
     private func loadRepositoryData(repository: PromptRepository) throws -> LoadedLibraryData {
-        let seedItems = try SeedData.makePromptItems(resourceBundle: .module, libraryURL: repository.libraryURL)
+        let seedItems: [PromptItem]
+        if let seedBundle = Self.seedResourceBundle() {
+            seedItems = try SeedData.makePromptItems(resourceBundle: seedBundle, libraryURL: repository.libraryURL)
+        } else {
+            seedItems = []
+        }
         try repository.seedIfNeeded(
             items: seedItems,
             models: SeedData.models,
@@ -430,6 +435,24 @@ final class AppState: ObservableObject {
             items: loadedItems,
             tags: loadedTags
         )
+    }
+
+    private static func seedResourceBundle() -> Bundle? {
+        let bundleName = "PromptStudio_PromptStudio.bundle"
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent(bundleName),
+            Bundle.main.bundleURL.appendingPathComponent(bundleName),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources").appendingPathComponent(bundleName),
+            Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(bundleName),
+            Bundle.main.executableURL?.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources").appendingPathComponent(bundleName)
+        ]
+
+        for candidate in candidates.compactMap({ $0 }) {
+            if let bundle = Bundle(url: candidate) {
+                return bundle
+            }
+        }
+        return nil
     }
 
     private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) {
