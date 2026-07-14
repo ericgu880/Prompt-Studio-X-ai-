@@ -34,6 +34,7 @@ struct ImmersivePreviewOverlay: View {
     @State private var imageOffset: CGSize = .zero
     @State private var previewPromptHovered = false
     @State private var previewPromptCopyFeedback = false
+    @State private var lastPreviewStepDirection: PreviewStepDirection?
     @GestureState private var imageDragTranslation: CGSize = .zero
 
     init(
@@ -57,8 +58,8 @@ struct ImmersivePreviewOverlay: View {
                 MarkdownDocumentPreviewContent(
                     item: item,
                     railItems: railItems,
-                    onSelectRailItemID: onSelectRailItemID,
-                    onNavigateStep: onNavigateStep
+                    onSelectRailItemID: selectPreviewRailItem,
+                    onNavigateStep: navigatePreviewStep
                 )
                     .environmentObject(state)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -86,7 +87,7 @@ struct ImmersivePreviewOverlay: View {
                             PreviewThumbnailRail(
                                 items: visibleRailItems,
                                 currentItemID: item.id,
-                                onSelect: onSelectRailItemID
+                                onSelect: selectPreviewRailItem
                             )
                             .frame(width: PreviewThumbnailRail.railWidth)
                             .frame(maxHeight: .infinity)
@@ -133,7 +134,7 @@ struct ImmersivePreviewOverlay: View {
                 onExit: {
                     state.isPreviewPresented = false
                 },
-                onNavigateStep: onNavigateStep,
+                onNavigateStep: navigatePreviewStep,
                 onZoom: { delta in
                     guard item.assetKind == .image else { return }
                     adjustImageScale(by: delta)
@@ -161,14 +162,41 @@ struct ImmersivePreviewOverlay: View {
         imageOffset = .zero
     }
 
+    private func navigatePreviewStep(_ direction: PreviewStepDirection) {
+        lastPreviewStepDirection = direction
+        onNavigateStep(direction)
+    }
+
+    private func selectPreviewRailItem(_ itemID: String) {
+        if let current = railItems.first(where: { $0.id == item.id })?.positionIndex,
+           let target = railItems.first(where: { $0.id == itemID })?.positionIndex,
+           target != current {
+            lastPreviewStepDirection = target > current ? .next : .previous
+        }
+        onSelectRailItemID(itemID)
+    }
+
     private func previewImagePreloadPaths(currentID: String) -> [String] {
         guard item.assetKind == .image,
               let currentIndex = railItems.firstIndex(where: { $0.id == currentID }) else {
             return []
         }
 
-        let lowerBound = max(0, currentIndex - 3)
-        let upperBound = min(railItems.count - 1, currentIndex + 3)
+        let lowerPadding: Int
+        let upperPadding: Int
+        switch lastPreviewStepDirection {
+        case .previous:
+            lowerPadding = 6
+            upperPadding = 2
+        case .next:
+            lowerPadding = 2
+            upperPadding = 6
+        case nil:
+            lowerPadding = 3
+            upperPadding = 3
+        }
+        let lowerBound = max(0, currentIndex - lowerPadding)
+        let upperBound = min(railItems.count - 1, currentIndex + upperPadding)
         var paths: [String] = []
         var seen = Set<String>()
         for railItem in railItems[lowerBound...upperBound] where railItem.item.assetKind == .image {
@@ -2853,12 +2881,27 @@ private final class OverlayImageLoader: ObservableObject {
     }()
 
     @Published var image: NSImage?
+    private var loadedPath: String?
 
     func load(_ path: String) async {
+        guard !path.isEmpty else {
+            if loadedPath != path || image != nil {
+                loadedPath = path
+                image = nil
+            }
+            return
+        }
+        if loadedPath == path, image != nil {
+            return
+        }
+
         let key = path as NSString
         if let cached = Self.cache.object(forKey: key) {
             DebugPerformanceProbe.record("preview.image.cache.hit")
-            image = cached
+            if loadedPath != path || image !== cached {
+                loadedPath = path
+                image = cached
+            }
             return
         }
 
@@ -2871,6 +2914,7 @@ private final class OverlayImageLoader: ObservableObject {
             Self.cache.setObject(loaded, forKey: key, cost: Self.imageCost(loaded))
         }
         DebugPerformanceProbe.recordDuration("preview.image.decode.ms", startedAt: start)
+        loadedPath = path
         image = loaded
     }
 
@@ -2917,7 +2961,7 @@ private final class OverlayImageLoader: ObservableObject {
 }
 
 private enum PreviewRailVisibleWindow {
-    private static let bufferItemCount = 3
+    private static let bufferItemCount = 5
     private static let fadeHeight: CGFloat = 78
     private static let buttonSize: CGFloat = 68
     private static let itemSpacing: CGFloat = 11
@@ -2982,17 +3026,22 @@ private struct PreviewThumbnailRail: View {
     var body: some View {
         GeometryReader { proxy in
             let currentPositionIndex = items.first { $0.id == currentItemID }?.positionIndex
+            let itemByPosition = Dictionary(uniqueKeysWithValues: items.map { ($0.positionIndex, $0) })
+            let positionIndices = railPositionIndices
             let railCenterY = proxy.size.height / 2
 
             ZStack {
                 Group {
                     if let currentPositionIndex {
-                        ForEach(items, id: \.positionIndex) { railItem in
-                            railButton(for: railItem)
-                                .position(
-                                    x: proxy.size.width / 2,
-                                    y: railCenterY + CGFloat(railItem.positionIndex - currentPositionIndex) * Self.itemStride
-                                )
+                        ForEach(positionIndices, id: \.self) { positionIndex in
+                            if let railItem = itemByPosition[positionIndex] {
+                                railButton(for: railItem)
+                                    .position(
+                                        x: proxy.size.width / 2,
+                                        y: railCenterY + CGFloat(positionIndex - currentPositionIndex) * Self.itemStride
+                                    )
+                                    .transition(.opacity.animation(.easeOut(duration: 0.08)))
+                            }
                         }
                     }
                 }
@@ -3016,6 +3065,14 @@ private struct PreviewThumbnailRail: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private var railPositionIndices: [Int] {
+        guard let lowerBound = items.map(\.positionIndex).min(),
+              let upperBound = items.map(\.positionIndex).max() else {
+            return []
+        }
+        return Array(lowerBound...upperBound)
     }
 
     private var fixedSelectionFrame: some View {
@@ -3331,7 +3388,7 @@ private struct PreviewInputMonitor: NSViewRepresentable {
         context.coordinator.onZoom = onZoom
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         var onExit: () -> Void
         var onNavigateStep: (PreviewStepDirection) -> Void
         var onZoom: (CGFloat) -> Void
@@ -3340,6 +3397,8 @@ private struct PreviewInputMonitor: NSViewRepresentable {
         private var scrollNavigationAccumulator: CGFloat = 0
         private var scrollNavigationSign: CGFloat = 0
         private var lastScrollNavigationTime: TimeInterval = 0
+        private var pendingNavigationDirection: PreviewStepDirection?
+        private var isNavigationDispatchScheduled = false
         private static let scrollNavigationThreshold: CGFloat = 8
         private static let scrollNavigationCooldown: TimeInterval = 0.055
 
@@ -3420,8 +3479,7 @@ private struct PreviewInputMonitor: NSViewRepresentable {
             guard abs(scrollNavigationAccumulator) >= Self.scrollNavigationThreshold else { return }
 
             if timestamp - lastScrollNavigationTime >= Self.scrollNavigationCooldown {
-                DebugPerformanceProbe.record("preview.scroll.navigate")
-                onNavigateStep(scrollNavigationAccumulator < 0 ? .next : .previous)
+                scheduleNavigation(scrollNavigationAccumulator < 0 ? .next : .previous)
                 lastScrollNavigationTime = timestamp
                 scrollNavigationAccumulator = 0
             } else {
@@ -3429,9 +3487,25 @@ private struct PreviewInputMonitor: NSViewRepresentable {
             }
         }
 
+        private func scheduleNavigation(_ direction: PreviewStepDirection) {
+            pendingNavigationDirection = direction
+            guard !isNavigationDispatchScheduled else { return }
+            isNavigationDispatchScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isNavigationDispatchScheduled = false
+                guard let direction = self.pendingNavigationDirection else { return }
+                self.pendingNavigationDirection = nil
+                DebugPerformanceProbe.record("preview.scroll.navigate")
+                DebugPerformanceProbe.record("preview.scroll.coalesced")
+                self.onNavigateStep(direction)
+            }
+        }
+
         private func resetScrollNavigation() {
             scrollNavigationAccumulator = 0
             scrollNavigationSign = 0
+            pendingNavigationDirection = nil
         }
 
         private static func isTextInputActive() -> Bool {
