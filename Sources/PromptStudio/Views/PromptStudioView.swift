@@ -170,12 +170,6 @@ struct PromptStudioView: View {
                     .zIndex(80)
             }
 
-            if let item = state.markdownEditorItem {
-                MarkdownEditorOverlay(item: item)
-                    .environmentObject(state)
-                    .zIndex(88)
-            }
-
             if let mode = state.promptComposerMode {
                 PromptComposerOverlay(mode: mode)
                     .environmentObject(state)
@@ -192,6 +186,7 @@ struct PromptStudioView: View {
                     .overlay(Capsule().stroke(StudioColor.hairline, lineWidth: 1))
                     .padding(.bottom, 22)
                     .transition(StudioMotion.toastTransition(reduceMotion: reduceMotion))
+                    .zIndex(120)
             }
         }
         .animation(StudioMotion.standard(reduceMotion: reduceMotion), value: state.toast)

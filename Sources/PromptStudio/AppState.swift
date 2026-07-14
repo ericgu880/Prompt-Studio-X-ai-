@@ -339,10 +339,6 @@ final class AppState: ObservableObject {
         selectedID.flatMap { itemsByID[$0] }
     }
 
-    var markdownEditorItem: PromptItem? {
-        markdownEditorItemID.flatMap { itemsByID[$0] }
-    }
-
     var masonryLayoutItems: [PromptItem] { filteredItems }
 
     var trashCount: Int {
@@ -604,9 +600,9 @@ final class AppState: ObservableObject {
             select(target)
         }
         modal = nil
-        isPreviewPresented = false
         promptComposerMode = nil
         markdownEditorItemID = target.id
+        isPreviewPresented = true
     }
 
     func handleExternalFileOpen(_ urls: [URL]) {
@@ -1434,12 +1430,14 @@ final class AppState: ObservableObject {
     }
 
     func togglePreview() {
+        guard markdownEditorItemID == nil else { return }
+
         if isPreviewPresented {
             isPreviewPresented = false
             return
         }
 
-        guard modal == nil, promptComposerMode == nil, markdownEditorItemID == nil, selectedItem != nil else { return }
+        guard modal == nil, promptComposerMode == nil, selectedItem != nil else { return }
         previewSelected()
     }
 
@@ -2636,7 +2634,7 @@ final class AppState: ObservableObject {
         )
     }
 
-    private func showToast(_ message: String) {
+    func showToast(_ message: String) {
         toast = message
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))

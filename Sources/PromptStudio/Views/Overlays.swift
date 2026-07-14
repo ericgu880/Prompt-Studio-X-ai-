@@ -121,25 +121,29 @@ struct ImmersivePreviewOverlay: View {
                 }
             }
 
-            OverlayCloseButton {
-                state.isPreviewPresented = false
+            if !item.isTextDocumentLike {
+                OverlayCloseButton {
+                    state.isPreviewPresented = false
+                }
+                .padding(.top, 28)
+                .padding(.trailing, 28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
-            .padding(.top, 28)
-            .padding(.trailing, 28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .transition(.opacity)
         .background {
-            PreviewInputMonitor(
-                onExit: {
-                    state.isPreviewPresented = false
-                },
-                onNavigateStep: navigatePreviewStep,
-                onZoom: { delta in
-                    guard item.assetKind == .image else { return }
-                    adjustImageScale(by: delta)
-                }
-            )
+            if !item.isTextDocumentLike {
+                PreviewInputMonitor(
+                    onExit: {
+                        state.isPreviewPresented = false
+                    },
+                    onNavigateStep: navigatePreviewStep,
+                    onZoom: { delta in
+                        guard item.assetKind == .image else { return }
+                        adjustImageScale(by: delta)
+                    }
+                )
+            }
         }
         .onChange(of: item.id) { _, _ in
             resetImageTransform()
@@ -429,55 +433,95 @@ private struct MarkdownDocumentPreviewContent: View {
     let onSelectRailItemID: (String) -> Void
     let onNavigateStep: (PreviewStepDirection) -> Void
     @State private var text = ""
+    @State private var savedText = ""
     @State private var loadedItemID = ""
+    @State private var showCloseConfirmation = false
+
+    private var isEditing: Bool {
+        state.markdownEditorItemID == item.id
+    }
 
     var body: some View {
-        GeometryReader { proxy in
-            let showsRail = shouldShowRail(size: proxy.size)
-            let visibleRailItems = PreviewRailVisibleWindow.items(
-                from: railItems,
-                currentItemID: item.id,
-                availableHeight: proxy.size.height
-            )
-            let railThumbnailPrefetchIDs = PreviewRailVisibleWindow.prefetchItemIDs(
-                from: railItems,
-                currentItemID: item.id,
-                visibleItemIDs: visibleRailItems.map(\.id)
-            )
-            HStack(spacing: 0) {
-                editorPane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.leading, 42)
-                    .padding(.trailing, showsRail ? 18 : 34)
-                    .padding(.vertical, 42)
+        ZStack {
+            GeometryReader { proxy in
+                let showsRail = !isEditing && shouldShowRail(size: proxy.size)
+                let visibleRailItems = PreviewRailVisibleWindow.items(
+                    from: railItems,
+                    currentItemID: item.id,
+                    availableHeight: proxy.size.height
+                )
+                let railThumbnailPrefetchIDs = PreviewRailVisibleWindow.prefetchItemIDs(
+                    from: railItems,
+                    currentItemID: item.id,
+                    visibleItemIDs: visibleRailItems.map(\.id)
+                )
+                HStack(spacing: 0) {
+                    editorPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.leading, 42)
+                        .padding(.trailing, showsRail ? 18 : 34)
+                        .padding(.vertical, 42)
 
-                if showsRail {
-                    PreviewThumbnailRail(
-                        items: visibleRailItems,
-                        currentItemID: item.id,
-                        onSelect: onSelectRailItemID
-                    )
-                    .frame(width: PreviewThumbnailRail.railWidth)
-                    .frame(maxHeight: .infinity)
-                    .task(id: railThumbnailPrefetchIDs) {
-                        DebugPerformanceProbe.record("preview.rail.thumbnail.prefetch.count", value: Double(railThumbnailPrefetchIDs.count))
-                        state.prepareVisibleThumbnails(for: railThumbnailPrefetchIDs)
+                    if showsRail {
+                        PreviewThumbnailRail(
+                            items: visibleRailItems,
+                            currentItemID: item.id,
+                            onSelect: onSelectRailItemID
+                        )
+                        .frame(width: PreviewThumbnailRail.railWidth)
+                        .frame(maxHeight: .infinity)
+                        .task(id: railThumbnailPrefetchIDs) {
+                            DebugPerformanceProbe.record("preview.rail.thumbnail.prefetch.count", value: Double(railThumbnailPrefetchIDs.count))
+                            state.prepareVisibleThumbnails(for: railThumbnailPrefetchIDs)
+                        }
                     }
-                }
 
-                inspectorPane
-                    .frame(width: 360)
-                    .frame(maxHeight: .infinity)
-                    .background(StudioColor.panel.opacity(0.96))
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(StudioColor.hairline)
-                            .frame(width: 1)
-                    }
+                    inspectorPane
+                        .frame(width: 360)
+                        .frame(maxHeight: .infinity)
+                        .background(StudioColor.panel.opacity(0.96))
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(StudioColor.hairline)
+                                .frame(width: 1)
+                        }
                 }
+            }
+
+            OverlayCloseButton(help: isEditing ? "取消" : "关闭") {
+                requestClose()
+            }
+            .padding(.top, 28)
+            .padding(.trailing, 28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        }
+        .foregroundStyle(StudioColor.text)
+        .transaction { transaction in
+            transaction.animation = nil
         }
         .onAppear(perform: loadText)
         .onChange(of: item.id) { _, _ in loadText() }
+        .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
+            Button("放弃修改", role: .destructive) {
+                text = savedText
+                state.closeMarkdownEditor(returnToPreview: true)
+            }
+            Button("继续编辑", role: .cancel) {}
+        }
+        .background {
+            if isEditing {
+                MarkdownEditorKeyMonitor(
+                    onEscape: requestClose,
+                    onSave: save
+                )
+            } else {
+                PreviewInputMonitor(
+                    onExit: requestClose,
+                    onNavigateStep: onNavigateStep,
+                    onZoom: { _ in }
+                )
+            }
+        }
     }
 
     private func shouldShowRail(size: CGSize) -> Bool {
@@ -488,15 +532,15 @@ private struct MarkdownDocumentPreviewContent: View {
         ZStack(alignment: .topLeading) {
             MarkdownDocumentEditor(
                 text: $text,
-                isEditable: false,
+                isEditable: isEditing,
                 scrollResetID: item.id,
                 contentFontSize: 13,
                 syntaxMode: TextSyntaxMode.infer(for: item),
-                onBoundaryScroll: onNavigateStep
+                onBoundaryScroll: isEditing ? nil : onNavigateStep
             )
 
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("暂无文档信息")
+                Text(isEditing ? "开始编写文档内容" : "暂无文档信息")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.tertiaryText)
                     .padding(.leading, 62)
@@ -521,19 +565,28 @@ private struct MarkdownDocumentPreviewContent: View {
                     Spacer(minLength: 12)
 
                     HStack(spacing: 10) {
-                        documentActionButton(.pencil, help: "编辑") {
-                            state.requestInlineEdit(item)
-                        }
-                        documentActionButton(.copy, help: "复制文档信息") {
-                            state.copyMarkdownDocumentText(text)
-                        }
-                        documentActionButton(.circleArrowDown, help: "下载") {
-                            state.isPreviewPresented = false
-                            state.modal = .export
-                        }
-                        documentActionButton(.history, help: "历史版本") {
-                            state.isPreviewPresented = false
-                            state.modal = .versionHistory
+                        if isEditing {
+                            documentSystemActionButton(
+                                "checkmark",
+                                help: "保存",
+                                action: save
+                            )
+                            documentSystemActionButton("xmark", help: "取消编辑", action: requestClose)
+                        } else {
+                            documentActionButton(.pencil, help: "编辑") {
+                                state.requestInlineEdit(item)
+                            }
+                            documentActionButton(.copy, help: "复制文档信息") {
+                                state.copyMarkdownDocumentText(text)
+                            }
+                            documentActionButton(.circleArrowDown, help: "下载") {
+                                state.isPreviewPresented = false
+                                state.modal = .export
+                            }
+                            documentActionButton(.history, help: "历史版本") {
+                                state.isPreviewPresented = false
+                                state.modal = .versionHistory
+                            }
                         }
                     }
                 }
@@ -551,7 +604,7 @@ private struct MarkdownDocumentPreviewContent: View {
     private var metadataChips: some View {
         FlowLayout(spacing: 8) {
             documentMetadataChip(item.format.isEmpty ? "MD" : item.format.uppercased())
-            documentMetadataChip("\(max(1, text.components(separatedBy: .newlines).count)) 行")
+            documentMetadataChip("\(lineCount) 行")
             documentMetadataChip(fileSizeText(item.fileSize))
             documentMetadataChip(item.currentVersion?.version ?? "V1.0")
             ForEach(item.tags.prefix(4), id: \.self) { tag in
@@ -559,6 +612,10 @@ private struct MarkdownDocumentPreviewContent: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var lineCount: Int {
+        max(1, text.components(separatedBy: .newlines).count)
     }
 
     private func documentMetadataChip(_ text: String) -> some View {
@@ -576,7 +633,7 @@ private struct MarkdownDocumentPreviewContent: View {
     private var documentFileInfo: some View {
         VStack(alignment: .leading, spacing: 8) {
             infoLine("格式", item.format.isEmpty ? "MD" : item.format.uppercased())
-            infoLine("行数", "\(max(1, text.components(separatedBy: .newlines).count)) 行")
+            infoLine("行数", "\(lineCount) 行")
             infoLine("大小", fileSizeText(item.fileSize))
             infoLine("文件名", URL(fileURLWithPath: item.assetPath).lastPathComponent)
         }
@@ -593,25 +650,26 @@ private struct MarkdownDocumentPreviewContent: View {
         .accessibilityLabel(help)
     }
 
+    private func documentSystemActionButton(
+        _ systemName: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 14, height: 14)
+        }
+        .buttonStyle(IconCircleButtonStyle())
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
             .font(StudioFont.caption(12))
             .tracking(1.2)
             .foregroundStyle(StudioColor.secondaryText)
-    }
-
-    private func infoRow(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(StudioFont.font(11))
-                .foregroundStyle(StudioColor.tertiaryText)
-            Text(value)
-                .font(StudioFont.font(13))
-                .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
     }
 
     private func infoLine(_ title: String, _ value: String) -> some View {
@@ -631,205 +689,30 @@ private struct MarkdownDocumentPreviewContent: View {
 
     private func loadText() {
         guard loadedItemID != item.id else { return }
-        text = state.markdownDocumentText(for: item)
-        loadedItemID = item.id
-    }
-
-    private func fileSizeText(_ bytes: Int64) -> String {
-        guard bytes > 0 else { return "0 KB" }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-}
-
-struct MarkdownEditorOverlay: View {
-    @EnvironmentObject private var state: AppState
-    let item: PromptItem
-    @State private var draftText = ""
-    @State private var initialText = ""
-    @State private var loadedItemID = ""
-    @State private var showCloseConfirmation = false
-
-    var body: some View {
-        ZStack {
-            StudioColor.appBackground
-                .ignoresSafeArea()
-
-            HStack(spacing: 0) {
-                editorPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.leading, 42)
-                    .padding(.trailing, 34)
-                    .padding(.vertical, 42)
-
-                inspectorPane
-                    .frame(width: 360)
-                    .frame(maxHeight: .infinity)
-                    .background(StudioColor.panel.opacity(0.96))
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(StudioColor.hairline)
-                            .frame(width: 1)
-                    }
-            }
-
-            OverlayCloseButton(help: "取消") {
-                requestClose()
-            }
-            .padding(.top, 28)
-            .padding(.trailing, 28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .foregroundStyle(StudioColor.text)
-        .transition(.opacity)
-        .onAppear(perform: loadDraft)
-        .onChange(of: item.id) { _, _ in loadDraft() }
-        .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
-            Button("放弃修改", role: .destructive) {
-                state.closeMarkdownEditor(returnToPreview: true)
-            }
-            Button("继续编辑", role: .cancel) {}
-        }
-        .background {
-            MarkdownEditorKeyMonitor(
-                onEscape: requestClose,
-                onSave: save
-            )
-        }
-    }
-
-    private var editorPane: some View {
-        ZStack(alignment: .topLeading) {
-            MarkdownDocumentEditor(
-                text: $draftText,
-                isEditable: true,
-                scrollResetID: item.id,
-                syntaxMode: TextSyntaxMode.infer(for: item)
-            )
-
-            if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("开始编写文档内容")
-                    .font(StudioFont.font(13))
-                    .foregroundStyle(StudioColor.tertiaryText)
-                    .padding(.leading, 62)
-                    .padding(.top, 18)
-                    .allowsHitTesting(false)
-            }
-        }
-    }
-
-    private var inspectorPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Spacer()
-
-                    Text(draftText == initialText ? "已保存" : "未保存")
-                        .font(StudioFont.font(11))
-                        .foregroundStyle(draftText == initialText ? StudioColor.tertiaryText : StudioColor.secondaryText)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.title)
-                        .font(StudioFont.font(15, weight: .semibold))
-                        .foregroundStyle(StudioColor.text)
-                        .lineLimit(3)
-
-                    Text("\(item.modelName) · \(item.assetKind.displayName) · \(item.displayAspectRatio)")
-                        .font(StudioFont.font(12))
-                        .foregroundStyle(StudioColor.secondaryText)
-                        .lineLimit(2)
-                }
-
-                metadataChips
-
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("文档信息")
-                    infoRow("行数", "\(lineCount)")
-                    infoRow("字符", "\(draftText.count)")
-                    infoRow("文件大小", fileSizeText(item.fileSize))
-                    infoRow("文件名", URL(fileURLWithPath: item.assetPath).lastPathComponent)
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("操作")
-                    Button {
-                        save()
-                    } label: {
-                        Label("保存", systemImage: "checkmark")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(CapsuleButtonStyle(filled: true))
-                    .disabled(draftText == initialText)
-
-                    Button {
-                        requestClose()
-                    } label: {
-                        Label("取消", systemImage: "xmark")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(CapsuleButtonStyle())
-                }
-            }
-            .padding(.top, 58)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 28)
-        }
-        .transparentScrollArea()
-    }
-
-    private var metadataChips: some View {
-        FlowLayout(spacing: 8) {
-            DocumentSemanticChip(text: item.format.isEmpty ? "MD" : item.format.uppercased(), role: .format)
-            DocumentSemanticChip(text: "\(lineCount) 行", role: .count)
-            DocumentSemanticChip(text: item.currentVersion?.version ?? "V1.0", role: .version)
-            ForEach(item.tags.prefix(4), id: \.self) { tag in
-                DocumentSemanticChip(text: tag, role: .tag)
-            }
-        }
-    }
-
-    private var lineCount: Int {
-        max(1, draftText.components(separatedBy: .newlines).count)
-    }
-
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(StudioFont.caption(12))
-            .tracking(1.2)
-            .foregroundStyle(StudioColor.secondaryText)
-    }
-
-    private func infoRow(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(StudioFont.font(11))
-                .foregroundStyle(StudioColor.tertiaryText)
-            Text(value)
-                .font(StudioFont.font(13))
-                .foregroundStyle(StudioColor.text)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-    }
-
-    private func loadDraft() {
-        guard loadedItemID != item.id else { return }
-        let text = state.markdownDocumentText(for: item)
-        draftText = text
-        initialText = text
+        let documentText = state.markdownDocumentText(for: item)
+        text = documentText
+        savedText = documentText
         loadedItemID = item.id
     }
 
     private func save() {
-        guard draftText != initialText else { return }
-        state.saveMarkdownDocument(draftText, for: item)
-        initialText = draftText
+        guard text != savedText else {
+            state.showToast("内容已保存")
+            state.closeMarkdownEditor(returnToPreview: true)
+            return
+        }
+        state.saveMarkdownDocument(text, for: item)
+        savedText = text
+        state.closeMarkdownEditor(returnToPreview: true)
     }
 
     private func requestClose() {
-        if draftText == initialText {
+        guard isEditing else {
+            state.isPreviewPresented = false
+            return
+        }
+
+        if text == savedText {
             state.closeMarkdownEditor(returnToPreview: true)
         } else {
             showCloseConfirmation = true
@@ -3149,19 +3032,33 @@ private struct PreviewThumbnailRail: View {
 }
 
 private struct OverlayCloseButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var help = "关闭"
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
                 .font(StudioFont.symbol(12, weight: .semibold))
                 .frame(width: 34, height: 34)
+                .background(
+                    Circle().fill(isHovered ? StudioColor.selection : StudioColor.control.opacity(0.92))
+                )
+                .overlay(
+                    Circle().stroke(
+                        isHovered ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline,
+                        lineWidth: 1
+                    )
+                )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .background(Circle().fill(StudioColor.control.opacity(0.92)))
-        .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
+        .frame(width: 34, height: 34)
         .contentShape(Circle())
+        .onHover { isHovered = $0 }
+        .scaleEffect(reduceMotion ? 1 : (isHovered ? 1.04 : 1))
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
         .help(help)
     }
 }
