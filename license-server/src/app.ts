@@ -18,6 +18,11 @@ import { adminApiRoutes } from "./routes/adminApi.js";
 import { CommerceFulfillmentService } from "./services/CommerceFulfillmentService.js";
 import { CommerceInboxWorker } from "./services/CommerceInboxWorker.js";
 import { commerceWebhookRoutes } from "./routes/commerceWebhooks.js";
+import { EmailOutboxService } from "./services/EmailOutboxService.js";
+import { EmailOutboxWorker } from "./services/EmailOutboxWorker.js";
+import { RecoveryService } from "./services/RecoveryService.js";
+import { emailWebhookRoutes } from "./routes/emailWebhooks.js";
+import { recoveryPageRoutes } from "./routes/recoveryPage.js";
 
 export function buildServices(prisma: PrismaClient, config: AppConfig) {
   const audit = new AuditEventService(prisma);
@@ -26,6 +31,9 @@ export function buildServices(prisma: PrismaClient, config: AppConfig) {
   const licenses = new LicenseService(prisma, config, audit);
   const commerceFulfillment = new CommerceFulfillmentService(config, licenses);
   const commerceInbox = new CommerceInboxWorker(prisma, config, commerceFulfillment);
+  const emailOutbox = new EmailOutboxService(prisma, config);
+  const emailWorker = new EmailOutboxWorker(prisma, config);
+  const recovery = new RecoveryService(prisma, config);
   return {
     audit,
     rateLimit: new RateLimitService(config.rateLimitEnabled),
@@ -35,6 +43,9 @@ export function buildServices(prisma: PrismaClient, config: AppConfig) {
     licenses,
     commerceFulfillment,
     commerceInbox,
+    emailOutbox,
+    emailWorker,
+    recovery,
     adminAuth: new AdminAuthService(prisma, config),
     adminLicenses: new AdminLicenseService(prisma, config),
     adminPortal: new AdminPortalService(prisma, config)
@@ -65,14 +76,18 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   app.decorate("licenseServices", buildServices(prisma, config));
   await app.register(healthRoutes);
   await app.register(commerceWebhookRoutes, config);
+  await app.register(emailWebhookRoutes, config);
+  await app.register(recoveryPageRoutes, config);
   await app.register(licenseRoutes);
   await app.register(adminApiRoutes, config);
   await app.register(adminRoutes, config);
   app.addHook("onReady", async () => {
     app.licenseServices.commerceInbox.start();
+    app.licenseServices.emailWorker.start();
   });
   app.addHook("onClose", async () => {
     app.licenseServices.commerceInbox.stop();
+    app.licenseServices.emailWorker.stop();
   });
   return app;
 }

@@ -176,14 +176,8 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
     try {
       const body = recoverSchema.parse(request.body);
       services.rateLimit.check(`recover:${body.email.toLowerCase()}`, 3, 60 * 60 * 1000);
-      await services.activation.recover(body.email);
-      return { ok: true };
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        return reply.code(200).send({ ok: true });
-      }
-      const mapped = mapError(error);
-      return reply.code(mapped.statusCode).send(mapped.body);
-    }
+      await services.recovery.request(body.email);
+    } catch {}
+    return reply.code(200).send({ ok: true });
   });
 }
