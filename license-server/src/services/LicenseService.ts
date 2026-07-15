@@ -1,6 +1,7 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { generateLicenseCode, hashLicenseCode, codePrefix, maskLicenseCode } from "../crypto/licenseCode.js";
 import { hashEmail, maskEmail, normalizeEmail } from "../crypto/email.js";
+import { SecretBox } from "../crypto/secretBox.js";
 import type { AppConfig } from "../config.js";
 import { AuditEventService } from "./AuditEventService.js";
 
@@ -65,6 +66,164 @@ export class LicenseService {
       seats: license.seatLimit,
       licenseCode
     };
+  }
+
+  async provisionLifetimeLicense(input: {
+    email: string;
+    orderProvider: string;
+    orderId: string;
+    plan: "pro_lifetime";
+    seats: number;
+    majorVersion: number;
+    purchasedAt: Date;
+    updatesDays: number;
+  }): Promise<{ created: boolean; licenseId: string }> {
+    const normalizedEmail = normalizeEmail(input.email);
+    const emailHash = hashEmail(this.config.licenseCodePepper, normalizedEmail);
+    const emailMasked = maskEmail(normalizedEmail);
+    const updatesUntil = new Date(input.purchasedAt.getTime() + input.updatesDays * 24 * 60 * 60 * 1_000);
+    const secretBox = new SecretBox(this.config.commercial.dataEncryptionKeyB64);
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.license.findUnique({
+          where: {
+            orderProvider_orderId: {
+              orderProvider: input.orderProvider,
+              orderId: input.orderId,
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) return { created: false, licenseId: existing.id };
+
+        const licenseCode = generateLicenseCode();
+        const customer = await tx.customer.upsert({
+          where: { emailHash },
+          create: {
+            emailHash,
+            emailMasked,
+            emailEncrypted: secretBox.seal(normalizedEmail),
+            emailEncryptionVersion: 1,
+          },
+          update: {
+            emailMasked,
+            emailEncrypted: secretBox.seal(normalizedEmail),
+            emailEncryptionVersion: 1,
+          },
+        });
+        const license = await tx.license.create({
+          data: {
+            customerId: customer.id,
+            codePrefix: codePrefix(licenseCode),
+            codeHash: hashLicenseCode(this.config.licenseCodePepper, licenseCode),
+            codeMasked: maskLicenseCode(licenseCode),
+            plan: input.plan,
+            licenseType: "lifetime",
+            seatLimit: input.seats,
+            majorVersion: input.majorVersion,
+            updatesUntil,
+            orderProvider: input.orderProvider,
+            orderId: input.orderId,
+            createdAt: input.purchasedAt,
+          },
+        });
+        await tx.emailOutbox.create({
+          data: {
+            kind: "purchase",
+            licenseId: license.id,
+            recipientHash: emailHash,
+            idempotencyKey: `purchase:${input.orderProvider}:${input.orderId}`,
+            payloadEncrypted: secretBox.seal(JSON.stringify({
+              version: 1,
+              kind: "purchase",
+              to: normalizedEmail,
+              emailMasked,
+              licenseCode,
+              plan: input.plan,
+              seats: input.seats,
+              majorVersion: input.majorVersion,
+              updatesUntil: updatesUntil.toISOString(),
+            })),
+          },
+        });
+        await tx.licenseEvent.create({
+          data: {
+            licenseId: license.id,
+            eventType: "license_created",
+            eventSource: "system",
+            emailHash,
+            codePrefix: license.codePrefix,
+            metadataJson: {
+              plan: input.plan,
+              seats: input.seats,
+              orderProvider: input.orderProvider,
+              updatesUntil: updatesUntil.toISOString(),
+            },
+          },
+        });
+        return { created: true, licenseId: license.id };
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const existing = await this.prisma.license.findUnique({
+          where: {
+            orderProvider_orderId: {
+              orderProvider: input.orderProvider,
+              orderId: input.orderId,
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) return { created: false, licenseId: existing.id };
+      }
+      throw error;
+    }
+  }
+
+  async applyCommerceRefund(input: {
+    orderProvider: string;
+    orderId: string;
+    fullRefund: boolean;
+    refundedAt: Date;
+    refundedAmount: number;
+    orderTotal: number;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const license = await tx.license.findUnique({
+        where: {
+          orderProvider_orderId: {
+            orderProvider: input.orderProvider,
+            orderId: input.orderId,
+          },
+        },
+      });
+      if (!license) throw new Error("Commerce order does not have a license yet");
+
+      if (input.fullRefund && license.status !== "refunded") {
+        await tx.license.update({
+          where: { id: license.id },
+          data: {
+            status: "refunded",
+            refundedAt: input.refundedAt,
+            version: { increment: 1 },
+          },
+        });
+      }
+      await tx.licenseEvent.create({
+        data: {
+          licenseId: license.id,
+          eventType: input.fullRefund ? "license_refunded" : "license_partial_refund",
+          eventSource: "system",
+          codePrefix: license.codePrefix,
+          metadataJson: {
+            orderProvider: input.orderProvider,
+            refundedAmount: input.refundedAmount,
+            orderTotal: input.orderTotal,
+          },
+        },
+      });
+    });
   }
 
   async listLicenses(email?: string): Promise<Array<{

@@ -15,18 +15,26 @@ import { AdminAuthService } from "./services/AdminAuthService.js";
 import { AdminLicenseService } from "./services/AdminLicenseService.js";
 import { AdminPortalService } from "./services/AdminPortalService.js";
 import { adminApiRoutes } from "./routes/adminApi.js";
+import { CommerceFulfillmentService } from "./services/CommerceFulfillmentService.js";
+import { CommerceInboxWorker } from "./services/CommerceInboxWorker.js";
+import { commerceWebhookRoutes } from "./routes/commerceWebhooks.js";
 
 export function buildServices(prisma: PrismaClient, config: AppConfig) {
   const audit = new AuditEventService(prisma);
   const certificates = new CertificateService(prisma, config);
   const deviceProof = new DeviceProofService(config);
+  const licenses = new LicenseService(prisma, config, audit);
+  const commerceFulfillment = new CommerceFulfillmentService(config, licenses);
+  const commerceInbox = new CommerceInboxWorker(prisma, config, commerceFulfillment);
   return {
     audit,
     rateLimit: new RateLimitService(config.rateLimitEnabled),
     certificates,
     deviceProof,
     activation: new ActivationService(prisma, config, audit, certificates, deviceProof),
-    licenses: new LicenseService(prisma, config, audit),
+    licenses,
+    commerceFulfillment,
+    commerceInbox,
     adminAuth: new AdminAuthService(prisma, config),
     adminLicenses: new AdminLicenseService(prisma, config),
     adminPortal: new AdminPortalService(prisma, config)
@@ -56,8 +64,15 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   await app.register(cors, { origin: false });
   app.decorate("licenseServices", buildServices(prisma, config));
   await app.register(healthRoutes);
+  await app.register(commerceWebhookRoutes, config);
   await app.register(licenseRoutes);
   await app.register(adminApiRoutes, config);
   await app.register(adminRoutes, config);
+  app.addHook("onReady", async () => {
+    app.licenseServices.commerceInbox.start();
+  });
+  app.addHook("onClose", async () => {
+    app.licenseServices.commerceInbox.stop();
+  });
   return app;
 }
