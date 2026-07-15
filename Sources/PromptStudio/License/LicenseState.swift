@@ -151,12 +151,29 @@ enum UpgradeAction: Equatable {
     case contactSupport
 }
 
+struct LicenseReplacementDevice: Codable, Equatable, Identifiable {
+    let activationId: String
+    let deviceLabel: String
+    let platform: String
+    let appVersion: String?
+    let activatedAt: Date
+    let lastSeenAt: Date?
+
+    var id: String { activationId }
+}
+
+struct LicenseAPIErrorData: Codable, Equatable {
+    let deviceCount: Int?
+    let seatLimit: Int?
+    let devices: [LicenseReplacementDevice]?
+}
+
 enum LicenseError: Error, LocalizedError, Equatable {
     case keychain(String)
     case invalidCertificate
     case invalidDeviceIdentity
     case invalidResponse(String)
-    case api(code: String, message: String)
+    case api(code: String, message: String, data: LicenseAPIErrorData?)
     case featureDenied(FeatureDecision)
 
     var errorDescription: String? {
@@ -169,7 +186,7 @@ enum LicenseError: Error, LocalizedError, Equatable {
             "当前设备身份无效。"
         case .invalidResponse(let message):
             message
-        case .api(_, let message):
+        case .api(_, let message, _):
             message
         case .featureDenied(let decision):
             decision.message ?? "该功能需要 PromptStudio Pro。"

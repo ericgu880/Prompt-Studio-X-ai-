@@ -21,6 +21,16 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$ROOT_DIR/Packaging/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/PromptStudio"
 
+LICENSE_PUBLIC_KEY="${LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL:-}"
+LICENSE_KEY_ID="${LICENSE_SIGNING_KEY_ID:-}"
+if [[ -n "$LICENSE_PUBLIC_KEY" && -n "$LICENSE_KEY_ID" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys dict" "$APP_PATH/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys:$LICENSE_KEY_ID string $LICENSE_PUBLIC_KEY" "$APP_PATH/Contents/Info.plist"
+elif [[ "$CONFIGURATION" == "release" ]]; then
+    echo "Release packaging requires LICENSE_SIGNING_KEY_ID and LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL." >&2
+    exit 1
+fi
+
 if [[ -f "$ROOT_DIR/Packaging/AppIcon.icns" ]]; then
     cp "$ROOT_DIR/Packaging/AppIcon.icns" "$APP_PATH/Contents/Resources/AppIcon.icns"
 fi

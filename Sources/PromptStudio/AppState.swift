@@ -293,6 +293,7 @@ final class AppState: ObservableObject {
     @Published var inlineRenamingFolderID: String?
     @Published var inspectorEditRequest: InspectorEditRequest?
     @Published var preferredSettingsPageID: String?
+    @Published private(set) var pendingLicenseRecoveryToken: String?
     @Published var expandedFolderIDs: Set<String> = []
     @Published private(set) var canNavigateBack = false
     @Published private(set) var canNavigateForward = false
@@ -650,6 +651,28 @@ final class AppState: ObservableObject {
     func openLicenseSettings() {
         preferredSettingsPageID = "license"
         modal = .settings
+    }
+
+    @discardableResult
+    func handleIncomingURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "promptstudio",
+              url.host?.lowercased() == "license",
+              url.path == "/recover",
+              let fragment = url.fragment,
+              let token = URLComponents(string: "?\(fragment)")?.queryItems?
+                .first(where: { $0.name == "token" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else {
+            return false
+        }
+        pendingLicenseRecoveryToken = token
+        openLicenseSettings()
+        return true
+    }
+
+    func consumePendingLicenseRecoveryToken() -> String? {
+        defer { pendingLicenseRecoveryToken = nil }
+        return pendingLicenseRecoveryToken
     }
 
     func previewExternalFileTemporarily(_ request: ExternalFileOpenRequest) {

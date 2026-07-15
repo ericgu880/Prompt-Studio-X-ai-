@@ -19,6 +19,19 @@ final class LicenseAPIClient {
         let bundleId: String
         let appVersion: String
         let osVersion: String
+        let replaceActivationId: String?
+    }
+
+    struct RecoveryActivateRequest: Codable {
+        let recoveryToken: String
+        let installIdHash: String
+        let devicePublicKey: String
+        let deviceProof: DeviceProof
+        let deviceLabel: String
+        let bundleId: String
+        let appVersion: String
+        let osVersion: String
+        let replaceActivationId: String?
     }
 
     struct ActivateResponse: Codable {
@@ -54,6 +67,7 @@ final class LicenseAPIClient {
         struct APIError: Codable {
             let code: String
             let message: String
+            let data: LicenseAPIErrorData?
         }
         let ok: Bool
         let error: APIError
@@ -77,6 +91,10 @@ final class LicenseAPIClient {
 
     func activate(_ request: ActivateRequest) async throws -> ActivateResponse {
         try await post("/v1/licenses/activate", body: request)
+    }
+
+    func activateRecovery(_ request: RecoveryActivateRequest) async throws -> ActivateResponse {
+        try await post("/v1/licenses/recovery/activate", body: request)
     }
 
     func refreshChallenge(activationId: String) async throws -> RefreshChallengeResponse {
@@ -152,26 +170,62 @@ final class LicenseAPIClient {
     private func post<T: Decodable, B: Encodable>(_ path: String, body: B) async throws -> T {
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            throw Self.userFacingNetworkError(error)
         } catch {
-            throw LicenseError.invalidResponse("无法连接授权服务（\(baseURL.absoluteString)）：\(error.localizedDescription)")
+            throw LicenseError.invalidResponse("暂时无法连接授权服务，请稍后重试。")
         }
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(statusCode) else {
             if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
-                throw LicenseError.api(code: envelope.error.code, message: envelope.error.message)
+                throw LicenseError.api(
+                    code: envelope.error.code,
+                    message: envelope.error.message,
+                    data: envelope.error.data
+                )
             }
-            throw LicenseError.invalidResponse("授权服务暂时不可用，请稍后再试。")
+            throw LicenseError.invalidResponse(Self.message(forHTTPStatus: statusCode))
         }
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            throw LicenseError.invalidResponse("授权服务响应格式不兼容：\(error.localizedDescription)")
+            throw LicenseError.invalidResponse("授权服务响应异常，请稍后重试或联系支持。")
+        }
+    }
+
+    private static func userFacingNetworkError(_ error: URLError) -> LicenseError {
+        switch error.code {
+        case .notConnectedToInternet, .networkConnectionLost:
+            return .invalidResponse("当前网络不可用，请检查网络后重试。")
+        case .timedOut:
+            return .invalidResponse("授权服务响应超时，请稍后重试。")
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return .invalidResponse("暂时无法连接授权服务，请稍后重试。")
+        case .secureConnectionFailed, .serverCertificateHasBadDate,
+             .serverCertificateUntrusted, .serverCertificateNotYetValid:
+            return .invalidResponse("无法建立安全连接，请检查系统时间后重试。")
+        case .cancelled:
+            return .invalidResponse("授权请求已取消。")
+        default:
+            return .invalidResponse("网络请求失败，请稍后重试。")
+        }
+    }
+
+    private static func message(forHTTPStatus statusCode: Int) -> String {
+        switch statusCode {
+        case 429:
+            return "请求过于频繁，请稍后再试。"
+        case 500...599:
+            return "授权服务暂时不可用，请稍后再试。"
+        default:
+            return "授权请求未能完成，请检查输入后重试。"
         }
     }
 
@@ -198,6 +252,6 @@ final class LicenseAPIClient {
            let url = URL(string: raw) {
             return url
         }
-        return URL(string: "http://localhost:8787")!
+        return URL(string: "https://license.promptstudio.app")!
     }
 }

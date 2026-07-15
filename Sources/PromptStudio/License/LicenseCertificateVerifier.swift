@@ -53,6 +53,11 @@ final class LicenseCertificateVerifier {
     }
 
     private static func defaultPublicKeys() -> [String: String] {
+        if let bundledKeys = Bundle.main.object(forInfoDictionaryKey: "PromptStudioLicensePublicKeys") as? [String: String],
+           !bundledKeys.isEmpty {
+            return bundledKeys
+        }
+#if DEBUG
         if let override = ProcessInfo.processInfo.environment["PROMPTSTUDIO_LICENSE_PUBLIC_KEY_RAW_B64URL"],
            !override.isEmpty {
             return ["dev-key-1": override]
@@ -60,5 +65,8 @@ final class LicenseCertificateVerifier {
         return [
             "dev-key-1": "Oh1nK1wBBKus9ooAP7Up9QKWxk_Ylpa0jeMHUt_fW4U"
         ]
+#else
+        return [:]
+#endif
     }
 }

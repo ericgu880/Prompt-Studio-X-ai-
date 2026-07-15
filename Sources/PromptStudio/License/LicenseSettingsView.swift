@@ -1,27 +1,65 @@
 import AppKit
 import SwiftUI
 
+private enum LicenseCenterRoute: Equatable {
+    case overview
+    case activation(recoveryToken: String?)
+    case devices
+}
+
 struct LicenseSettingsView: View {
     @EnvironmentObject private var state: AppState
-    @State private var isActivationPresented = false
-    @State private var isDeviceManagementPresented = false
+    @State private var route: LicenseCenterRoute = .overview
     @State private var isRefreshing = false
     @State private var isDeactivating = false
     @State private var message: String?
+    @State private var confirmsCurrentDeviceDeactivation = false
 
+    @ViewBuilder
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            statusPanel
-            actionsPanel
-            policyPanel
-        }
-        .sheet(isPresented: $isActivationPresented) {
-            ActivationSheetView()
+        Group {
+            switch route {
+            case .overview:
+                VStack(alignment: .leading, spacing: 16) {
+                    statusPanel
+                    actionsPanel
+                    policyPanel
+                }
+                .confirmationDialog("停用当前设备？", isPresented: $confirmsCurrentDeviceDeactivation) {
+                    Button("停用并释放席位", role: .destructive) {
+                        Task { await deactivate() }
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("停用后本机会退出 Pro 授权，但不会删除任何本地资料。")
+                }
+            case .activation(let recoveryToken):
+                ActivationSheetView(
+                    recoveryToken: recoveryToken,
+                    onClose: { route = .overview },
+                    onActivated: {
+                        state.showToast("PromptStudio Pro 已激活")
+                        route = .overview
+                    }
+                )
                 .environmentObject(state)
-        }
-        .sheet(isPresented: $isDeviceManagementPresented) {
-            LicenseDeviceManagementSheet()
+                .id(recoveryToken ?? "manual-activation")
+            case .devices:
+                LicenseDeviceManagementSheet(
+                    onClose: { route = .overview },
+                    onCurrentDeviceRemoved: {
+                        state.showToast("当前设备已停用")
+                        route = .overview
+                    }
+                )
                 .environmentObject(state)
+            }
+        }
+        .onAppear(perform: openPendingRecoveryIfNeeded)
+        .onChange(of: state.pendingLicenseRecoveryToken) { _, token in
+            if token != nil {
+                openPendingRecoveryIfNeeded()
+            }
         }
     }
 
@@ -69,7 +107,7 @@ struct LicenseSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             licenseActionRow("激活码", detail: "输入购买邮箱和激活码。") {
                 Button("激活") {
-                    isActivationPresented = true
+                    route = .activation(recoveryToken: nil)
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
             }
@@ -82,14 +120,14 @@ struct LicenseSettingsView: View {
             }
             licenseActionRow("当前设备", detail: currentDeviceActionDetail) {
                 Button(isDeactivating ? "停用中" : "停用设备") {
-                    Task { await deactivate() }
+                    confirmsCurrentDeviceDeactivation = true
                 }
                 .buttonStyle(CapsuleButtonStyle())
                 .disabled(isDeactivating || !hasDeviceLicense)
             }
             licenseActionRow("激活设备", detail: deviceManagementActionDetail) {
                 Button("管理设备") {
-                    isDeviceManagementPresented = true
+                    route = .devices
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: hasDeviceLicense))
                 .disabled(!hasDeviceLicense)
@@ -179,7 +217,8 @@ struct LicenseSettingsView: View {
         defer { isRefreshing = false }
         do {
             try await state.licenseManager.forceRefresh()
-            message = "授权已刷新。"
+            message = nil
+            state.showToast("授权已刷新")
         } catch {
             message = error.localizedDescription
         }
@@ -190,55 +229,50 @@ struct LicenseSettingsView: View {
         defer { isDeactivating = false }
         do {
             try await state.licenseManager.deactivateCurrentDevice()
-            message = "当前设备已停用。"
+            message = nil
+            state.showToast("当前设备已停用")
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    private func openPendingRecoveryIfNeeded() {
+        guard let token = state.consumePendingLicenseRecoveryToken() else { return }
+        route = .activation(recoveryToken: token)
     }
 }
 
 struct ActivationSheetView: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = ActivationViewModel()
-    private let accentColor = Color(hex: 0xE8491F)
+    let recoveryToken: String?
+    let onClose: () -> Void
+    let onActivated: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                formPanel
-                statusPanel
-                footerNote
-                actionBar
-            }
-            .padding(24)
-            .frame(width: 560)
-            .background(StudioColor.appBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(StudioColor.hairline, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 18)
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
+                    formPanel
+                    if !viewModel.replacementDevices.isEmpty {
+                        replacementPanel
+                    }
+                    statusPanel
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(13, weight: .medium))
-                    .foregroundStyle(StudioColor.secondaryText)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(Color.white.opacity(0.07)))
-                    .contentShape(Circle())
+                securityPanel
+                    .frame(width: 250)
             }
-            .buttonStyle(.plain)
-            .disabled(viewModel.isLoading)
-            .padding(18)
+            actionBar
         }
-        .padding(1)
-        .background(StudioColor.appBackground)
         .foregroundStyle(StudioColor.text)
+        .task {
+            if let recoveryToken {
+                viewModel.beginRecovery(token: recoveryToken)
+            }
+        }
     }
 
     private var hero: some View {
@@ -258,32 +292,56 @@ struct ActivationSheetView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
+            Button(action: onClose) {
+                Image(systemName: "chevron.left")
+                    .font(StudioFont.symbol(12, weight: .semibold))
+            }
+            .buttonStyle(IconCircleButtonStyle())
+            .help("返回授权概览")
+
             hero
             VStack(alignment: .leading, spacing: 5) {
-                Text("激活 PromptStudio")
-                    .font(StudioFont.font(22, weight: .semibold))
+                Text(viewModel.isRecoveryActivation ? "恢复 PromptStudio 授权" : "激活 PromptStudio Pro")
+                    .font(StudioFont.font(18, weight: .semibold))
                     .foregroundStyle(StudioColor.text)
-                Text("输入购买邮箱与激活码，完成授权后解锁 Pro 功能。")
+                Text(viewModel.isRecoveryActivation ? "使用邮件中的一次性凭证在当前设备继续。" : "使用购买邮箱与激活码绑定当前设备。")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
             }
             Spacer()
         }
-        .padding(.trailing, 44)
     }
 
     private var formPanel: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 14) {
-                fields
+            if viewModel.isRecoveryActivation {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "envelope.badge.shield.half.filled")
+                        .font(StudioFont.symbol(20, weight: .medium))
+                        .foregroundStyle(StudioColor.blue)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("恢复凭证已载入")
+                            .font(StudioFont.font(14, weight: .semibold))
+                        Text("凭证只用于本次设备授权，成功后立即失效。")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
+                    Spacer()
+                }
+                .padding(16)
+            } else {
+                VStack(spacing: 14) {
+                    fields
+                }
+                .padding(16)
+
+                Divider().overlay(StudioColor.hairline)
+
+                recoveryRow
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
             }
-            .padding(16)
-
-            Divider().overlay(StudioColor.hairline)
-
-            recoveryRow
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
         }
         .background(StudioColor.panel)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -317,8 +375,7 @@ struct ActivationSheetView: View {
         Button {
             Task {
                 if await viewModel.activate(using: state.licenseManager) {
-                    try? await Task.sleep(for: .milliseconds(800))
-                    dismiss()
+                    onActivated()
                 }
             }
         } label: {
@@ -400,10 +457,97 @@ struct ActivationSheetView: View {
     }
 
     private var actionBar: some View {
-        HStack {
+        HStack(spacing: 10) {
+            Button("返回") { onClose() }
+                .buttonStyle(CapsuleButtonStyle())
+                .disabled(viewModel.isLoading)
             Spacer()
             primaryAction
                 .frame(width: 184)
+        }
+    }
+
+    private var replacementPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("选择要替换的设备")
+                    .font(StudioFont.font(13, weight: .semibold))
+                Text("新设备激活成功后，所选设备会立即退出授权。")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            .padding(16)
+
+            ForEach(viewModel.replacementDevices) { device in
+                Button {
+                    viewModel.selectedReplacementID = device.activationId
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: viewModel.selectedReplacementID == device.activationId ? "checkmark.circle.fill" : "circle")
+                            .font(StudioFont.symbol(16, weight: .medium))
+                            .foregroundStyle(viewModel.selectedReplacementID == device.activationId ? StudioColor.blue : StudioColor.tertiaryText)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(device.deviceLabel)
+                                .font(StudioFont.font(13, weight: .medium))
+                                .foregroundStyle(StudioColor.text)
+                            Text(replacementDeviceDetail(device))
+                                .font(StudioFont.font(11))
+                                .foregroundStyle(StudioColor.tertiaryText)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(viewModel.selectedReplacementID == device.activationId ? StudioColor.selection : Color.clear)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(StudioColor.hairline).frame(height: 1)
+                }
+            }
+        }
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private var securityPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("授权说明", systemImage: "lock.shield")
+                .font(StudioFont.font(13, weight: .semibold))
+            infoRow("设备绑定", detail: "每个席位对应一台当前激活设备。")
+            infoRow("本地资料", detail: "授权服务不会上传或修改资料库内容。")
+            infoRow("找回邮件", detail: "一次性链接 15 分钟有效，使用后立即失效。")
+            Divider().overlay(StudioColor.hairline)
+            Button("购买 PromptStudio Pro") { openPurchasePage() }
+                .buttonStyle(TextHoverButtonStyle())
+        }
+        .padding(16)
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+    }
+
+    private func infoRow(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(StudioFont.font(12, weight: .medium))
+            Text(detail)
+                .font(StudioFont.font(11))
+                .foregroundStyle(StudioColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func replacementDeviceDetail(_ device: LicenseReplacementDevice) -> String {
+        let lastSeen = device.lastSeenAt ?? device.activatedAt
+        return "\(device.platform) · 最近使用 \(lastSeen.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private func openPurchasePage() {
+        if let url = URL(string: "https://promptstudio.app/pricing") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -491,11 +635,14 @@ struct ActivationSheetView: View {
     }
 
     private var primaryButtonTitle: String {
-        switch viewModel.feedback {
+        if !viewModel.replacementDevices.isEmpty {
+            return viewModel.selectedReplacementID == nil ? "请选择设备" : "替换并激活"
+        }
+        return switch viewModel.feedback {
         case .loading:
             "激活中..."
         case .success:
-            "正在进入 PromptStudio..."
+            "激活成功"
         case .error:
             "重新激活"
         case .idle, .info:
@@ -535,7 +682,7 @@ struct ActivationSheetView: View {
     }
 
     private var primaryButtonDisabled: Bool {
-        viewModel.isActivated || !viewModel.canSubmit
+        viewModel.isActivated || !viewModel.canConfirmActivation
     }
 
     private var inputsDisabled: Bool {
@@ -623,12 +770,12 @@ final class LicenseDeviceManagementViewModel: ObservableObject {
         editingLabel = ""
     }
 
-    func renameEditingDevice(using manager: LicenseManager) async {
-        guard let editingDeviceID else { return }
+    func renameEditingDevice(using manager: LicenseManager) async -> Bool {
+        guard let editingDeviceID else { return false }
         let label = editingLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else {
             message = "设备名称不能为空。"
-            return
+            return false
         }
         busyDeviceID = editingDeviceID
         message = nil
@@ -637,25 +784,27 @@ final class LicenseDeviceManagementViewModel: ObservableObject {
             try await manager.renameDevice(activationId: editingDeviceID, label: label)
             cancelEditing()
             await load(using: manager)
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
     }
 
-    func deactivate(_ device: LicenseDevice, using manager: LicenseManager) async -> Bool {
+    func deactivate(_ device: LicenseDevice, using manager: LicenseManager) async -> LicenseDeviceRemovalResult {
         busyDeviceID = device.activationId
         message = nil
         defer { busyDeviceID = nil }
         do {
             try await manager.deactivateDevice(activationId: device.activationId)
             if device.isCurrent {
-                return true
+                return .current
             }
             await load(using: manager)
-            return false
+            return .other
         } catch {
             message = error.localizedDescription
-            return false
+            return .failed
         }
     }
 
@@ -664,44 +813,33 @@ final class LicenseDeviceManagementViewModel: ObservableObject {
     }
 }
 
+enum LicenseDeviceRemovalResult {
+    case current
+    case other
+    case failed
+}
+
 struct LicenseDeviceManagementSheet: View {
     @EnvironmentObject private var state: AppState
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = LicenseDeviceManagementViewModel()
     @State private var pendingRemoval: LicenseDevice?
+    let onClose: () -> Void
+    let onCurrentDeviceRemoved: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            VStack(spacing: 0) {
-                header
-                    .padding(.top, 36)
-                    .padding(.horizontal, 42)
-                    .padding(.bottom, 24)
-
-                deviceListContent
-                    .padding(.horizontal, 42)
-                    .padding(.bottom, 30)
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            deviceSummary
+            deviceListContent
+            HStack {
+                Text("设备变更会立即同步到授权服务，不影响本地资料。")
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(StudioColor.tertiaryText)
+                Spacer()
+                Button("增加设备席位") { openPurchasePage() }
+                    .buttonStyle(TextHoverButtonStyle())
             }
-            .frame(width: 820, height: 620)
-            .background(Color(hex: 0x32363A))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
-            )
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(20, weight: .light))
-                    .foregroundStyle(Color.white.opacity(0.76))
-                    .frame(width: 42, height: 42)
-            }
-            .buttonStyle(.plain)
-            .padding(22)
         }
-        .background(StudioColor.appBackground)
         .foregroundStyle(StudioColor.text)
         .task {
             await viewModel.load(using: state.licenseManager)
@@ -720,10 +858,15 @@ struct LicenseDeviceManagementSheet: View {
             if let device = pendingRemoval {
                 Button("移除设备", role: .destructive) {
                     Task {
-                        let removedCurrent = await viewModel.deactivate(device, using: state.licenseManager)
+                        let result = await viewModel.deactivate(device, using: state.licenseManager)
                         pendingRemoval = nil
-                        if removedCurrent {
-                            dismiss()
+                        switch result {
+                        case .current:
+                            onCurrentDeviceRemoved()
+                        case .other:
+                            state.showToast("设备已移除，席位已释放")
+                        case .failed:
+                            break
                         }
                     }
                 }
@@ -739,36 +882,56 @@ struct LicenseDeviceManagementSheet: View {
     }
 
     private var header: some View {
-        VStack(spacing: 18) {
-            ZStack(alignment: .bottomTrailing) {
-                Image(systemName: "desktopcomputer")
-                    .font(StudioFont.symbol(100, weight: .ultraLight))
-                    .foregroundStyle(Color.white.opacity(0.22))
-                Image(systemName: "laptopcomputer")
-                    .font(StudioFont.symbol(70, weight: .ultraLight))
-                    .foregroundStyle(Color.white.opacity(0.28))
-                    .offset(x: 56, y: 18)
+        HStack(spacing: 12) {
+            Button(action: onClose) {
+                Image(systemName: "chevron.left")
+                    .font(StudioFont.symbol(12, weight: .semibold))
             }
-            .frame(height: 118)
-            .padding(.trailing, 40)
+            .buttonStyle(IconCircleButtonStyle())
+            .help("返回授权概览")
 
-            Text("激活设备管理 (\(viewModel.activeDeviceCount)/\(viewModel.seatLimit))")
-                .font(StudioFont.font(30, weight: .semibold))
-
-            HStack(spacing: 0) {
-                Text("当前序列号可以授权 \(viewModel.seatLimit) 台设备，如需扩增你原购买的序列号授权数，请 ")
-                    .foregroundStyle(Color.white.opacity(0.62))
-                Button("扩增授权数") {
-                    openPurchasePage()
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(StudioColor.blue)
-                Text("。")
-                    .foregroundStyle(Color.white.opacity(0.62))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("管理激活设备")
+                    .font(StudioFont.font(18, weight: .semibold))
+                Text("重命名设备或释放不再使用的席位。")
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.secondaryText)
             }
-            .font(StudioFont.font(17))
+
+            Spacer()
+
+            Button {
+                Task { await viewModel.load(using: state.licenseManager) }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(StudioFont.symbol(12, weight: .semibold))
+            }
+            .buttonStyle(IconCircleButtonStyle())
+            .disabled(viewModel.isLoading)
+            .help("刷新设备列表")
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    private var deviceSummary: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "laptopcomputer.and.iphone")
+                .font(StudioFont.symbol(22, weight: .medium))
+                .foregroundStyle(StudioColor.blue)
+                .frame(width: 42, height: 42)
+                .background(RoundedRectangle(cornerRadius: 8).fill(StudioColor.control))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("已使用 \(viewModel.activeDeviceCount) / \(viewModel.seatLimit) 个席位")
+                    .font(StudioFont.font(14, weight: .semibold))
+                Text(viewModel.activeDeviceCount < viewModel.seatLimit ? "仍有可用席位。" : "席位已用满，可移除旧设备后再激活新设备。")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .background(StudioColor.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -781,26 +944,32 @@ struct LicenseDeviceManagementSheet: View {
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.secondaryText)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 180)
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
         } else if let devices = viewModel.deviceList?.devices, !devices.isEmpty {
             VStack(spacing: 0) {
                 ForEach(devices) { device in
                     deviceRow(device)
                     if device.id != devices.last?.id {
                         Rectangle()
-                            .fill(Color.white.opacity(0.10))
+                            .fill(StudioColor.hairline)
                             .frame(height: 1)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
             .overlay(alignment: .bottomLeading) {
                 if let message = viewModel.message {
                     Text(message)
                         .font(StudioFont.font(12))
                         .foregroundStyle(Color(hex: 0xFFBBB5))
                         .padding(.top, 12)
-                        .offset(y: 26)
+                        .offset(y: 24)
                 }
             }
         } else {
@@ -813,7 +982,10 @@ struct LicenseDeviceManagementSheet: View {
                         .foregroundStyle(Color(hex: 0xFFBBB5))
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 180)
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
         }
     }
 
@@ -821,17 +993,17 @@ struct LicenseDeviceManagementSheet: View {
         HStack(spacing: 16) {
             Circle()
                 .fill(device.isCurrent ? Color(hex: 0x4AE06D) : Color.white.opacity(0.28))
-                .frame(width: 12, height: 12)
+                .frame(width: 9, height: 9)
 
             Image(systemName: "apple.logo")
-                .font(StudioFont.symbol(24, weight: .regular))
+                .font(StudioFont.symbol(18, weight: .regular))
                 .foregroundStyle(Color.white.opacity(device.isCurrent ? 0.78 : 0.52))
 
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.editingDeviceID == device.activationId {
                     TextField("设备名称", text: $viewModel.editingLabel)
                         .textFieldStyle(.plain)
-                        .font(StudioFont.font(19, weight: .medium))
+                        .font(StudioFont.font(14, weight: .medium))
                         .foregroundStyle(StudioColor.text)
                         .padding(.horizontal, 10)
                         .frame(height: 34)
@@ -840,7 +1012,7 @@ struct LicenseDeviceManagementSheet: View {
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.18), lineWidth: 1))
                 } else {
                     Text(device.label)
-                        .font(StudioFont.font(19, weight: .medium))
+                        .font(StudioFont.font(14, weight: .medium))
                         .foregroundStyle(Color.white.opacity(device.isCurrent ? 0.94 : 0.68))
                         .lineLimit(1)
                 }
@@ -857,7 +1029,11 @@ struct LicenseDeviceManagementSheet: View {
                 }
                 .buttonStyle(TextHoverButtonStyle())
                 Button("保存") {
-                    Task { await viewModel.renameEditingDevice(using: state.licenseManager) }
+                    Task {
+                        if await viewModel.renameEditingDevice(using: state.licenseManager) {
+                            state.showToast("设备名称已更新")
+                        }
+                    }
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
                 .disabled(viewModel.isBusy(device))
@@ -866,24 +1042,25 @@ struct LicenseDeviceManagementSheet: View {
                     viewModel.beginEditing(device)
                 } label: {
                     Image(systemName: "pencil")
-                        .font(StudioFont.symbol(19, weight: .regular))
+                        .font(StudioFont.symbol(12, weight: .medium))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.white.opacity(0.56))
+                .buttonStyle(IconCircleButtonStyle())
                 .disabled(viewModel.isBusy(device))
+                .help("重命名设备")
 
                 Button {
                     pendingRemoval = device
                 } label: {
                     Image(systemName: "trash")
-                        .font(StudioFont.symbol(20, weight: .regular))
+                        .font(StudioFont.symbol(12, weight: .medium))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.white.opacity(0.56))
+                .buttonStyle(IconCircleButtonStyle())
                 .disabled(viewModel.isBusy(device))
+                .help("移除设备")
             }
         }
-        .frame(height: 72)
+        .padding(.horizontal, 16)
+        .frame(height: 66)
     }
 
     private func deviceSubtitle(_ device: LicenseDevice) -> String {

@@ -12,6 +12,19 @@
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.creatigo.promptstudio</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>com.creatigo.promptstudio.license</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>promptstudio</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

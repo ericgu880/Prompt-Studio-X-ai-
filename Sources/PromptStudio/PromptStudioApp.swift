@@ -34,7 +34,9 @@ struct PromptStudioApp: App {
                 .onOpenURL { url in
                     appDelegate.appState = appState
                     WindowStartupConfigurator.showMainWindow()
-                    appState.handleExternalFileOpen([url])
+                    if !appState.handleIncomingURL(url) {
+                        appState.handleExternalFileOpen([url])
+                    }
                     WindowStartupConfigurator.closeDuplicateMainWindows()
                 }
         }

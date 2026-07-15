@@ -40,7 +40,7 @@ final class LicenseManager: ObservableObject {
         state = resolveLocalState()
     }
 
-    func activate(email: String, licenseCode: String) async throws {
+    func activate(email: String, licenseCode: String, replacing activationId: String? = nil) async throws {
         let identity = try identityManager.loadOrCreateIdentity()
         let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -74,9 +74,53 @@ final class LicenseManager: ObservableObject {
                 deviceLabel: identity.deviceLabel,
                 bundleId: bundleId,
                 appVersion: appVersion,
-                osVersion: osVersion
+                osVersion: osVersion,
+                replaceActivationId: activationId
             )
         )
+        try saveActivation(response, identity: identity)
+    }
+
+    func activate(recoveryToken: String, replacing activationId: String? = nil) async throws {
+        let identity = try identityManager.loadOrCreateIdentity()
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let osVersion = Self.osVersionString()
+        let nonce = LicenseEncoding.base64URL(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
+        let createdAt = formatter.string(from: Date())
+        let proofMessage = buildRecoveryProofMessage(
+            recoveryToken: recoveryToken,
+            installIdHash: identity.installIdHash,
+            devicePublicKey: identity.publicKeyBase64URL,
+            bundleId: bundleId,
+            appVersion: appVersion,
+            osVersion: osVersion,
+            clientNonce: nonce,
+            createdAt: createdAt
+        )
+        let signature = try identityManager.sign(proofMessage)
+        let response = try await api.activateRecovery(
+            LicenseAPIClient.RecoveryActivateRequest(
+                recoveryToken: recoveryToken,
+                installIdHash: identity.installIdHash,
+                devicePublicKey: identity.publicKeyBase64URL,
+                deviceProof: LicenseAPIClient.DeviceProof(
+                    version: "PromptStudio-Recovery-Proof-v1",
+                    clientNonce: nonce,
+                    createdAt: createdAt,
+                    signature: signature
+                ),
+                deviceLabel: identity.deviceLabel,
+                bundleId: bundleId,
+                appVersion: appVersion,
+                osVersion: osVersion,
+                replaceActivationId: activationId
+            )
+        )
+        try saveActivation(response, identity: identity)
+    }
+
+    private func saveActivation(_ response: LicenseAPIClient.ActivateResponse, identity: DeviceIdentity) throws {
         _ = try verifier.verify(
             response.licenseCertificate,
             expectedActivationId: response.activationId,
@@ -129,12 +173,12 @@ final class LicenseManager: ObservableObject {
             try store.save(response.licenseCertificate, for: .licenseCertificate)
             try store.save(formatter.string(from: response.serverTime ?? Date()), for: .lastTrustedServerTime)
             state = resolveLocalState()
-        } catch LicenseError.api(let code, let message) where code == "LICENSE_REVOKED" || code == "LICENSE_NOT_AVAILABLE" {
+        } catch LicenseError.api(let code, let message, let data) where code == "LICENSE_REVOKED" || code == "LICENSE_NOT_AVAILABLE" {
             state = .revoked(reason: message)
-            throw LicenseError.api(code: code, message: message)
-        } catch LicenseError.api(let code, let message) where code == "INVALID_DEVICE_PROOF" {
+            throw LicenseError.api(code: code, message: message, data: data)
+        } catch LicenseError.api(let code, let message, let data) where code == "INVALID_DEVICE_PROOF" {
             state = .limited(reason: .deviceMismatch)
-            throw LicenseError.api(code: code, message: message)
+            throw LicenseError.api(code: code, message: message, data: data)
         }
     }
 
@@ -309,6 +353,29 @@ final class LicenseManager: ObservableObject {
             "challengeId:\(challengeId)",
             "nonce:\(nonce)",
             "bundleId:\(bundleId)"
+        ].joined(separator: "\n")
+    }
+
+    private func buildRecoveryProofMessage(
+        recoveryToken: String,
+        installIdHash: String,
+        devicePublicKey: String,
+        bundleId: String,
+        appVersion: String,
+        osVersion: String,
+        clientNonce: String,
+        createdAt: String
+    ) -> String {
+        [
+            "PromptStudio-Recovery-Proof-v1",
+            "recoveryTokenSha256:\(LicenseEncoding.sha256Base64URL(recoveryToken))",
+            "installIdHash:\(installIdHash)",
+            "devicePublicKey:\(devicePublicKey)",
+            "bundleId:\(bundleId)",
+            "appVersion:\(appVersion.isEmpty ? "-" : appVersion)",
+            "osVersion:\(osVersion.isEmpty ? "-" : osVersion)",
+            "clientNonce:\(clientNonce)",
+            "createdAt:\(createdAt)"
         ].joined(separator: "\n")
     }
 
