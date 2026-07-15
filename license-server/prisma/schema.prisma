@@ -38,12 +38,31 @@ enum EventSource {
   system
 }
 
+enum CommerceEventStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum EmailDeliveryStatus {
+  pending
+  processing
+  accepted
+  delivered
+  delayed
+  bounced
+  failed
+}
+
 model Customer {
-  id          String   @id @default(cuid())
-  emailHash   String   @unique
-  emailMasked String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  emailHash              String   @unique
+  emailMasked            String
+  emailEncrypted         String?
+  emailEncryptionVersion Int?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   licenses License[]
 }
@@ -74,6 +93,8 @@ model License {
   activations  Activation[]
   certificates LicenseCertificate[]
   events       LicenseEvent[]
+  emailOutbox  EmailOutbox[]
+  recoveryTokens LicenseRecoveryToken[]
 
   @@index([customerId])
   @@index([codePrefix])
@@ -238,4 +259,77 @@ model AdminIdempotencyRecord {
 
   @@unique([adminUserId, route, key])
   @@index([expiresAt])
+}
+
+model CommerceWebhookEvent {
+  id                String              @id @default(cuid())
+  provider          String
+  eventName         String
+  providerEventId   String?
+  payloadHash       String
+  payloadEncrypted  String
+  encryptionVersion Int                 @default(1)
+  status            CommerceEventStatus @default(pending)
+  attemptCount      Int                 @default(0)
+  nextAttemptAt     DateTime            @default(now())
+  leaseExpiresAt    DateTime?
+  processedAt       DateTime?
+  lastErrorCode     String?
+  lastErrorMessage  String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@unique([provider, eventName, payloadHash])
+  @@unique([provider, providerEventId])
+  @@index([status, nextAttemptAt])
+  @@index([leaseExpiresAt])
+}
+
+model LicenseRecoveryToken {
+  id               String    @id @default(cuid())
+  licenseId        String
+  license          License   @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  tokenHash        String    @unique
+  requestEmailHash String
+  requestIpHash    String?
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  emailOutbox EmailOutbox?
+
+  @@index([licenseId, createdAt])
+  @@index([requestEmailHash, createdAt])
+  @@index([expiresAt, consumedAt])
+}
+
+model EmailOutbox {
+  id                String                @id @default(cuid())
+  kind              String
+  licenseId         String?
+  license           License?              @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+  recoveryTokenId   String?               @unique
+  recoveryToken     LicenseRecoveryToken? @relation(fields: [recoveryTokenId], references: [id], onDelete: SetNull)
+  recipientHash     String
+  idempotencyKey    String                @unique
+  payloadEncrypted  String?
+  encryptionVersion Int                   @default(1)
+  provider          String                @default("resend")
+  providerMessageId String?               @unique
+  status            EmailDeliveryStatus   @default(pending)
+  attemptCount      Int                   @default(0)
+  nextAttemptAt     DateTime              @default(now())
+  leaseExpiresAt    DateTime?
+  acceptedAt        DateTime?
+  deliveredAt       DateTime?
+  payloadClearedAt  DateTime?
+  lastErrorCode     String?
+  lastErrorMessage  String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([licenseId])
+  @@index([status, nextAttemptAt])
+  @@index([leaseExpiresAt])
+  @@index([recipientHash, createdAt])
 }
