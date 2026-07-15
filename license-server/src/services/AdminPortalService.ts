@@ -191,6 +191,166 @@ export class AdminPortalService {
     })), input.page, input.pageSize, total);
   }
 
+  async commercialHealth() {
+    const now = new Date();
+    const [commercePending, commerceFailed, emailPending, emailFailed, activeRecoveryRequests] = await Promise.all([
+      this.prisma.commerceWebhookEvent.count({ where: { status: { in: ["pending", "processing"] } } }),
+      this.prisma.commerceWebhookEvent.count({ where: { status: "failed" } }),
+      this.prisma.emailOutbox.count({ where: { status: { in: ["pending", "processing"] } } }),
+      this.prisma.emailOutbox.count({ where: { status: { in: ["failed", "bounced"] } } }),
+      this.prisma.licenseRecoveryToken.count({ where: { consumedAt: null, expiresAt: { gt: now } } }),
+    ]);
+    return { commercePending, commerceFailed, emailPending, emailFailed, activeRecoveryRequests };
+  }
+
+  async listCommerceEvents(input: PageInput & { provider?: string; eventName?: string; status?: string }) {
+    const where: Prisma.CommerceWebhookEventWhereInput = {
+      ...(input.provider ? { provider: input.provider } : {}),
+      ...(input.eventName ? { eventName: input.eventName } : {}),
+      ...(input.status ? { status: input.status as Prisma.CommerceWebhookEventWhereInput["status"] } : {}),
+    };
+    const [total, events] = await this.prisma.$transaction([
+      this.prisma.commerceWebhookEvent.count({ where }),
+      this.prisma.commerceWebhookEvent.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+      }),
+    ]);
+    return pageResult(events.map((event) => ({
+      id: event.id,
+      provider: event.provider,
+      eventName: event.eventName,
+      providerEventId: event.providerEventId,
+      status: event.status,
+      attemptCount: event.attemptCount,
+      nextAttemptAt: event.nextAttemptAt,
+      processedAt: event.processedAt,
+      lastErrorCode: event.lastErrorCode,
+      lastErrorMessage: event.lastErrorMessage,
+      createdAt: event.createdAt,
+    })), input.page, input.pageSize, total);
+  }
+
+  async replayCommerceEvent(input: { actor: AdminActor; eventId: string; reason: string; requestId: string }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const event = await tx.commerceWebhookEvent.findUnique({ where: { id: input.eventId } });
+      if (!event) throw new AdminAPIError("COMMERCE_EVENT_NOT_FOUND", 404, "支付事件不存在。");
+      if (event.status !== "failed") throw new AdminAPIError("COMMERCE_EVENT_NOT_REPLAYABLE", 409, "只有失败事件可以重放。");
+      await tx.commerceWebhookEvent.update({
+        where: { id: event.id },
+        data: {
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+          leaseExpiresAt: null,
+          processedAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+        },
+      });
+      await this.adminAudit(tx, input.actor, "commerce_event_replayed", "commerce_event", event.id, "success", input.requestId, {
+        reason: input.reason,
+        provider: event.provider,
+        eventName: event.eventName,
+      });
+    });
+  }
+
+  async listEmailOutbox(input: PageInput & { kind?: string; status?: string; email?: string }) {
+    const where: Prisma.EmailOutboxWhereInput = {
+      ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.status ? { status: input.status as Prisma.EmailOutboxWhereInput["status"] } : {}),
+      ...(input.email ? { recipientHash: hashEmail(this.config.licenseCodePepper, normalizeEmail(input.email)) } : {}),
+    };
+    const [total, messages] = await this.prisma.$transaction([
+      this.prisma.emailOutbox.count({ where }),
+      this.prisma.emailOutbox.findMany({
+        where,
+        include: { license: { include: { customer: true } } },
+        orderBy: { createdAt: "desc" },
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+      }),
+    ]);
+    return pageResult(messages.map((message) => ({
+      id: message.id,
+      kind: message.kind,
+      licenseId: message.licenseId,
+      email: message.license?.customer.emailMasked ?? "-",
+      status: message.status,
+      provider: message.provider,
+      providerMessageId: message.providerMessageId,
+      attemptCount: message.attemptCount,
+      payloadAvailable: Boolean(message.payloadEncrypted),
+      nextAttemptAt: message.nextAttemptAt,
+      acceptedAt: message.acceptedAt,
+      deliveredAt: message.deliveredAt,
+      lastErrorCode: message.lastErrorCode,
+      createdAt: message.createdAt,
+    })), input.page, input.pageSize, total);
+  }
+
+  async retryEmail(input: { actor: AdminActor; outboxId: string; reason: string; requestId: string }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const message = await tx.emailOutbox.findUnique({ where: { id: input.outboxId } });
+      if (!message) throw new AdminAPIError("EMAIL_NOT_FOUND", 404, "邮件任务不存在。");
+      if (message.status !== "failed") throw new AdminAPIError("EMAIL_NOT_RETRYABLE", 409, "只有发送失败的邮件可以重试。");
+      if (!message.payloadEncrypted) throw new AdminAPIError("EMAIL_PAYLOAD_UNAVAILABLE", 409, "敏感正文已清除，请让用户重新发起找回。");
+      await tx.emailOutbox.update({
+        where: { id: message.id },
+        data: {
+          status: "pending",
+          attemptCount: 0,
+          nextAttemptAt: new Date(),
+          leaseExpiresAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+        },
+      });
+      await this.adminAudit(tx, input.actor, "email_retried", "email_outbox", message.id, "success", input.requestId, {
+        reason: input.reason,
+        kind: message.kind,
+      });
+    });
+  }
+
+  async listRecoveryRequests(input: PageInput & { status?: string; email?: string }) {
+    const now = new Date();
+    const statusWhere: Prisma.LicenseRecoveryTokenWhereInput = input.status === "active"
+      ? { consumedAt: null, expiresAt: { gt: now } }
+      : input.status === "consumed"
+        ? { consumedAt: { not: null } }
+        : input.status === "expired"
+          ? { consumedAt: null, expiresAt: { lte: now } }
+          : {};
+    const where: Prisma.LicenseRecoveryTokenWhereInput = {
+      ...statusWhere,
+      ...(input.email ? { requestEmailHash: hashEmail(this.config.licenseCodePepper, normalizeEmail(input.email)) } : {}),
+    };
+    const [total, tokens] = await this.prisma.$transaction([
+      this.prisma.licenseRecoveryToken.count({ where }),
+      this.prisma.licenseRecoveryToken.findMany({
+        where,
+        include: { license: { include: { customer: true } }, emailOutbox: true },
+        orderBy: { createdAt: "desc" },
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+      }),
+    ]);
+    return pageResult(tokens.map((token) => ({
+      id: token.id,
+      licenseId: token.licenseId,
+      email: token.license.customer.emailMasked,
+      status: token.consumedAt ? "consumed" : token.expiresAt <= now ? "expired" : "active",
+      emailStatus: token.emailOutbox?.status ?? null,
+      expiresAt: token.expiresAt,
+      consumedAt: token.consumedAt,
+      createdAt: token.createdAt,
+    })), input.page, input.pageSize, total);
+  }
+
   async listAdminAuditLogs(input: PageInput & { action?: string; targetType?: string; targetId?: string; result?: string; adminEmail?: string }) {
     const where: Prisma.AdminAuditLogWhereInput = {
       ...(input.action ? { action: input.action } : {}),

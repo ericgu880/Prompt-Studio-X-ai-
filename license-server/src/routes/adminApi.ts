@@ -44,6 +44,10 @@ const adminPasswordSchema = z.object({
   password: z.string().min(8).max(200)
 });
 
+const operationalActionSchema = z.object({
+  reason: z.string().trim().min(1).max(200)
+});
+
 function pagination(query: Record<string, unknown>): { page: number; pageSize: number } {
   return {
     page: Math.max(1, Number(query.page ?? "1") || 1),
@@ -219,6 +223,10 @@ export async function adminApiRoutes(app: FastifyInstance, config: AppConfig): P
     return success(request, await app.licenseServices.adminPortal.dashboardTimeseries(Number(query.days ?? "30") || 30));
   });
 
+  app.get("/admin-api/commercial/health", async (request) => {
+    return success(request, await app.licenseServices.adminPortal.commercialHealth());
+  });
+
   app.get("/admin-api/licenses", async (request: AdminRequest) => {
     const query = request.query as { page?: string; pageSize?: string; email?: string; status?: string; plan?: string; orderProvider?: string };
     const { page, pageSize } = pagination(query);
@@ -300,6 +308,67 @@ export async function adminApiRoutes(app: FastifyInstance, config: AppConfig): P
       eventType: query.eventType,
       licenseId: query.licenseId,
       activationId: query.activationId
+    }));
+  });
+
+  app.get("/admin-api/commerce-events", async (request) => {
+    const query = request.query as { page?: string; pageSize?: string; provider?: string; eventName?: string; status?: string };
+    return success(request, await app.licenseServices.adminPortal.listCommerceEvents({
+      ...pagination(query),
+      provider: query.provider,
+      eventName: query.eventName,
+      status: query.status,
+    }));
+  });
+
+  app.post("/admin-api/commerce-events/:id/replay", async (request: AdminRequest, reply) => {
+    try {
+      const body = operationalActionSchema.parse(request.body);
+      await app.licenseServices.adminPortal.replayCommerceEvent({
+        actor: request.adminContext!.user,
+        eventId: (request.params as { id: string }).id,
+        reason: body.reason,
+        requestId: requestId(request),
+      });
+      return success(request, { ok: true });
+    } catch (error) {
+      const mapped = mapError(error);
+      return fail(reply, request, mapped.statusCode, mapped.code, mapped.message, mapped.data);
+    }
+  });
+
+  app.get("/admin-api/email-outbox", async (request) => {
+    const query = request.query as { page?: string; pageSize?: string; kind?: string; status?: string; email?: string };
+    return success(request, await app.licenseServices.adminPortal.listEmailOutbox({
+      ...pagination(query),
+      kind: query.kind,
+      status: query.status,
+      email: query.email,
+    }));
+  });
+
+  app.post("/admin-api/email-outbox/:id/retry", async (request: AdminRequest, reply) => {
+    try {
+      const body = operationalActionSchema.parse(request.body);
+      await app.licenseServices.adminPortal.retryEmail({
+        actor: request.adminContext!.user,
+        outboxId: (request.params as { id: string }).id,
+        reason: body.reason,
+        requestId: requestId(request),
+      });
+      return success(request, { ok: true });
+    } catch (error) {
+      const mapped = mapError(error);
+      return fail(reply, request, mapped.statusCode, mapped.code, mapped.message, mapped.data);
+    }
+  });
+
+  app.get("/admin-api/recovery-requests", async (request) => {
+    const query = request.query as { page?: string; pageSize?: string; status?: string; email?: string };
+    return success(request, await app.licenseServices.adminPortal.listRecoveryRequests({
+      ...pagination(query),
+      status: query.status,
+      email: query.email,
     }));
   });
 
