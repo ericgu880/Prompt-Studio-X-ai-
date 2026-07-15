@@ -288,6 +288,7 @@ export class AdminPortalService {
       acceptedAt: message.acceptedAt,
       deliveredAt: message.deliveredAt,
       lastErrorCode: message.lastErrorCode,
+      lastErrorMessage: message.lastErrorMessage,
       createdAt: message.createdAt,
     })), input.page, input.pageSize, total);
   }

@@ -114,6 +114,7 @@ describe("AdminPortalService", () => {
           acceptedAt: null,
           deliveredAt: null,
           lastErrorCode: "RESEND_UNAVAILABLE",
+          lastErrorMessage: "Transactional email delivery failed",
           createdAt: new Date("2026-07-15T00:00:00.000Z"),
           license: { customer: { emailMasked: "b***@example.com" } },
         }]),
@@ -128,6 +129,7 @@ describe("AdminPortalService", () => {
       email: "b***@example.com",
       payloadAvailable: true,
       status: "failed",
+      lastErrorMessage: "Transactional email delivery failed",
     });
     expect(JSON.stringify(result)).not.toContain("secret-ciphertext");
   });
