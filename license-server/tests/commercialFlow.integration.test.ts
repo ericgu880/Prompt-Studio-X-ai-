@@ -58,6 +58,7 @@ function makeConfig(databaseUrl: string): AppConfig {
     adminWebOrigin: "http://localhost:8000",
     legacyAdminEnabled: false,
     telemetryEnabled: false,
+    trustProxyHops: 0,
     commercial: {
       dataEncryptionKeyB64: randomBytes(32).toString("base64"),
       publicBaseURL: "http://localhost:8787",
@@ -195,11 +196,73 @@ integrationDescribe("commercial license journey", () => {
     await prisma.$executeRawUnsafe(`
       TRUNCATE TABLE
         "AdminAuditLog", "AdminSession", "AdminIdempotencyRecord", "AdminUser",
-        "EmailOutbox", "LicenseRecoveryToken", "CommerceWebhookEvent",
+        "EmailOutbox", "LicenseRecoveryToken", "CommerceWebhookEvent", "CommerceOrderState",
         "LicenseEvent", "LicenseCertificate", "RefreshChallenge", "Activation",
         "ActivateProofNonce", "License", "Customer"
       RESTART IDENTITY CASCADE
     `);
+  });
+
+  it("reconciles a full refund that is processed before its purchase", async () => {
+    process.env.LOG_LEVEL = "silent";
+    const app = await buildApp(prisma, config);
+    const orderId = `refund-first-${randomUUID()}`;
+    const email = `refund-first+${randomUUID()}@example.com`;
+    const refundBody = JSON.stringify({
+      meta: { event_name: "order_refunded" },
+      data: {
+        id: orderId,
+        attributes: {
+          total: 9900,
+          refunded_amount: 9900,
+          refunded_at: new Date().toISOString(),
+        },
+      },
+    });
+    const refundSignature = createHmac("sha256", config.commercial.lemonSqueezyWebhookSecret!)
+      .update(refundBody)
+      .digest("hex");
+    expect((await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/lemonsqueezy",
+      headers: { "content-type": "application/json", "x-signature": refundSignature },
+      payload: refundBody,
+    })).statusCode).toBe(200);
+    expect(await app.licenseServices.commerceInbox.runOnce()).toBe(true);
+    expect(await prisma.commerceOrderState.findUniqueOrThrow({
+      where: { provider_orderId: { provider: "lemonsqueezy", orderId } },
+    })).toMatchObject({ fullRefund: true, appliedAt: null });
+
+    const orderBody = JSON.stringify({
+      meta: { event_name: "order_created" },
+      data: {
+        id: orderId,
+        attributes: {
+          user_email: email,
+          created_at: new Date().toISOString(),
+          total: 9900,
+          refunded_amount: 0,
+          first_order_item: { variant_id: 987 },
+        },
+      },
+    });
+    const orderSignature = createHmac("sha256", config.commercial.lemonSqueezyWebhookSecret!)
+      .update(orderBody)
+      .digest("hex");
+    expect((await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/lemonsqueezy",
+      headers: { "content-type": "application/json", "x-signature": orderSignature },
+      payload: orderBody,
+    })).statusCode).toBe(200);
+    expect(await app.licenseServices.commerceInbox.runOnce()).toBe(true);
+
+    const license = await prisma.license.findUniqueOrThrow({
+      where: { orderProvider_orderId: { orderProvider: "lemonsqueezy", orderId } },
+    });
+    expect(license).toMatchObject({ status: "refunded", refundedAt: expect.any(Date) });
+    expect(await prisma.emailOutbox.count({ where: { licenseId: license.id } })).toBe(0);
+    await app.close();
   });
 
   afterAll(async () => {

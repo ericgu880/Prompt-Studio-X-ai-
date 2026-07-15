@@ -24,15 +24,19 @@ import { RecoveryService } from "./services/RecoveryService.js";
 import { emailWebhookRoutes } from "./routes/emailWebhooks.js";
 import { recoveryPageRoutes } from "./routes/recoveryPage.js";
 
-export function buildServices(prisma: PrismaClient, config: AppConfig) {
+export function buildServices(
+  prisma: PrismaClient,
+  config: AppConfig,
+  onWorkerError: (error: unknown) => void = () => {},
+) {
   const audit = new AuditEventService(prisma);
   const certificates = new CertificateService(prisma, config);
   const deviceProof = new DeviceProofService(config);
   const licenses = new LicenseService(prisma, config, audit);
   const commerceFulfillment = new CommerceFulfillmentService(config, licenses);
-  const commerceInbox = new CommerceInboxWorker(prisma, config, commerceFulfillment);
+  const commerceInbox = new CommerceInboxWorker(prisma, config, commerceFulfillment, onWorkerError);
   const emailOutbox = new EmailOutboxService(prisma, config);
-  const emailWorker = new EmailOutboxWorker(prisma, config);
+  const emailWorker = new EmailOutboxWorker(prisma, config, undefined, onWorkerError);
   const recovery = new RecoveryService(prisma, config);
   return {
     audit,
@@ -60,6 +64,7 @@ declare module "fastify" {
 
 export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   const app = fastify({
+    trustProxy: config.trustProxyHops > 0 ? config.trustProxyHops : false,
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
       redact: [
@@ -74,8 +79,10 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   });
 
   await app.register(cors, { origin: false });
-  app.decorate("licenseServices", buildServices(prisma, config));
-  await app.register(healthRoutes);
+  app.decorate("licenseServices", buildServices(prisma, config, (error) => {
+    app.log.error({ err: error }, "Background worker drain failed");
+  }));
+  await healthRoutes(app, prisma);
   await app.register(commerceWebhookRoutes, config);
   await app.register(emailWebhookRoutes, config);
   await app.register(recoveryPageRoutes, config);
@@ -87,8 +94,19 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
     app.licenseServices.emailWorker.start();
   });
   app.addHook("onClose", async () => {
-    app.licenseServices.commerceInbox.stop();
-    app.licenseServices.emailWorker.stop();
+    const workers = [
+      { name: "commerce-inbox", stop: app.licenseServices.commerceInbox.stopAndDrain() },
+      { name: "email-outbox", stop: app.licenseServices.emailWorker.stopAndDrain() },
+    ];
+    const results = await Promise.allSettled(workers.map(({ stop }) => stop));
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        app.log.error(
+          { err: result.reason, worker: workers[index]?.name },
+          "Background worker shutdown did not complete cleanly",
+        );
+      }
+    });
   });
   return app;
 }

@@ -99,7 +99,10 @@ export class EmailOutboxService {
     const state = this.providerState(input.type);
     if (!state) return false;
     const result = await this.prisma.emailOutbox.updateMany({
-      where: { providerMessageId: input.providerMessageId },
+      where: {
+        providerMessageId: input.providerMessageId,
+        status: { in: state.allowedCurrentStates },
+      },
       data: {
         status: state.status,
         ...(state.status === "delivered" ? { deliveredAt: new Date() } : {}),
@@ -109,12 +112,26 @@ export class EmailOutboxService {
     return result.count > 0;
   }
 
-  private providerState(type: string): { status: "accepted" | "delivered" | "delayed" | "bounced" | "failed"; errorCode?: string } | null {
-    if (type === "email.sent") return { status: "accepted" };
-    if (type === "email.delivered") return { status: "delivered" };
-    if (type === "email.delivery_delayed") return { status: "delayed" };
-    if (type === "email.bounced") return { status: "bounced", errorCode: "EMAIL_BOUNCED" };
-    if (type === "email.failed") return { status: "failed", errorCode: "EMAIL_FAILED" };
+  private providerState(type: string): {
+    status: "accepted" | "delivered" | "delayed" | "bounced" | "failed";
+    allowedCurrentStates: Array<"pending" | "processing" | "accepted" | "delivered" | "delayed" | "bounced" | "failed">;
+    errorCode?: string;
+  } | null {
+    if (type === "email.sent") {
+      return { status: "accepted", allowedCurrentStates: ["pending", "processing", "accepted"] };
+    }
+    if (type === "email.delivered") {
+      return { status: "delivered", allowedCurrentStates: ["accepted", "delayed", "delivered"] };
+    }
+    if (type === "email.delivery_delayed") {
+      return { status: "delayed", allowedCurrentStates: ["accepted", "delayed"] };
+    }
+    if (type === "email.bounced") {
+      return { status: "bounced", allowedCurrentStates: ["accepted", "delayed", "bounced"], errorCode: "EMAIL_BOUNCED" };
+    }
+    if (type === "email.failed") {
+      return { status: "failed", allowedCurrentStates: ["accepted", "delayed", "failed"], errorCode: "EMAIL_FAILED" };
+    }
     return null;
   }
 }

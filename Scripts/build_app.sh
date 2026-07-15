@@ -16,7 +16,9 @@ validate_release_entitlements "$CONFIGURATION" "$ENTITLEMENTS_PATH"
 
 LICENSE_PUBLIC_KEY="${LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL:-}"
 LICENSE_KEY_ID="${LICENSE_SIGNING_KEY_ID:-}"
+PURCHASE_URL="${PROMPTSTUDIO_PURCHASE_URL:-}"
 validate_license_signing_key "$CONFIGURATION" "$LICENSE_KEY_ID" "$LICENSE_PUBLIC_KEY"
+validate_optional_https_url "PROMPTSTUDIO_PURCHASE_URL" "$PURCHASE_URL"
 
 LOCK_FILE="$ROOT_DIR/.build/promptstudio-package.lock"
 LOCK_ACQUIRED=false
@@ -64,6 +66,10 @@ cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
 if [[ -n "$LICENSE_PUBLIC_KEY" && -n "$LICENSE_KEY_ID" ]]; then
     /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys dict" "$STAGING_APP_PATH/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys:$LICENSE_KEY_ID string $LICENSE_PUBLIC_KEY" "$STAGING_APP_PATH/Contents/Info.plist"
+fi
+
+if [[ -n "$PURCHASE_URL" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :PromptStudioPurchaseURL string $PURCHASE_URL" "$STAGING_APP_PATH/Contents/Info.plist"
 fi
 
 if [[ -f "$ROOT_DIR/Packaging/AppIcon.icns" ]]; then

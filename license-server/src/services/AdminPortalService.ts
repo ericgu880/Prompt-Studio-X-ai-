@@ -2,7 +2,7 @@ import type { AdminSession, AdminUser, Prisma, PrismaClient } from "@prisma/clie
 import { hash } from "bcryptjs";
 import type { AppConfig } from "../config.js";
 import { hashEmail, normalizeEmail } from "../crypto/email.js";
-import { AdminAPIError } from "./AdminAuthService.js";
+import { AdminAPIError, lockAdminOwnerMutation } from "./AdminAuthService.js";
 import type { AdminActor } from "./AdminLicenseService.js";
 
 interface PageInput {
@@ -25,7 +25,8 @@ function pageResult<T>(items: T[], page: number, pageSize: number, total: number
 }
 
 function csvCell(value: unknown): string {
-  const text = value == null ? "" : String(value);
+  const raw = value == null ? "" : String(value);
+  const text = /^[\s]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
   return `"${text.replace(/"/g, '""')}"`;
 }
 
@@ -407,6 +408,18 @@ export class AdminPortalService {
 
   async disableAdminUser(input: { actor: AdminActor; adminUserId: string; requestId: string }) {
     await this.prisma.$transaction(async (tx) => {
+      await lockAdminOwnerMutation(tx);
+      const existing = await tx.adminUser.findUnique({ where: { id: input.adminUserId } });
+      if (!existing) throw new AdminAPIError("ADMIN_USER_NOT_FOUND", 404, "管理员不存在。");
+      if (existing.id === input.actor.id) {
+        throw new AdminAPIError("CANNOT_DISABLE_CURRENT_ADMIN", 409, "不能停用当前登录的管理员。");
+      }
+      if (existing.role === "owner" && !existing.disabledAt) {
+        const activeOwners = await tx.adminUser.count({ where: { role: "owner", disabledAt: null } });
+        if (activeOwners <= 1) {
+          throw new AdminAPIError("LAST_ACTIVE_OWNER", 409, "不能停用最后一个有效的 owner 管理员。");
+        }
+      }
       const user = await tx.adminUser.update({ where: { id: input.adminUserId }, data: { disabledAt: new Date() } });
       await tx.adminSession.updateMany({ where: { adminUserId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
       await this.adminAudit(tx, input.actor, "admin_user_disabled", "admin_user", user.id, "success", input.requestId, { email: user.email });

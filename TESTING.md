@@ -10,13 +10,20 @@ For the full Chinese release-candidate manual QA cases, use
 Run these before merging code:
 
 ```sh
-swift build
-swift test
-swift run PromptStudioCoreUnitTests
-swift run PromptStudioSmokeTests
+source Scripts/swift_toolchain.sh
+SWIFT_EXEC="$(find_compatible_swift_tool swift)"
+"$SWIFT_EXEC" build
+"$SWIFT_EXEC" build -c release --product PromptStudio
+"$SWIFT_EXEC" test
+"$SWIFT_EXEC" run PromptStudioCoreUnitTests
+"$SWIFT_EXEC" run PromptStudioSmokeTests
+bash Scripts/test_swift_toolchain.sh
+bash Scripts/test_license_keychain.sh
+bash Scripts/test_codesign_policy.sh
+bash Scripts/test_release_ui_copy.sh
 ```
 
-- `swift build` must compile `PromptStudio`, `promptstudioctl`, `PromptStudioMCP`, and `PromptStudioSmokeTests`.
+- Debug build must compile `PromptStudio`, `promptstudioctl`, `PromptStudioMCP`, and `PromptStudioSmokeTests`; the explicit Release product build protects `#if DEBUG` production behavior.
 - `swift test` must keep the SwiftPM test target buildable. The current Command Line Tools install does not expose XCTest/Testing.
 - `swift run PromptStudioCoreUnitTests` owns focused `PromptStudioCore` unit coverage.
 - `swift run PromptStudioSmokeTests` owns executable end-to-end coverage across Core, CLI, and MCP.

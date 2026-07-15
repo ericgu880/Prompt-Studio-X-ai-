@@ -21,6 +21,11 @@ export interface AdminContext {
   csrfToken: string;
 }
 
+export async function lockAdminOwnerMutation(tx: Prisma.TransactionClient): Promise<void> {
+  // Fixed "PSTU" / "OWNR" namespace shared by every owner-disable entry point.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(1347638357, 1331646546)`;
+}
+
 export class AdminAuthService {
   static readonly cookieName = "ps_admin_session";
   private static readonly absoluteTtlMs = 12 * 60 * 60 * 1000;
@@ -103,6 +108,14 @@ export class AdminAuthService {
   async disableUser(email: string): Promise<void> {
     const normalizedEmail = this.normalizeEmail(email);
     await this.prisma.$transaction(async (tx) => {
+      await lockAdminOwnerMutation(tx);
+      const existing = await tx.adminUser.findUniqueOrThrow({ where: { email: normalizedEmail } });
+      if (existing.role === "owner" && !existing.disabledAt) {
+        const activeOwners = await tx.adminUser.count({ where: { role: "owner", disabledAt: null } });
+        if (activeOwners <= 1) {
+          throw new AdminAPIError("LAST_ACTIVE_OWNER", 409, "不能停用最后一个有效的 owner 管理员。");
+        }
+      }
       const user = await tx.adminUser.update({
         where: { email: normalizedEmail },
         data: { disabledAt: new Date() }

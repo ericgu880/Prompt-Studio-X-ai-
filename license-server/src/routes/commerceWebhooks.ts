@@ -25,23 +25,25 @@ export async function commerceWebhookRoutes(app: FastifyInstance, config: AppCon
       return reply.code(401).send({ ok: false, error: { code: "INVALID_WEBHOOK_SIGNATURE" } });
     }
 
-    let payload: { meta?: { event_name?: string }; data?: { id?: string | number } };
+    let payload: { meta?: { event_name?: string } };
     try {
       payload = JSON.parse(rawBody.toString("utf8"));
     } catch {
       return reply.code(400).send({ ok: false, error: { code: "INVALID_WEBHOOK_PAYLOAD" } });
     }
     const headerEventName = request.headers["x-event-name"];
-    const eventName = typeof headerEventName === "string" ? headerEventName : payload.meta?.event_name;
+    const eventName = payload.meta?.event_name;
     if (!eventName) {
       return reply.code(400).send({ ok: false, error: { code: "MISSING_WEBHOOK_EVENT_NAME" } });
+    }
+    if (typeof headerEventName === "string" && headerEventName !== eventName) {
+      return reply.code(400).send({ ok: false, error: { code: "WEBHOOK_EVENT_NAME_MISMATCH" } });
     }
 
     try {
       const result = await app.licenseServices.commerceInbox.enqueue({
         provider: "lemonsqueezy",
         eventName,
-        providerEventId: payload.data?.id == null ? undefined : `${eventName}:${String(payload.data.id)}`,
         rawBody,
       });
       return reply.send({ ok: true, duplicate: !result.created });

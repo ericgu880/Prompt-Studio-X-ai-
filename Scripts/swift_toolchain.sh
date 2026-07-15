@@ -2,12 +2,14 @@
 
 swift_tool_is_compatible() {
     local candidate="${1:?Swift tool path is required}"
-    local version_line major minor
+    local version_line version_numbers major minor
     [[ -x "$candidate" ]] || return 1
     version_line="$("$candidate" --version 2>/dev/null | /usr/bin/head -n 1)"
-    [[ "$version_line" =~ Swift[[:space:]]version[[:space:]]([0-9]+)\.([0-9]+) ]] || return 1
-    major="${BASH_REMATCH[1]}"
-    minor="${BASH_REMATCH[2]}"
+    version_numbers="$(printf '%s\n' "$version_line" | /usr/bin/sed -E -n \
+        's/.*Swift[[:space:]]+version[[:space:]]+([0-9]+)\.([0-9]+).*/\1 \2/p')"
+    [[ -n "$version_numbers" && "$version_numbers" == *" "* ]] || return 1
+    major="${version_numbers%% *}"
+    minor="${version_numbers#* }"
     (( major > 6 || (major == 6 && minor >= 2) ))
 }
 

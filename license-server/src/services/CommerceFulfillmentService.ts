@@ -111,14 +111,29 @@ export class CommerceFulfillmentService {
     if (orderId == null || !attributes) {
       throw new CommerceFulfillmentError("INVALID_REFUND_PAYLOAD", "Refund payload is missing required fields", false);
     }
-    const orderTotal = Number(attributes.total ?? 0);
-    const refundedAmount = Number(attributes.refunded_amount ?? 0);
+    const orderTotal = attributes.total;
+    const refundedAmount = attributes.refunded_amount;
+    if (
+      typeof orderTotal !== "number" ||
+      typeof refundedAmount !== "number" ||
+      !Number.isSafeInteger(orderTotal) ||
+      !Number.isSafeInteger(refundedAmount) ||
+      orderTotal <= 0 ||
+      refundedAmount <= 0 ||
+      refundedAmount > orderTotal
+    ) {
+      throw new CommerceFulfillmentError(
+        "INVALID_REFUND_AMOUNT",
+        "Refund amounts must be positive integer minor units and cannot exceed the order total",
+        false,
+      );
+    }
     const refundedAt = attributes.refunded_at ? new Date(attributes.refunded_at) : new Date();
 
     await this.licenses.applyCommerceRefund({
       orderProvider: "lemonsqueezy",
       orderId: String(orderId),
-      fullRefund: orderTotal > 0 && refundedAmount >= orderTotal,
+      fullRefund: refundedAmount === orderTotal,
       refundedAt: Number.isNaN(refundedAt.getTime()) ? new Date() : refundedAt,
       refundedAmount,
       orderTotal,

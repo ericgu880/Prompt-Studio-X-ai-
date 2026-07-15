@@ -408,7 +408,8 @@ final class AppState: ObservableObject {
 
     private func loadRepositoryData(repository: PromptRepository) throws -> LoadedLibraryData {
         let seedItems: [PromptItem]
-        if let seedBundle = Self.seedResourceBundle() {
+        if AppRuntimePolicy.includesDemoLibraryContent,
+           let seedBundle = Self.seedResourceBundle() {
             seedItems = try SeedData.makePromptItems(resourceBundle: seedBundle, libraryURL: repository.libraryURL)
         } else {
             seedItems = []
@@ -416,9 +417,9 @@ final class AppState: ObservableObject {
         try repository.seedIfNeeded(
             items: seedItems,
             models: SeedData.models,
-            tags: SeedData.tags
+            tags: AppRuntimePolicy.includesDemoLibraryContent ? SeedData.tags : []
         )
-        try repository.seedFoldersIfNeeded(SeedData.folders)
+        try repository.seedFoldersIfNeeded(initialFolders)
         try migrateFolderHierarchyIfNeeded(repository: repository)
         try repository.repairSeedAssetPaths(from: seedItems)
         let persistedModels = try repository.loadModelProfiles()
@@ -432,6 +433,13 @@ final class AppState: ObservableObject {
             items: loadedItems,
             tags: loadedTags
         )
+    }
+
+    private var initialFolders: [LibraryFolder] {
+        if AppRuntimePolicy.includesDemoLibraryContent {
+            return SeedData.folders
+        }
+        return [LibraryFolder(id: SeedData.uncategorizedFolderID, name: "未分类", sortOrder: 0)]
     }
 
     private static func seedResourceBundle() -> Bundle? {
@@ -714,20 +722,10 @@ final class AppState: ObservableObject {
     }
 
     func resetToAll() {
-        guard filter.collection != .all
-            || filter.type != nil
-            || filter.modelId != nil
-            || filter.textFormat != nil
-            || filter.assetKindFilter != nil
-            || filter.requiredTag != nil else { return }
+        guard filter != PromptFilter() else { return }
         pushCurrentNavigationSnapshot()
         updateFilterPreservingSelection { filter in
-            filter.collection = .all
-            filter.type = nil
-            filter.modelId = nil
-            filter.textFormat = nil
-            filter.assetKindFilter = nil
-            filter.requiredTag = nil
+            filter = PromptFilter()
         }
     }
 
@@ -2164,7 +2162,7 @@ final class AppState: ObservableObject {
     private func migrateFolderHierarchyIfNeeded(repository: PromptRepository) throws {
         var loadedFolders = try repository.loadFolders()
         if loadedFolders.isEmpty {
-            try repository.seedFoldersIfNeeded(SeedData.folders)
+            try repository.seedFoldersIfNeeded(initialFolders)
             loadedFolders = try repository.loadFolders()
         }
 

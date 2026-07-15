@@ -285,6 +285,23 @@ model CommerceWebhookEvent {
   @@index([leaseExpiresAt])
 }
 
+model CommerceOrderState {
+  id                String   @id @default(cuid())
+  provider          String
+  orderId           String
+  fullRefund        Boolean  @default(false)
+  refundedAmount    Int      @default(0)
+  orderTotal        Int      @default(0)
+  refundedAt        DateTime?
+  appliedAt         DateTime?
+  lastObservedAt    DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([provider, orderId])
+  @@index([fullRefund, appliedAt])
+}
+
 model LicenseRecoveryToken {
   id               String    @id @default(cuid())
   licenseId        String

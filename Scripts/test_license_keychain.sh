@@ -19,6 +19,7 @@ mkdir -p "$OUTPUT_DIR"
     "$ROOT_DIR/Sources/PromptStudio/License/KeychainLicenseStore.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseEncoding.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseDateCoding.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/License/LicenseRuntimeConfiguration.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseCertificateVerifier.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseDevice.swift" \
     "$ROOT_DIR/Tests/LicenseKeychainRegressionTests/LicenseAPIClientStub.swift" \

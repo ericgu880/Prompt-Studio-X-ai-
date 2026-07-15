@@ -83,10 +83,16 @@ struct LicenseSettingsView: View {
             if let certificate = currentCertificate {
                 Divider().overlay(StudioColor.hairline)
                 VStack(spacing: 10) {
-                    licenseInfoRow("方案", certificate.plan)
-                    licenseInfoRow("设备数", "\(certificate.seatLimit)")
-                    licenseInfoRow("证书到期", certificate.expiresAt.formatted(date: .abbreviated, time: .shortened))
-                    licenseInfoRow("宽限期至", certificate.graceUntil.formatted(date: .abbreviated, time: .shortened))
+                    licenseInfoRow(
+                        "授权方案",
+                        LicensePresentation.planName(plan: certificate.plan, licenseType: certificate.licenseType)
+                    )
+                    licenseInfoRow("设备席位", "\(certificate.seatLimit) 台")
+                    if let updatesUntil = certificate.updatesUntil {
+                        licenseInfoRow("版本更新权益至", updatesUntil.formatted(date: .abbreviated, time: .omitted))
+                    }
+                    licenseInfoRow("本地离线凭证有效至", certificate.expiresAt.formatted(date: .abbreviated, time: .shortened))
+                    licenseInfoRow("最迟联网刷新日", certificate.graceUntil.formatted(date: .abbreviated, time: .shortened))
                 }
             }
 
@@ -547,8 +553,10 @@ struct ActivationSheetView: View {
             infoRow("本地资料", detail: "授权服务不会上传或修改资料库内容。")
             infoRow("找回邮件", detail: "一次性链接 15 分钟有效，使用后立即失效。")
             Divider().overlay(StudioColor.hairline)
-            Button("购买 PromptStudio Pro") { openPurchasePage() }
+            Button(purchaseButtonTitle) { openPurchasePage() }
                 .buttonStyle(TextHoverButtonStyle())
+                .disabled(LicenseRuntimeConfiguration.purchaseURL == nil)
+                .help(purchaseButtonHelp)
         }
         .padding(16)
         .background(StudioColor.panel)
@@ -573,9 +581,19 @@ struct ActivationSheetView: View {
     }
 
     private func openPurchasePage() {
-        if let url = URL(string: "https://promptstudio.app/pricing") {
+        if let url = LicenseRuntimeConfiguration.purchaseURL {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private var purchaseButtonTitle: String {
+        LicenseRuntimeConfiguration.purchaseURL == nil ? "桌面版购买通道准备中" : "购买 PromptStudio Pro"
+    }
+
+    private var purchaseButtonHelp: String {
+        LicenseRuntimeConfiguration.purchaseURL == nil
+            ? "当前版本尚未开放桌面版在线购买，请使用已有激活码。"
+            : "打开桌面版 PromptStudio Pro 购买页面"
     }
 
     @ViewBuilder
@@ -863,8 +881,12 @@ struct LicenseDeviceManagementSheet: View {
                     .font(StudioFont.font(11))
                     .foregroundStyle(StudioColor.tertiaryText)
                 Spacer()
-                Button("增加设备席位") { openPurchasePage() }
+                Button(LicenseRuntimeConfiguration.purchaseURL == nil ? "购买通道准备中" : "增加设备席位") {
+                    openPurchasePage()
+                }
                     .buttonStyle(TextHoverButtonStyle())
+                    .disabled(LicenseRuntimeConfiguration.purchaseURL == nil)
+                    .help(LicenseRuntimeConfiguration.purchaseURL == nil ? "当前版本尚未开放桌面版在线购买。" : "购买更多设备席位")
             }
         }
         .foregroundStyle(StudioColor.text)
@@ -1097,7 +1119,7 @@ struct LicenseDeviceManagementSheet: View {
     }
 
     private func openPurchasePage() {
-        if let url = URL(string: "https://promptstudio.app/pricing") {
+        if let url = LicenseRuntimeConfiguration.purchaseURL {
             NSWorkspace.shared.open(url)
         }
     }
@@ -1154,10 +1176,11 @@ struct FeatureDeniedSheet: View {
                     }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                 case .buyPro:
-                    Button("购买 Pro") {
+                    Button(LicenseRuntimeConfiguration.purchaseURL == nil ? "购买通道准备中" : "购买 Pro") {
                         openPurchasePage()
                     }
                     .buttonStyle(CapsuleButtonStyle())
+                    .disabled(LicenseRuntimeConfiguration.purchaseURL == nil)
                     Button("输入激活码") {
                         state.openLicenseSettings()
                     }
@@ -1213,7 +1236,7 @@ struct FeatureDeniedSheet: View {
     }
 
     private func openPurchasePage() {
-        if let url = URL(string: "https://promptstudio.app/pricing") {
+        if let url = LicenseRuntimeConfiguration.purchaseURL {
             NSWorkspace.shared.open(url)
         }
     }
@@ -1235,17 +1258,17 @@ private struct LicenseStatusBadge: View {
     private var label: String {
         switch state {
         case .trialActive:
-            "TRIAL"
+            "试用中"
         case .trialExpired:
-            "TRIAL ENDED"
+            "试用结束"
         case .proActive:
-            "PRO"
+            "Pro 已激活"
         case .grace:
-            "GRACE"
+            "待联网刷新"
         case .limited:
-            "LIMITED"
+            "受限模式"
         case .revoked:
-            "REVOKED"
+            "授权不可用"
         }
     }
 

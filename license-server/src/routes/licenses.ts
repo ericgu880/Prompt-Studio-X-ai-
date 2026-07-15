@@ -1,6 +1,7 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { LicenseAPIError } from "../services/ActivationService.js";
+import { RateLimitError } from "../services/RateLimitService.js";
 
 const activateSchema = z.object({
   email: z.string().email(),
@@ -76,7 +77,7 @@ const recoverSchema = z.object({
   email: z.string().email()
 });
 
-function mapError(error: unknown, requestId: string): { statusCode: number; body: unknown } {
+function mapError(error: unknown, requestId: string): { statusCode: number; body: unknown; retryAfter?: number } {
   if (error instanceof LicenseAPIError) {
     return {
       statusCode: error.statusCode,
@@ -91,6 +92,17 @@ function mapError(error: unknown, requestId: string): { statusCode: number; body
       }
     };
   }
+  if (error instanceof RateLimitError) {
+    return {
+      statusCode: 429,
+      retryAfter: error.retryAfterSeconds,
+      body: {
+        ok: false,
+        error: { code: "RATE_LIMITED", message: "请求过于频繁，请稍后再试。" },
+        requestId,
+      },
+    };
+  }
   if (error instanceof z.ZodError) {
     return {
       statusCode: 400,
@@ -101,6 +113,14 @@ function mapError(error: unknown, requestId: string): { statusCode: number; body
     statusCode: 500,
     body: { ok: false, error: { code: "SERVER_ERROR", message: "授权服务暂时不可用，请稍后再试。" }, requestId }
   };
+}
+
+function sendMappedError(reply: FastifyReply, error: unknown, requestId: string) {
+  const mapped = mapError(error, requestId);
+  if (mapped.retryAfter !== undefined) {
+    reply.header("Retry-After", String(mapped.retryAfter));
+  }
+  return reply.code(mapped.statusCode).send(mapped.body);
 }
 
 export async function licenseRoutes(app: FastifyInstance): Promise<void> {
@@ -114,8 +134,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.activate(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -126,8 +145,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.activateWithRecovery(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -138,8 +156,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.createRefreshChallenge(body.activationId);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -150,8 +167,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.refresh(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -162,8 +178,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.deactivate(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -174,8 +189,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.listDevices(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -186,8 +200,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.renameDevice(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 
@@ -198,8 +211,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.deactivateDeviceById(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error, request.id);
-      return reply.code(mapped.statusCode).send(mapped.body);
+      return sendMappedError(reply, error, request.id);
     }
   });
 

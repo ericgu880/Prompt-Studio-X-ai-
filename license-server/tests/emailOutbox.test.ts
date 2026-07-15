@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config.js";
 import { SecretBox } from "../src/crypto/secretBox.js";
 import {
@@ -8,6 +8,7 @@ import {
   EmailTransportError,
   type EmailTransport,
 } from "../src/services/EmailOutboxWorker.js";
+import { EmailOutboxService } from "../src/services/EmailOutboxService.js";
 
 function config(): AppConfig {
   return {
@@ -20,6 +21,12 @@ function config(): AppConfig {
       workerMaxAttempts: 4,
     },
   } as AppConfig;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => { resolve = fulfill; });
+  return { promise, resolve };
 }
 
 function fixture(appConfig: AppConfig) {
@@ -64,6 +71,8 @@ function prismaStub(item: ReturnType<typeof fixture>) {
 }
 
 describe("EmailOutboxWorker", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it("sends with a stable idempotency key and scrubs sensitive payload after acceptance", async () => {
     const appConfig = config();
     const item = fixture(appConfig);
@@ -106,5 +115,88 @@ describe("EmailOutboxWorker", () => {
         lastErrorCode: "RESEND_UNAVAILABLE",
       },
     });
+  });
+
+  it("reports a drain failure and remains available for the next poll", async () => {
+    vi.useFakeTimers();
+    const appConfig = config();
+    appConfig.commercial.workerEnabled = true;
+    appConfig.commercial.workerPollIntervalMs = 10;
+    const onError = vi.fn();
+    const worker = new EmailOutboxWorker({
+      emailOutbox: { findFirst: vi.fn().mockRejectedValue(new Error("database unavailable")) },
+    } as unknown as PrismaClient, appConfig, undefined, onError);
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(11);
+    worker.stop();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the current drain before shutdown completes", async () => {
+    vi.useFakeTimers();
+    const appConfig = config();
+    appConfig.commercial.workerEnabled = true;
+    appConfig.commercial.workerPollIntervalMs = 10;
+    const item = deferred<null>();
+    const worker = new EmailOutboxWorker({
+      emailOutbox: { findFirst: vi.fn().mockReturnValue(item.promise) },
+    } as unknown as PrismaClient, appConfig);
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(11);
+
+    let stopped = false;
+    const stopping = worker.stopAndDrain(1_000).then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    item.resolve(null);
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("bounds shutdown when the current drain does not finish", async () => {
+    vi.useFakeTimers();
+    const appConfig = config();
+    appConfig.commercial.workerEnabled = true;
+    appConfig.commercial.workerPollIntervalMs = 10;
+    const item = deferred<null>();
+    const worker = new EmailOutboxWorker({
+      emailOutbox: { findFirst: vi.fn().mockReturnValue(item.promise) },
+    } as unknown as PrismaClient, appConfig);
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(11);
+    const stopping = worker.stopAndDrain(50);
+    const assertion = expect(stopping).rejects.toThrow(
+      "EmailOutboxWorker did not stop within 50ms",
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+
+    item.resolve(null);
+    await Promise.resolve();
+  });
+});
+
+describe("EmailOutboxService provider state", () => {
+  it("does not let a delayed webhook downgrade an already delivered email", async () => {
+    let status = "delivered";
+    const updateMany = vi.fn(async ({ where, data }) => {
+      const allowed = where.status?.in as string[] | undefined;
+      if (allowed && !allowed.includes(status)) return { count: 0 };
+      status = data.status;
+      return { count: 1 };
+    });
+    const service = new EmailOutboxService({
+      emailOutbox: { updateMany },
+    } as unknown as PrismaClient, config());
+
+    expect(await service.recordProviderEvent({
+      type: "email.delivery_delayed",
+      providerMessageId: "resend-1",
+    })).toBe(false);
+    expect(status).toBe("delivered");
   });
 });

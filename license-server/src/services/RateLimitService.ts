@@ -1,5 +1,5 @@
 export class RateLimitError extends Error {
-  constructor() {
+  constructor(readonly retryAfterSeconds = 60) {
     super("RATE_LIMITED");
   }
 }
@@ -24,7 +24,7 @@ export class RateLimitService {
     }
     existing.count += 1;
     if (existing.count > limit) {
-      throw new RateLimitError();
+      throw new RateLimitError(Math.max(1, Math.ceil((existing.resetAt - now) / 1_000)));
     }
   }
 

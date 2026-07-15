@@ -43,9 +43,13 @@ enum LicenseState: Equatable {
         case .trialExpired:
             "你仍可以打开、查看、搜索、复制和基础导出已有数据。"
         case .proActive(let certificate):
-            "证书有效期至 \(certificate.expiresAt.formatted(date: .abbreviated, time: .omitted))。"
+            certificate.licenseType == "lifetime"
+                ? "永久授权已生效；联网只用于安全刷新本地离线凭证。"
+                : "授权已生效，本地离线凭证有效至 \(certificate.expiresAt.formatted(date: .abbreviated, time: .omitted))。"
         case .grace(let certificate, _):
-            "请联网刷新授权。宽限期至 \(certificate.graceUntil.formatted(date: .abbreviated, time: .omitted))。"
+            certificate.licenseType == "lifetime"
+                ? "永久授权仍保留，请在 \(certificate.graceUntil.formatted(date: .abbreviated, time: .omitted)) 前联网刷新本地凭证。"
+                : "请联网刷新授权。最迟刷新日为 \(certificate.graceUntil.formatted(date: .abbreviated, time: .omitted))。"
         case .limited(let reason):
             "\(reason.localizedDescription) 你仍可以打开、查看、搜索、复制和基础导出已有数据。"
         case .revoked(let reason):

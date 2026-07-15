@@ -1060,7 +1060,7 @@ private struct SidebarView: View {
             Button {
                 state.openNewPromptComposer()
             } label: {
-                Label("Create New Prompt", systemImage: "plus")
+                Label("新建 Prompt", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SidebarCreateButtonStyle(isHovered: createPromptHovered))
@@ -1210,21 +1210,20 @@ private struct SidebarCreateButtonStyle: ButtonStyle {
 private struct SidebarCreateButtonBody: View {
     let configuration: ButtonStyle.Configuration
     let isHovered: Bool
-    private let accent = Color(hex: 0xE8491F)
 
     var body: some View {
         configuration.label
             .font(StudioFont.button())
-            .foregroundStyle(accent)
+            .foregroundStyle(StudioColor.primaryActionText)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .padding(.horizontal, 16)
             .frame(height: 34)
             .background {
                 Capsule()
-                    .fill(accent.opacity(fillOpacity))
+                    .fill(StudioColor.primaryAction.opacity(fillOpacity))
             }
-            .overlay(Capsule().stroke(accent.opacity(strokeOpacity), lineWidth: 1))
+            .overlay(Capsule().stroke(StudioColor.primaryAction.opacity(strokeOpacity), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.86 : 1)
             .contentShape(Capsule())
             .animation(.easeInOut(duration: 0.12), value: isHovered)
@@ -1232,12 +1231,12 @@ private struct SidebarCreateButtonBody: View {
     }
 
     private var fillOpacity: Double {
-        if configuration.isPressed { return 0.16 }
-        return isHovered ? 0.28 : 0.20
+        if configuration.isPressed { return 0.80 }
+        return isHovered ? 0.92 : 1
     }
 
     private var strokeOpacity: Double {
-        isHovered ? 0.62 : 0.40
+        isHovered ? 1 : 0.72
     }
 }
 
@@ -5870,14 +5869,28 @@ private struct EmptyStateView: View {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(StudioFont.symbol(44))
                     .foregroundStyle(StudioColor.secondaryText)
-                Text("没有找到素材")
-                .font(StudioFont.font(14))
-                Text("调整搜索或导入图片、视频、音频、文档或 Prompt 文本。")
+                Text(isLibraryEmpty ? "资料库还是空的" : "当前条件下没有结果")
+                    .font(StudioFont.font(14, weight: .semibold))
+                Text(emptyMessage)
                     .foregroundStyle(StudioColor.secondaryText)
-                Button("导入素材") {
-                    state.openImportAssets()
+                    .multilineTextAlignment(.center)
+                if isLibraryEmpty {
+                    HStack(spacing: 10) {
+                        Button("新建 Prompt") {
+                            state.openNewPromptComposer()
+                        }
+                        .buttonStyle(CapsuleButtonStyle())
+                        Button("导入素材") {
+                            state.openImportAssets()
+                        }
+                        .buttonStyle(CapsuleButtonStyle(filled: true))
+                    }
+                } else {
+                    Button("清除全部筛选") {
+                        state.resetToAll()
+                    }
+                    .buttonStyle(CapsuleButtonStyle(filled: true))
                 }
-                .buttonStyle(CapsuleButtonStyle(filled: true))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -5886,6 +5899,21 @@ private struct EmptyStateView: View {
 
     private var isTrash: Bool {
         state.filter.collection == .trash
+    }
+
+    private var isLibraryEmpty: Bool {
+        state.items.isEmpty
+    }
+
+    private var emptyMessage: String {
+        if isLibraryEmpty {
+            return "新建一条 Prompt，或导入图片、视频、音频、文档和 Prompt 文本。"
+        }
+        let query = state.filter.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            return "没有找到与“\(query)”匹配的素材。清除筛选后可查看完整资料库。"
+        }
+        return "当前文件夹、类型或高级筛选没有匹配结果。清除筛选后可查看完整资料库。"
     }
 
     private var trashEmptyTitle: String {

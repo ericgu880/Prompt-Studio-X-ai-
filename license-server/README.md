@@ -69,6 +69,7 @@ The plaintext license code is printed only once. Store it in the purchase email.
 ## API
 
 - `GET /health`
+- `GET /ready`
 - `POST /v1/licenses/activate`
 - `POST /v1/licenses/recovery/activate`
 - `POST /v1/licenses/refresh/challenge`
@@ -80,7 +81,7 @@ The plaintext license code is printed only once. Store it in the purchase email.
 
 ## Production Deployment
 
-The recommended first deployment is one Railway service plus Railway PostgreSQL. Set the service root to `license-server`, build with the included `Dockerfile`, run `npm run prisma:deploy` as the pre-deploy command, and use `/health` for the health check.
+The recommended first deployment is one application service plus PostgreSQL. Set the service root to `license-server`, build with the included `Dockerfile`, run `npm run prisma:deploy` as the pre-deploy command, use `/health` for liveness, and use `/ready` for traffic readiness.
 
 Required production settings:
 
@@ -90,9 +91,12 @@ PUBLIC_BASE_URL=https://license.promptstudio.app
 ADMIN_WEB_ORIGIN=https://license.promptstudio.app
 LEGACY_ADMIN_ENABLED=false
 WORKER_ENABLED=true
+TRUST_PROXY_HOPS=1
 ```
 
-Also set every secret and mapping from `.env.example`. `COMMERCE_PRODUCT_MAPPINGS_JSON` is the allowlist that maps a Lemon Squeezy variant to `pro_lifetime`, seat count, major version, and update entitlement. Unknown variants fail closed and appear in the commercial operations page.
+Also set every secret and mapping from `.env.example`. `TRUST_PROXY_HOPS` must match the verified reverse-proxy topology; production refuses `0` so rate limits do not silently collapse all customers onto one proxy IP. The current all-in-one deployment requires `WORKER_ENABLED=true`. `COMMERCE_PRODUCT_MAPPINGS_JSON` must contain at least one entry and is the allowlist that maps a Lemon Squeezy variant to `pro_lifetime`, seat count, major version, and update entitlement. Unknown and duplicate variants fail closed and appear in the commercial operations page.
+
+`/ready` checks both PostgreSQL connectivity and the latest critical commerce reconciliation migration. It returns 503 until `prisma migrate deploy` has completed, preventing signed purchase webhooks from being accepted by an instance with a stale schema.
 
 Configure provider webhooks after DNS and HTTPS are live:
 
@@ -129,6 +133,7 @@ It covers signed and duplicate purchase webhooks, purchase mail, activation, sea
 - `LICENSE_CODE_PEPPER` must be backed up. Losing it makes existing license codes unverifiable.
 - `DATA_ENCRYPTION_KEY_B64` must be backed up. Losing it makes queued webhook and email payloads unrecoverable.
 - Production private keys must use Ed25519 PKCS8 DER standard base64 in `LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64`.
+- Startup derives the public key from that private key and refuses to run if either configured public key differs.
 - The macOS app must only embed the raw 32 byte Ed25519 public key as base64url.
 - The checked-in development key fixture is not a production secret.
 - Never log full license codes, device private keys, signing private keys, peppers, tokens, or PromptStudio user content.

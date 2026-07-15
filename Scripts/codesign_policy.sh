@@ -74,6 +74,17 @@ validate_license_signing_key() {
     fi
 }
 
+validate_optional_https_url() {
+    local name="${1:?environment variable name is required}"
+    local value="${2-}"
+
+    [[ -n "$value" ]] || return 0
+    if [[ ! "$value" =~ ^https://[^/@[:space:]]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+        echo "$name must be an HTTPS URL without embedded credentials." >&2
+        return 1
+    fi
+}
+
 validate_release_entitlements() {
     local configuration="${1:?configuration is required}"
     local entitlements_path="${2-}"

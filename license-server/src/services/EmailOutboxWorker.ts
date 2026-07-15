@@ -66,12 +66,15 @@ class ResendEmailTransport implements EmailTransport {
 export class EmailOutboxWorker {
   private timer?: NodeJS.Timeout;
   private running = false;
+  private stopping = false;
+  private currentDrain?: Promise<void>;
   private readonly transport: EmailTransport;
 
   constructor(
     private readonly prisma: PrismaClient,
     private readonly config: AppConfig,
     transport?: EmailTransport,
+    private readonly onDrainError: (error: unknown) => void = () => {},
   ) {
     this.transport = transport ?? new ResendEmailTransport(config.commercial?.resendApiKey);
   }
@@ -151,11 +154,15 @@ export class EmailOutboxWorker {
   }
 
   start(): void {
-    if (this.timer || !this.config.commercial?.workerEnabled) return;
+    if (this.timer || this.currentDrain || !this.config.commercial?.workerEnabled) return;
+    this.stopping = false;
     this.timer = setInterval(() => {
       if (this.running) return;
       this.running = true;
-      void this.drain().finally(() => {
+      const drain = this.drain().catch((error) => { this.onDrainError(error); });
+      this.currentDrain = drain;
+      void drain.finally(() => {
+        if (this.currentDrain === drain) this.currentDrain = undefined;
         this.running = false;
       });
     }, this.config.commercial.workerPollIntervalMs);
@@ -163,13 +170,33 @@ export class EmailOutboxWorker {
   }
 
   stop(): void {
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
   }
 
+  async stopAndDrain(timeoutMs = 10_000): Promise<void> {
+    this.stop();
+    const drain = this.currentDrain;
+    if (!drain) return;
+
+    let timeout: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        reject(new Error(`EmailOutboxWorker did not stop within ${timeoutMs}ms`));
+      }, timeoutMs);
+      timeout.unref();
+    });
+    try {
+      await Promise.race([drain, deadline]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
   private async drain(): Promise<void> {
     for (let count = 0; count < 20; count += 1) {
-      if (!(await this.runOnce())) return;
+      if (!(await this.runOnce()) || this.stopping) return;
     }
   }
 

@@ -28,7 +28,7 @@ struct InspectorView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("未选择素材")
                         .font(StudioFont.font(14))
-                    Text("选择瀑布流中的图片后，这里会显示 Prompt、参数、标签和文件信息。")
+                    Text("选择瀑布流中的素材后，这里会显示 Prompt、参数、标签和文件信息。")
                         .foregroundStyle(StudioColor.secondaryText)
                     Spacer()
                 }

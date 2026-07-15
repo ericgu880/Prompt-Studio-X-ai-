@@ -244,14 +244,6 @@ final class LicenseAPIClient {
     }
 
     private static func defaultBaseURL() -> URL {
-        if let raw = ProcessInfo.processInfo.environment["PROMPTSTUDIO_LICENSE_SERVER_URL"],
-           let url = URL(string: raw) {
-            return url
-        }
-        if let raw = UserDefaults.standard.string(forKey: "PromptStudioLicenseServerURL"),
-           let url = URL(string: raw) {
-            return url
-        }
-        return URL(string: "https://license.promptstudio.app")!
+        LicenseRuntimeConfiguration.serverURL
     }
 }

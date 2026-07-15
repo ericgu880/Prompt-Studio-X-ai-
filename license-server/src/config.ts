@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { createPublicKey, timingSafeEqual } from "node:crypto";
+import { base64urlDecode } from "./crypto/base64url.js";
+import { privateKeyFromPKCS8DerBase64, rawPublicKeyFromSPKIDer } from "./crypto/signing.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -61,8 +64,11 @@ function parseProductMappings(raw: string | undefined, production: boolean): Pro
     throw new Error("COMMERCE_PRODUCT_MAPPINGS_JSON must be valid JSON");
   }
   if (!Array.isArray(value)) throw new Error("COMMERCE_PRODUCT_MAPPINGS_JSON must be an array");
+  if (production && value.length === 0) {
+    throw new Error("COMMERCE_PRODUCT_MAPPINGS_JSON must contain at least one product mapping in production");
+  }
 
-  return value.map((entry, index) => {
+  const mappings = value.map((entry, index) => {
     const item = entry as Partial<ProductMapping>;
     if (
       item.provider !== "lemonsqueezy" ||
@@ -80,6 +86,13 @@ function parseProductMappings(raw: string | undefined, production: boolean): Pro
     }
     return item as ProductMapping;
   });
+  const variants = new Set<string>();
+  for (const mapping of mappings) {
+    const key = `${mapping.provider}:${mapping.variantId}`;
+    if (variants.has(key)) throw new Error(`Duplicate commerce product mapping: ${key}`);
+    variants.add(key);
+  }
+  return mappings;
 }
 
 function validatedURL(name: string, value: string, requireHTTPS: boolean): string {
@@ -116,7 +129,97 @@ export interface AppConfig {
   adminWebOrigin: string;
   legacyAdminEnabled: boolean;
   telemetryEnabled: boolean;
+  trustProxyHops: number;
   commercial: CommercialConfig;
+}
+
+export interface OperationalSettings {
+  production: boolean;
+  certificateDays: number;
+  graceDays: number;
+  refreshAfterDays: number;
+  workerPollIntervalMs: number;
+  workerLeaseMs: number;
+  workerMaxAttempts: number;
+  workerEnabled: boolean;
+  recoveryTokenMinutes: number;
+  recoveryCooldownSeconds: number;
+  trustProxyHops: number;
+  adminSessionSecret?: string;
+  adminCsrfSecret?: string;
+  adminHmacSecret?: string;
+  adminWebOrigin: string;
+  legacyAdminEnabled: boolean;
+}
+
+export function validateOperationalSettings(settings: OperationalSettings): void {
+  if (!Number.isInteger(settings.certificateDays) || settings.certificateDays <= 0) {
+    throw new Error("LICENSE_CERT_DAYS must be a positive integer");
+  }
+  if (!Number.isInteger(settings.graceDays) || settings.graceDays < 0) {
+    throw new Error("LICENSE_GRACE_DAYS must be a non-negative integer");
+  }
+  if (!Number.isInteger(settings.refreshAfterDays) || settings.refreshAfterDays <= 0 ||
+      settings.refreshAfterDays >= settings.certificateDays) {
+    throw new Error("LICENSE_REFRESH_AFTER_DAYS must be positive and less than LICENSE_CERT_DAYS");
+  }
+  const positiveWorkerValues: Array<[string, number]> = [
+    ["WORKER_POLL_INTERVAL_MS", settings.workerPollIntervalMs],
+    ["WORKER_LEASE_MS", settings.workerLeaseMs],
+    ["WORKER_MAX_ATTEMPTS", settings.workerMaxAttempts],
+    ["RECOVERY_TOKEN_MINUTES", settings.recoveryTokenMinutes],
+    ["RECOVERY_COOLDOWN_SECONDS", settings.recoveryCooldownSeconds],
+  ];
+  for (const [name, value] of positiveWorkerValues) {
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  }
+  if (!Number.isInteger(settings.trustProxyHops) || settings.trustProxyHops < 0) {
+    throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
+  }
+  if (!settings.production) return;
+  if (settings.trustProxyHops < 1) {
+    throw new Error("TRUST_PROXY_HOPS must explicitly describe the production reverse proxy");
+  }
+  if (!settings.workerEnabled) {
+    throw new Error("WORKER_ENABLED must be true in the production all-in-one service");
+  }
+  const adminSecrets: Array<[string, string | undefined]> = [
+    ["ADMIN_SESSION_SECRET", settings.adminSessionSecret],
+    ["ADMIN_CSRF_SECRET", settings.adminCsrfSecret],
+    ["ADMIN_HMAC_SECRET", settings.adminHmacSecret],
+  ];
+  for (const [name, value] of adminSecrets) {
+    if (!value || value.length < 32) throw new Error(`${name} must be explicitly set to at least 32 characters in production`);
+  }
+  if (new Set(adminSecrets.map(([, value]) => value)).size !== adminSecrets.length) {
+    throw new Error("Production admin secrets must be distinct");
+  }
+  const adminOrigin = validatedURL("ADMIN_WEB_ORIGIN", settings.adminWebOrigin, true);
+  if (!adminOrigin.startsWith("https://")) throw new Error("ADMIN_WEB_ORIGIN must use HTTPS in production");
+  if (settings.legacyAdminEnabled) throw new Error("LEGACY_ADMIN_ENABLED must be false in production");
+}
+
+export function validateSigningKeyPair(input: {
+  privateKeyPKCS8DerB64: string;
+  publicKeyRawB64URL: string;
+  publicKeySPKIDerB64?: string;
+}): void {
+  const privateKey = privateKeyFromPKCS8DerBase64(input.privateKeyPKCS8DerB64);
+  if (privateKey.asymmetricKeyType !== "ed25519") {
+    throw new Error("LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64 must contain an Ed25519 private key");
+  }
+  const derivedSPKI = createPublicKey(privateKey).export({ format: "der", type: "spki" }) as Buffer;
+  const derivedRaw = rawPublicKeyFromSPKIDer(derivedSPKI);
+  const configuredRaw = base64urlDecode(input.publicKeyRawB64URL);
+  if (configuredRaw.length !== derivedRaw.length || !timingSafeEqual(configuredRaw, derivedRaw)) {
+    throw new Error("LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL does not match the signing private key");
+  }
+  if (input.publicKeySPKIDerB64) {
+    const configuredSPKI = Buffer.from(input.publicKeySPKIDerB64, "base64");
+    if (configuredSPKI.length !== derivedSPKI.length || !timingSafeEqual(configuredSPKI, derivedSPKI)) {
+      throw new Error("LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64 does not match the signing private key");
+    }
+  }
 }
 
 export function loadConfig(): AppConfig {
@@ -132,30 +235,74 @@ export function loadConfig(): AppConfig {
   if (production && !lemonSqueezyWebhookSecret) throw new Error("Missing required environment variable: LEMON_SQUEEZY_WEBHOOK_SECRET");
   if (production && !resendApiKey) throw new Error("Missing required environment variable: RESEND_API_KEY");
   if (production && !resendWebhookSecret) throw new Error("Missing required environment variable: RESEND_WEBHOOK_SECRET");
+  const signingPrivateKeyPKCS8DerB64 = required("LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64");
+  const signingPublicKeyRawB64URL = required("LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL");
+  const signingPublicKeySPKIDerB64 = optionalSecret("LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64");
+  validateSigningKeyPair({
+    privateKeyPKCS8DerB64: signingPrivateKeyPKCS8DerB64,
+    publicKeyRawB64URL: signingPublicKeyRawB64URL,
+    publicKeySPKIDerB64: signingPublicKeySPKIDerB64,
+  });
+  const certificateDays = numberValue("LICENSE_CERT_DAYS", 30);
+  const graceDays = numberValue("LICENSE_GRACE_DAYS", 14);
+  const refreshAfterDays = numberValue("LICENSE_REFRESH_AFTER_DAYS", 7);
+  const workerPollIntervalMs = numberValue("WORKER_POLL_INTERVAL_MS", 1_000);
+  const workerLeaseMs = numberValue("WORKER_LEASE_MS", 30_000);
+  const workerMaxAttempts = numberValue("WORKER_MAX_ATTEMPTS", 8);
+  const workerEnabled = (process.env.WORKER_ENABLED ?? "true") === "true";
+  const recoveryTokenMinutes = numberValue("RECOVERY_TOKEN_MINUTES", 15);
+  const recoveryCooldownSeconds = numberValue("RECOVERY_COOLDOWN_SECONDS", 60);
+  const trustProxyHops = numberValue("TRUST_PROXY_HOPS", 0);
+  const adminSessionSecret = optionalSecret("ADMIN_SESSION_SECRET");
+  const configuredAdminCsrfSecret = optionalSecret("ADMIN_CSRF_SECRET");
+  const configuredAdminHmacSecret = optionalSecret("ADMIN_HMAC_SECRET");
+  const adminCsrfSecret = configuredAdminCsrfSecret ?? adminSessionSecret ?? "promptstudio-admin-dev-csrf";
+  const adminHmacSecret = configuredAdminHmacSecret ?? adminSessionSecret ?? "promptstudio-admin-dev-hmac";
+  const adminWebOrigin = process.env.ADMIN_WEB_ORIGIN ?? "http://localhost:8000";
+  const legacyAdminEnabled = (process.env.LEGACY_ADMIN_ENABLED ?? (production ? "false" : "true")) === "true";
+  validateOperationalSettings({
+    production,
+    certificateDays,
+    graceDays,
+    refreshAfterDays,
+    workerPollIntervalMs,
+    workerLeaseMs,
+    workerMaxAttempts,
+    workerEnabled,
+    recoveryTokenMinutes,
+    recoveryCooldownSeconds,
+    trustProxyHops,
+    adminSessionSecret,
+    adminCsrfSecret: configuredAdminCsrfSecret,
+    adminHmacSecret: configuredAdminHmacSecret,
+    adminWebOrigin,
+    legacyAdminEnabled,
+  });
 
   return {
     nodeEnv,
     port: numberValue("PORT", 8787),
     databaseUrl: required("DATABASE_URL"),
     licenseCodePepper: required("LICENSE_CODE_PEPPER"),
-    signingPrivateKeyPKCS8DerB64: required("LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64"),
-    signingPublicKeyRawB64URL: required("LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL"),
-    signingPublicKeySPKIDerB64: process.env.LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64,
+    signingPrivateKeyPKCS8DerB64,
+    signingPublicKeyRawB64URL,
+    signingPublicKeySPKIDerB64,
     signingKeyId: required("LICENSE_SIGNING_KEY_ID"),
     certificateIssuer: process.env.LICENSE_CERTIFICATE_ISSUER ?? "promptstudio-license-server",
     certificateAudience: process.env.LICENSE_CERTIFICATE_AUDIENCE ?? "promptstudio-macos",
     bundleId: process.env.LICENSE_BUNDLE_ID ?? "com.creatigo.promptstudio",
-    certificateDays: numberValue("LICENSE_CERT_DAYS", 30),
-    graceDays: numberValue("LICENSE_GRACE_DAYS", 14),
-    refreshAfterDays: numberValue("LICENSE_REFRESH_AFTER_DAYS", 7),
+    certificateDays,
+    graceDays,
+    refreshAfterDays,
     rateLimitEnabled: (process.env.RATE_LIMIT_ENABLED ?? "true") === "true",
     adminToken: optionalSecret("ADMIN_TOKEN"),
-    adminSessionSecret: optionalSecret("ADMIN_SESSION_SECRET"),
-    adminCsrfSecret: process.env.ADMIN_CSRF_SECRET ?? process.env.ADMIN_SESSION_SECRET ?? "promptstudio-admin-dev-csrf",
-    adminHmacSecret: process.env.ADMIN_HMAC_SECRET ?? process.env.ADMIN_SESSION_SECRET ?? "promptstudio-admin-dev-hmac",
-    adminWebOrigin: process.env.ADMIN_WEB_ORIGIN ?? "http://localhost:8000",
-    legacyAdminEnabled: (process.env.LEGACY_ADMIN_ENABLED ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true",
+    adminSessionSecret,
+    adminCsrfSecret,
+    adminHmacSecret,
+    adminWebOrigin,
+    legacyAdminEnabled,
     telemetryEnabled: (process.env.TELEMETRY_ENABLED ?? "false") === "true",
+    trustProxyHops,
     commercial: {
       dataEncryptionKeyB64,
       publicBaseURL: validatedURL(
@@ -173,12 +320,12 @@ export function loadConfig(): AppConfig {
       resendWebhookSecret,
       resendFromEmail: process.env.RESEND_FROM_EMAIL ?? "PromptStudio <license@promptstudio.app>",
       productMappings: parseProductMappings(process.env.COMMERCE_PRODUCT_MAPPINGS_JSON, production),
-      workerEnabled: (process.env.WORKER_ENABLED ?? "true") === "true",
-      workerPollIntervalMs: numberValue("WORKER_POLL_INTERVAL_MS", 1_000),
-      workerLeaseMs: numberValue("WORKER_LEASE_MS", 30_000),
-      workerMaxAttempts: numberValue("WORKER_MAX_ATTEMPTS", 8),
-      recoveryTokenMinutes: numberValue("RECOVERY_TOKEN_MINUTES", 15),
-      recoveryCooldownSeconds: numberValue("RECOVERY_COOLDOWN_SECONDS", 60),
+      workerEnabled,
+      workerPollIntervalMs,
+      workerLeaseMs,
+      workerMaxAttempts,
+      recoveryTokenMinutes,
+      recoveryCooldownSeconds,
     }
   };
 }

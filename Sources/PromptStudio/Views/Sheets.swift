@@ -463,7 +463,6 @@ struct FilterSheet: View {
             .buttonStyle(TextHoverButtonStyle())
             Button("应用") {
                 state.filter.type = type
-                state.filter.favoriteOnly = false
                 state.filter.hasPromptOnly = hasPromptOnly
                 state.filter.hasReferenceOnly = hasReferenceOnly
                 dismiss()
@@ -471,6 +470,13 @@ struct FilterSheet: View {
             .buttonStyle(CapsuleButtonStyle(filled: true))
         }
         .frame(width: 520, height: 420)
+        .onAppear(perform: loadDraftFromCurrentFilter)
+    }
+
+    private func loadDraftFromCurrentFilter() {
+        type = state.filter.type
+        hasPromptOnly = state.filter.hasPromptOnly
+        hasReferenceOnly = state.filter.hasReferenceOnly
     }
 }
 
@@ -493,7 +499,7 @@ struct TagManagerSheet: View {
                     .frame(height: 34)
                     Divider().overlay(StudioColor.hairline)
                 }
-                Text("MVP 支持标签查看和筛选；重命名、合并和颜色将在下一步接入。")
+                Text("在这里查看标签，并快速筛选使用该标签的素材。")
                     .font(StudioFont.font(14))
                     .foregroundStyle(StudioColor.secondaryText)
             }
@@ -654,9 +660,9 @@ struct VariantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        PromptFormShell(title: "生成变体") {
+        PromptFormShell(title: "保存文本变体") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("MVP 不调用外部生图 API。这里会基于当前 Prompt 保存一个本地文本变体版本，后续可接入真实模型。")
+                Text("基于当前 Prompt 保存一个新的本地文本版本；此操作不会调用外部生成服务。")
                     .foregroundStyle(StudioColor.secondaryText)
                 if let prompt = state.selectedItem?.currentVersion?.prompt {
                     Text(prompt)
@@ -668,7 +674,7 @@ struct VariantSheet: View {
         } footer: {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
-            Button("生成文本变体") {
+            Button("保存文本变体") {
                 state.generateTextVariant()
                 dismiss()
             }
@@ -774,7 +780,9 @@ struct SettingsSheet: View {
                 }
                 .transparentScrollArea()
                 .background(StudioColor.appBackground)
-                settingsBottomBar
+                if selectedPage == .shortcuts {
+                    settingsBottomBar
+                }
             }
         }
         .foregroundStyle(StudioColor.text)
@@ -1371,7 +1379,7 @@ private struct LegacySettingsSheetPlaceholder: View {
                 SettingsRow(title: "本地数据库", value: state.libraryURL.appendingPathComponent("database/promptstudio.sqlite").path)
                 SettingsRow(title: "模型数量", value: "\(state.models.count - 1)")
                 SettingsRow(title: "隐私", value: "不经授权不上传图片、Prompt 或 API Key")
-                Text("API Key 后续接入 macOS Keychain；MVP 保持本地数据闭环。")
+                Text("当前版本不会读取或上传 API Key。")
                     .foregroundStyle(StudioColor.secondaryText)
             }
         } footer: {

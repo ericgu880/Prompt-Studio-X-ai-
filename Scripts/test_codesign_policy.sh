@@ -86,6 +86,17 @@ if validate_license_signing_key release "prod-2026-01" "too-short" >/dev/null 2>
     echo "release must reject a malformed Ed25519 public key" >&2
     exit 1
 fi
+
+validate_optional_https_url "PROMPTSTUDIO_PURCHASE_URL" ""
+validate_optional_https_url "PROMPTSTUDIO_PURCHASE_URL" "https://checkout.example/path"
+if validate_optional_https_url "PROMPTSTUDIO_PURCHASE_URL" "http://checkout.example" >/dev/null 2>&1; then
+    echo "configured purchase links must require HTTPS" >&2
+    exit 1
+fi
+if validate_optional_https_url "PROMPTSTUDIO_PURCHASE_URL" "https://user:password@checkout.example" >/dev/null 2>&1; then
+    echo "configured purchase links must reject embedded credentials" >&2
+    exit 1
+fi
 if validate_license_signing_key release "bad key id" "$VALID_PUBLIC_KEY" >/dev/null 2>&1; then
     echo "release must reject a malformed license key ID" >&2
     exit 1

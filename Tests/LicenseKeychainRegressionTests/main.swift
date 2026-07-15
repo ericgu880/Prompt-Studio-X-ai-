@@ -250,11 +250,39 @@ private enum LicenseKeychainRegressionTests {
         try legacyIdentityAloneRequiresRepairAtLaunch()
         try repairRunsOneInteractiveSessionAndReloadsState()
         try featureGateOffersKeychainRepair()
+        try releaseRuntimeConfigurationFailsClosed()
+        try lifetimeLicensePresentationBuildsTrust()
         try await serverRevocationPersistsUntilAValidReactivation()
         try await explicitDeactivationPersistsBeforeLocalCleanup()
         try await staleRevocationCannotDeleteANewerActivation()
         try await confirmedDeactivationSurvivesANewerSameActivationMutation()
         print("License keychain regression tests passed")
+    }
+
+    private static func releaseRuntimeConfigurationFailsClosed() throws {
+        let resolved = LicenseRuntimeConfiguration.resolvedServerURL(
+            allowsRuntimeOverrides: false,
+            environment: ["PROMPTSTUDIO_LICENSE_SERVER_URL": "https://attacker.example"],
+            userDefaultsValue: "https://another-attacker.example"
+        )
+        guard resolved.absoluteString == "https://license.promptstudio.app" else {
+            throw Failure("release builds must ignore runtime license-server overrides")
+        }
+        guard LicenseRuntimeConfiguration.purchaseURL(rawValue: nil) == nil,
+              LicenseRuntimeConfiguration.purchaseURL(rawValue: "http://checkout.example") == nil,
+              LicenseRuntimeConfiguration.purchaseURL(rawValue: "https://checkout.example")?.absoluteString == "https://checkout.example" else {
+            throw Failure("purchase links must be explicitly configured with HTTPS")
+        }
+        guard !AppRuntimePolicy.includesDemoLibraryContent else {
+            throw Failure("release builds must not write demo content into an empty user library")
+        }
+    }
+
+    private static func lifetimeLicensePresentationBuildsTrust() throws {
+        guard LicensePresentation.planName(plan: "pro_lifetime", licenseType: "lifetime") == "PromptStudio Pro 永久授权",
+              LicensePresentation.planName(plan: "team", licenseType: "subscription") == "PromptStudio Pro 订阅" else {
+            throw Failure("license plans must use customer-facing names instead of raw identifiers")
+        }
     }
 
     private static func backgroundReadsNeverPresentAuthenticationUI() throws {

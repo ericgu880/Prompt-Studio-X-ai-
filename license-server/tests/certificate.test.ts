@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { privateKeyFromPKCS8DerBase64, generateEd25519KeyFixture } from "../src/crypto/signing.js";
 import { signCertificate, verifyCertificateWithRawPublicKey } from "../src/crypto/certificate.js";
+import { validateSigningKeyPair } from "../src/config.js";
 
 describe("license certificates", () => {
   it("signs with PKCS8 DER and verifies with raw public key", () => {
@@ -36,5 +37,26 @@ describe("license certificates", () => {
     const parts = certificate.split(".");
     const tampered = `${parts[0]}.${parts[1].replace(/.$/, parts[1].endsWith("A") ? "B" : "A")}.${parts[2]}`;
     expect(() => verifyCertificateWithRawPublicKey(tampered, fixture.publicKeyRawB64URL)).toThrow();
+  });
+
+  it("fails startup validation when the configured public key does not match the private key", () => {
+    const signing = generateEd25519KeyFixture();
+    const unrelated = generateEd25519KeyFixture();
+
+    expect(() => validateSigningKeyPair({
+      privateKeyPKCS8DerB64: signing.privateKeyPKCS8DerB64,
+      publicKeyRawB64URL: signing.publicKeyRawB64URL,
+      publicKeySPKIDerB64: signing.publicKeySPKIDerB64,
+    })).not.toThrow();
+    expect(() => validateSigningKeyPair({
+      privateKeyPKCS8DerB64: signing.privateKeyPKCS8DerB64,
+      publicKeyRawB64URL: unrelated.publicKeyRawB64URL,
+      publicKeySPKIDerB64: signing.publicKeySPKIDerB64,
+    })).toThrow(/does not match/i);
+    expect(() => validateSigningKeyPair({
+      privateKeyPKCS8DerB64: signing.privateKeyPKCS8DerB64,
+      publicKeyRawB64URL: signing.publicKeyRawB64URL,
+      publicKeySPKIDerB64: unrelated.publicKeySPKIDerB64,
+    })).toThrow(/does not match/i);
   });
 });

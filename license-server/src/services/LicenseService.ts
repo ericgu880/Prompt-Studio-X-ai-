@@ -86,6 +86,21 @@ export class LicenseService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const observedAt = new Date();
+        const orderState = await tx.commerceOrderState.upsert({
+          where: {
+            provider_orderId: {
+              provider: input.orderProvider,
+              orderId: input.orderId,
+            },
+          },
+          create: {
+            provider: input.orderProvider,
+            orderId: input.orderId,
+            lastObservedAt: observedAt,
+          },
+          update: { lastObservedAt: observedAt },
+        });
         const existing = await tx.license.findUnique({
           where: {
             orderProvider_orderId: {
@@ -126,27 +141,31 @@ export class LicenseService {
             orderProvider: input.orderProvider,
             orderId: input.orderId,
             createdAt: input.purchasedAt,
+            status: orderState.fullRefund ? "refunded" : "unused",
+            refundedAt: orderState.fullRefund ? orderState.refundedAt : null,
           },
         });
-        await tx.emailOutbox.create({
-          data: {
-            kind: "purchase",
-            licenseId: license.id,
-            recipientHash: emailHash,
-            idempotencyKey: `purchase:${input.orderProvider}:${input.orderId}`,
-            payloadEncrypted: secretBox.seal(JSON.stringify({
-              version: 1,
+        if (!orderState.fullRefund) {
+          await tx.emailOutbox.create({
+            data: {
               kind: "purchase",
-              to: normalizedEmail,
-              emailMasked,
-              licenseCode,
-              plan: input.plan,
-              seats: input.seats,
-              majorVersion: input.majorVersion,
-              updatesUntil: updatesUntil.toISOString(),
-            })),
-          },
-        });
+              licenseId: license.id,
+              recipientHash: emailHash,
+              idempotencyKey: `purchase:${input.orderProvider}:${input.orderId}`,
+              payloadEncrypted: secretBox.seal(JSON.stringify({
+                version: 1,
+                kind: "purchase",
+                to: normalizedEmail,
+                emailMasked,
+                licenseCode,
+                plan: input.plan,
+                seats: input.seats,
+                majorVersion: input.majorVersion,
+                updatesUntil: updatesUntil.toISOString(),
+              })),
+            },
+          });
+        }
         await tx.licenseEvent.create({
           data: {
             licenseId: license.id,
@@ -162,6 +181,26 @@ export class LicenseService {
             },
           },
         });
+        if (orderState.refundedAmount > 0 || orderState.fullRefund) {
+          await tx.licenseEvent.create({
+            data: {
+              licenseId: license.id,
+              eventType: orderState.fullRefund ? "license_refunded" : "license_partial_refund",
+              eventSource: "system",
+              codePrefix: license.codePrefix,
+              metadataJson: {
+                orderProvider: input.orderProvider,
+                refundedAmount: orderState.refundedAmount,
+                orderTotal: orderState.orderTotal,
+                reconciledAfterOrder: true,
+              },
+            },
+          });
+          await tx.commerceOrderState.update({
+            where: { id: orderState.id },
+            data: { appliedAt: observedAt },
+          });
+        }
         return { created: true, licenseId: license.id };
       });
     } catch (error) {
@@ -190,6 +229,37 @@ export class LicenseService {
     orderTotal: number;
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      const observedAt = new Date();
+      const priorState = await tx.commerceOrderState.upsert({
+        where: {
+          provider_orderId: {
+            provider: input.orderProvider,
+            orderId: input.orderId,
+          },
+        },
+        create: {
+          provider: input.orderProvider,
+          orderId: input.orderId,
+          fullRefund: input.fullRefund,
+          refundedAmount: input.refundedAmount,
+          orderTotal: input.orderTotal,
+          refundedAt: input.refundedAt,
+          lastObservedAt: observedAt,
+        },
+        update: { lastObservedAt: observedAt },
+      });
+      const refundedAt = priorState.refundedAt && priorState.refundedAt > input.refundedAt
+        ? priorState.refundedAt
+        : input.refundedAt;
+      const orderState = await tx.commerceOrderState.update({
+        where: { id: priorState.id },
+        data: {
+          fullRefund: priorState.fullRefund || input.fullRefund,
+          refundedAmount: Math.max(priorState.refundedAmount, input.refundedAmount),
+          orderTotal: Math.max(priorState.orderTotal, input.orderTotal),
+          refundedAt,
+        },
+      });
       const license = await tx.license.findUnique({
         where: {
           orderProvider_orderId: {
@@ -198,9 +268,9 @@ export class LicenseService {
           },
         },
       });
-      if (!license) throw new Error("Commerce order does not have a license yet");
+      if (!license) return;
 
-      if (input.fullRefund && license.status !== "refunded") {
+      if (orderState.fullRefund && license.status !== "refunded") {
         await tx.license.update({
           where: { id: license.id },
           data: {
@@ -222,6 +292,10 @@ export class LicenseService {
             orderTotal: input.orderTotal,
           },
         },
+      });
+      await tx.commerceOrderState.update({
+        where: { id: orderState.id },
+        data: { appliedAt: observedAt },
       });
     });
   }
