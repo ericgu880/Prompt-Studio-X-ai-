@@ -12,6 +12,7 @@ struct LicenseSettingsView: View {
     @State private var route: LicenseCenterRoute = .overview
     @State private var isRefreshing = false
     @State private var isDeactivating = false
+    @State private var isRepairingKeychain = false
     @State private var message: String?
     @State private var confirmsCurrentDeviceDeactivation = false
 
@@ -105,11 +106,21 @@ struct LicenseSettingsView: View {
 
     private var actionsPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if needsKeychainRepair {
+                licenseActionRow("钥匙串访问", detail: "执行一次修复，保留原设备身份和激活状态。") {
+                    Button(isRepairingKeychain ? "修复中" : "修复访问") {
+                        repairKeychainAccess()
+                    }
+                    .buttonStyle(CapsuleButtonStyle(filled: true))
+                    .disabled(isRepairingKeychain)
+                }
+            }
             licenseActionRow("激活码", detail: "输入购买邮箱和激活码。") {
                 Button("激活") {
                     route = .activation(recoveryToken: nil)
                 }
                 .buttonStyle(CapsuleButtonStyle(filled: true))
+                .disabled(needsKeychainRepair)
             }
             licenseActionRow("刷新授权", detail: refreshActionDetail) {
                 Button(isRefreshing ? "刷新中" : "刷新") {
@@ -157,6 +168,10 @@ struct LicenseSettingsView: View {
 
     private var hasDeviceLicense: Bool {
         currentCertificate != nil
+    }
+
+    private var needsKeychainRepair: Bool {
+        state.licenseManager.state == .limited(reason: .keychainAccessRequired)
     }
 
     private var refreshActionDetail: String {
@@ -219,6 +234,18 @@ struct LicenseSettingsView: View {
             try await state.licenseManager.forceRefresh()
             message = nil
             state.showToast("授权已刷新")
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func repairKeychainAccess() {
+        isRepairingKeychain = true
+        defer { isRepairingKeychain = false }
+        do {
+            try state.licenseManager.repairKeychainAccess()
+            message = nil
+            state.showToast("License 钥匙串访问已恢复")
         } catch {
             message = error.localizedDescription
         }
@@ -1080,6 +1107,7 @@ struct FeatureDeniedSheet: View {
     @EnvironmentObject private var state: AppState
     let decision: FeatureDecision
     @State private var isRefreshing = false
+    @State private var isRepairingKeychain = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1114,6 +1142,12 @@ struct FeatureDeniedSheet: View {
                     }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                     .disabled(isRefreshing)
+                case .repairKeychainAccess:
+                    Button(isRepairingKeychain ? "修复中" : "修复钥匙串访问") {
+                        repairKeychainAccess()
+                    }
+                    .buttonStyle(CapsuleButtonStyle(filled: true))
+                    .disabled(isRepairingKeychain)
                 case .contactSupport:
                     Button("打开授权设置") {
                         state.openLicenseSettings()
@@ -1148,6 +1182,8 @@ struct FeatureDeniedSheet: View {
             "arrow.clockwise"
         case .licenseRevoked:
             "exclamationmark.triangle"
+        case .keychainAccessRequired:
+            "key.fill"
         default:
             "lock"
         }
@@ -1159,6 +1195,18 @@ struct FeatureDeniedSheet: View {
         do {
             try await state.licenseManager.forceRefresh()
             state.modal = nil
+        } catch {
+            state.modal = .error(error.localizedDescription)
+        }
+    }
+
+    private func repairKeychainAccess() {
+        isRepairingKeychain = true
+        defer { isRepairingKeychain = false }
+        do {
+            try state.licenseManager.repairKeychainAccess()
+            state.modal = nil
+            state.showToast("License 钥匙串访问已恢复")
         } catch {
             state.modal = .error(error.localizedDescription)
         }

@@ -26,6 +26,9 @@ let package = Package(
             dependencies: ["PromptStudioCore"],
             resources: [
                 .process("Resources")
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
             ]
         ),
         .executableTarget(

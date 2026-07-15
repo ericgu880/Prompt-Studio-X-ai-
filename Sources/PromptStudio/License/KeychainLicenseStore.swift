@@ -1,17 +1,198 @@
 import Foundation
+import LocalAuthentication
 import Security
 
-final class KeychainLicenseStore {
-    private let service = "com.creatigo.promptstudio.license"
+protocol LicenseValueStore: AnyObject {
+    func string(_ key: KeychainLicenseStore.Key) throws -> String?
+    func data(_ key: KeychainLicenseStore.Key) throws -> Data?
+    func save(_ value: String, for key: KeychainLicenseStore.Key) throws
+    func save(_ value: Data, for key: KeychainLicenseStore.Key) throws
+    func delete(_ key: KeychainLicenseStore.Key) throws
+}
 
-    enum Key: String {
+protocol LicenseStore: LicenseValueStore {
+    func prepareForBackgroundAccess() throws
+    func migrateLegacyItemsToVault() throws
+    func withInteractiveAuthentication(
+        context: LAContext,
+        _ operation: () throws -> Void
+    ) throws
+}
+
+final class KeychainLicenseStore: LicenseStore {
+    typealias CopyMatching = (
+        CFDictionary,
+        UnsafeMutablePointer<CFTypeRef?>?
+    ) -> OSStatus
+    typealias Update = (CFDictionary, CFDictionary) -> OSStatus
+    typealias Add = (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
+
+    private let legacyService = "com.creatigo.promptstudio.license"
+    private let vaultServices = (2...16).map { "com.creatigo.promptstudio.license.v\($0)" }
+    private let vaultAccount = "promptstudio.licenseVault"
+    private let copyMatching: CopyMatching
+    private let update: Update
+    private let add: Add
+    private let backgroundContext: LAContext
+    private var interactiveContext: LAContext?
+    private var preferredVaultService: String?
+    private var confirmedNoLegacyItems = false
+    private static let currentMigrationVersion = 1
+
+    enum Key: String, CaseIterable {
         case installId = "promptstudio.installId"
         case devicePrivateKey = "promptstudio.devicePrivateKey"
         case devicePublicKey = "promptstudio.devicePublicKey"
         case activationId = "promptstudio.activationId"
         case licenseCertificate = "promptstudio.licenseCertificate"
+        case licenseRevocation = "promptstudio.licenseRevocation"
         case trialStartedAt = "promptstudio.trialStartedAt"
         case lastTrustedServerTime = "promptstudio.lastTrustedServerTime"
+    }
+
+    private struct Vault: Codable, Equatable {
+        var migrationVersion: Int?
+        var values: [String: Data]
+    }
+
+    private struct LocatedVault {
+        let service: String
+        var vault: Vault
+    }
+
+    private struct VaultRepairRead {
+        let vault: Vault?
+        let isCorrupted: Bool
+
+        var itemExists: Bool { vault != nil || isCorrupted }
+    }
+
+    init(
+        copyMatching: @escaping CopyMatching = SecItemCopyMatching,
+        update: @escaping Update = SecItemUpdate,
+        add: @escaping Add = SecItemAdd
+    ) {
+        self.copyMatching = copyMatching
+        self.update = update
+        self.add = add
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        self.backgroundContext = context
+    }
+
+    func prepareForBackgroundAccess() throws {
+        preferredVaultService = nil
+        let locatedVault: LocatedVault?
+        do {
+            locatedVault = try readPreferredVault()
+        } catch LicenseError.keychainVaultCorrupted {
+            throw LicenseError.keychainAccessRequired
+        }
+        if let locatedVault {
+            if locatedVault.vault.migrationVersion == Self.currentMigrationVersion {
+                return
+            }
+            throw LicenseError.keychainAccessRequired
+        }
+        let legacyValues = try readAllLegacyValues()
+        if !legacyValues.isEmpty {
+            throw LicenseError.keychainAccessRequired
+        }
+        confirmedNoLegacyItems = true
+    }
+
+    func migrateLegacyItemsToVault() throws {
+        var highestExistingIndex: Int?
+        var highestRead: VaultRepairRead?
+        for index in vaultServices.indices.reversed() {
+            let read = try readVaultForRepair(service: vaultServices[index])
+            if read.itemExists {
+                highestExistingIndex = index
+                highestRead = read
+                break
+            }
+        }
+
+        guard let highestExistingIndex, let highestRead else {
+            let values = try readAllLegacyValues()
+            guard !values.isEmpty else {
+                confirmedNoLegacyItems = true
+                return
+            }
+            let vault = Vault(migrationVersion: Self.currentMigrationVersion, values: values)
+            try writeAndVerify(vault, service: vaultServices[0])
+            preferredVaultService = vaultServices[0]
+            confirmedNoLegacyItems = true
+            return
+        }
+
+        guard highestExistingIndex + 1 < vaultServices.count else {
+            throw LicenseError.keychain(
+                "License Vault 恢复槽已用尽。现有记录仍保留，请联系支持人员处理。"
+            )
+        }
+
+        let values: [String: Data]
+        if let vault = highestRead.vault,
+           vault.migrationVersion == Self.currentMigrationVersion {
+            values = vault.values
+        } else {
+            var validVaultsNewestFirst: [Vault] = []
+            if let highestVault = highestRead.vault {
+                validVaultsNewestFirst.append(highestVault)
+            }
+            if highestExistingIndex > 0 {
+                for index in stride(from: highestExistingIndex - 1, through: 0, by: -1) {
+                    if let lowerVault = try readVaultForRepair(
+                        service: vaultServices[index]
+                    ).vault {
+                        validVaultsNewestFirst.append(lowerVault)
+                        if lowerVault.migrationVersion == Self.currentMigrationVersion {
+                            break
+                        }
+                    }
+                }
+            }
+
+            let hasCompleteVault = validVaultsNewestFirst.contains {
+                $0.migrationVersion == Self.currentMigrationVersion
+            }
+            var recoveredValues = hasCompleteVault ? [:] : try readAllLegacyValues()
+            for vault in validVaultsNewestFirst.reversed() {
+                recoveredValues.merge(vault.values) { _, newerValue in newerValue }
+            }
+            // The preferred generation is corrupt or incomplete. Every lower
+            // generation (even a complete one) may predate an intentional
+            // deactivation, so recover identity/trial state only and require the
+            // server to issue a fresh activation.
+            recoveredValues[Key.activationId.rawValue] = nil
+            recoveredValues[Key.licenseCertificate.rawValue] = nil
+            guard !recoveredValues.isEmpty else {
+                throw LicenseError.keychainVaultCorrupted
+            }
+            values = recoveredValues
+        }
+
+        let reboundVault = Vault(
+            migrationVersion: Self.currentMigrationVersion,
+            values: values
+        )
+        try writeAndVerify(
+            reboundVault,
+            service: vaultServices[highestExistingIndex + 1]
+        )
+        preferredVaultService = vaultServices[highestExistingIndex + 1]
+        confirmedNoLegacyItems = true
+    }
+
+    func withInteractiveAuthentication(
+        context: LAContext,
+        _ operation: () throws -> Void
+    ) throws {
+        let previousContext = interactiveContext
+        interactiveContext = context
+        defer { interactiveContext = previousContext }
+        try operation()
     }
 
     func string(_ key: Key) throws -> String? {
@@ -19,14 +200,7 @@ final class KeychainLicenseStore {
     }
 
     func data(_ key: Key) throws -> Data? {
-        var query = baseQuery(key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw LicenseError.keychain(status.description) }
-        return result as? Data
+        try readPreferredVault()?.vault.values[key.rawValue]
     }
 
     func save(_ value: String, for key: Key) throws {
@@ -34,34 +208,153 @@ final class KeychainLicenseStore {
     }
 
     func save(_ value: Data, for key: Key) throws {
-        let query = baseQuery(key)
+        let locatedVault = try readPreferredVault()
+        var vault = locatedVault?.vault ?? Vault(
+            migrationVersion: confirmedNoLegacyItems ? Self.currentMigrationVersion : nil,
+            values: [:]
+        )
+        vault.values[key.rawValue] = value
+        let service = locatedVault?.service ?? vaultServices[0]
+        try writeVault(vault, service: service)
+        preferredVaultService = service
+    }
+
+    func delete(_ key: Key) throws {
+        guard var locatedVault = try readPreferredVault() else { return }
+        locatedVault.vault.values[key.rawValue] = nil
+        try writeVault(locatedVault.vault, service: locatedVault.service)
+    }
+
+    private func readPreferredVault() throws -> LocatedVault? {
+        if let preferredVaultService,
+           let vault = try readVault(service: preferredVaultService) {
+            return LocatedVault(service: preferredVaultService, vault: vault)
+        }
+        preferredVaultService = nil
+        for service in vaultServices.reversed() {
+            if let vault = try readVault(service: service) {
+                preferredVaultService = service
+                return LocatedVault(service: service, vault: vault)
+            }
+        }
+        return nil
+    }
+
+    private func readVault(service: String) throws -> Vault? {
+        let repairRead = try readVaultForRepair(service: service)
+        if repairRead.isCorrupted {
+            throw LicenseError.keychainVaultCorrupted
+        }
+        return repairRead.vault
+    }
+
+    private func readVaultForRepair(service: String) throws -> VaultRepairRead {
+        guard let encoded = try readItem(vaultQuery(service: service)) else {
+            return VaultRepairRead(vault: nil, isCorrupted: false)
+        }
+        do {
+            return VaultRepairRead(
+                vault: try JSONDecoder().decode(Vault.self, from: encoded),
+                isCorrupted: false
+            )
+        } catch {
+            return VaultRepairRead(vault: nil, isCorrupted: true)
+        }
+    }
+
+    private func writeAndVerify(_ vault: Vault, service: String) throws {
+        try writeVault(vault, service: service)
+        guard try readVault(service: service) == vault else {
+            throw LicenseError.keychain("迁移后的 License Vault 校验失败。旧记录仍保留，未做删除。")
+        }
+    }
+
+    private func writeVault(_ vault: Vault, service: String) throws {
+        let value: Data
+        do {
+            value = try JSONEncoder().encode(vault)
+        } catch {
+            throw LicenseError.keychain("License Vault 编码失败。")
+        }
+
+        let query = vaultQuery(service: service)
         let attributes: [String: Any] = [
             kSecValueData as String: value,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let status = update(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var addQuery = query
             addQuery.merge(attributes) { _, new in new }
-            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { throw LicenseError.keychain(addStatus.description) }
+            try check(add(addQuery as CFDictionary, nil))
             return
         }
-        guard status == errSecSuccess else { throw LicenseError.keychain(status.description) }
+        try check(status)
     }
 
-    func delete(_ key: Key) throws {
-        let status = SecItemDelete(baseQuery(key) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+    private func readItem(_ baseQuery: [String: Any]) throws -> Data? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = copyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        try check(status)
+        return result as? Data
+    }
+
+    private func readAllLegacyValues() throws -> [String: Data] {
+        var query = itemQuery(service: legacyService, account: nil)
+        query[kSecReturnAttributes as String] = true
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitAll
+        var result: CFTypeRef?
+        let status = copyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [:] }
+        try check(status)
+
+        let items: [Any]
+        if let resultItems = result as? [Any] {
+            items = resultItems
+        } else if let resultItem = result as? [String: Any] {
+            items = [resultItem]
+        } else {
+            throw LicenseError.keychain("无法解析旧版 License 钥匙串记录。")
+        }
+        var values: [String: Data] = [:]
+        for case let attributes as [String: Any] in items {
+            guard let account = attributes[kSecAttrAccount as String] as? String,
+                  Key(rawValue: account) != nil,
+                  let value = attributes[kSecValueData as String] as? Data else {
+                continue
+            }
+            values[account] = value
+        }
+        return values
+    }
+
+    private func check(_ status: OSStatus) throws {
+        if status == errSecInteractionNotAllowed {
+            throw LicenseError.keychainAccessRequired
+        }
+        guard status == errSecSuccess else {
             throw LicenseError.keychain(status.description)
         }
     }
 
-    private func baseQuery(_ key: Key) -> [String: Any] {
-        [
+    private func vaultQuery(service: String) -> [String: Any] {
+        itemQuery(service: service, account: vaultAccount)
+    }
+
+    private func itemQuery(service: String, account: String?) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key.rawValue
+            kSecUseAuthenticationContext as String: interactiveContext ?? backgroundContext
         ]
+        if let account {
+            query[kSecAttrAccount as String] = account
+        }
+        return query
     }
 }

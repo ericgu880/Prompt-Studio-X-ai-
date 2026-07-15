@@ -79,10 +79,10 @@ final class LicenseAPIClient {
     private let decoder: JSONDecoder
 
     init(
-        baseURL: URL = LicenseAPIClient.defaultBaseURL(),
+        baseURL: URL? = nil,
         session: URLSession = .shared
     ) {
-        self.baseURL = baseURL
+        self.baseURL = baseURL ?? Self.defaultBaseURL()
         self.session = session
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

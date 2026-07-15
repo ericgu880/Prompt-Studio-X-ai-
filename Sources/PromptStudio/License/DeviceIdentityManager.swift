@@ -10,9 +10,9 @@ struct DeviceIdentity {
 }
 
 final class DeviceIdentityManager {
-    private let store: KeychainLicenseStore
+    private let store: any LicenseValueStore
 
-    init(store: KeychainLicenseStore) {
+    init(store: any LicenseValueStore) {
         self.store = store
     }
 
@@ -21,7 +21,6 @@ final class DeviceIdentityManager {
         let privateKey = try loadOrCreatePrivateKey()
         let publicKeyData = privateKey.publicKey.rawRepresentation
         let publicKey = LicenseEncoding.base64URL(publicKeyData)
-        try store.save(publicKey, for: .devicePublicKey)
         return DeviceIdentity(
             installId: installId,
             installIdHash: LicenseEncoding.sha256Base64URL("install:\(installId)"),

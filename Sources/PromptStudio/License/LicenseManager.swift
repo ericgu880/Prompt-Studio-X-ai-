@@ -1,17 +1,20 @@
 import Combine
 import CryptoKit
 import Foundation
+import LocalAuthentication
 
 @MainActor
 final class LicenseManager: ObservableObject {
     @Published private(set) var state: LicenseState = .limited(reason: .noLicense)
 
-    private let store: KeychainLicenseStore
+    private let store: any LicenseStore
     private let trialManager: TrialManager
     private let identityManager: DeviceIdentityManager
     private let verifier: LicenseCertificateVerifier
     private let api: LicenseAPIClient
     private let formatter = ISO8601DateFormatter()
+    private var mutationGeneration: UInt64 = 0
+    private var activationEpoch: UInt64 = 0
 
     private struct SignedDeviceChallenge {
         let activationId: String
@@ -20,15 +23,15 @@ final class LicenseManager: ObservableObject {
     }
 
     init(
-        store: KeychainLicenseStore = KeychainLicenseStore(),
+        store: any LicenseStore = KeychainLicenseStore(),
         verifier: LicenseCertificateVerifier = LicenseCertificateVerifier(),
-        api: LicenseAPIClient = LicenseAPIClient()
+        api: LicenseAPIClient? = nil
     ) {
         self.store = store
         self.trialManager = TrialManager(store: store)
         self.identityManager = DeviceIdentityManager(store: store)
         self.verifier = verifier
-        self.api = api
+        self.api = api ?? LicenseAPIClient()
         loadStateOnLaunch()
     }
 
@@ -37,10 +40,31 @@ final class LicenseManager: ObservableObject {
     }
 
     func loadStateOnLaunch() {
-        state = resolveLocalState()
+        _ = beginMutation()
+        do {
+            try store.prepareForBackgroundAccess()
+            state = try resolveLocalState()
+        } catch LicenseError.keychainAccessRequired {
+            state = .limited(reason: .keychainAccessRequired)
+        } catch {
+            state = .limited(reason: .keychainUnavailable(error.localizedDescription))
+        }
+    }
+
+    func repairKeychainAccess() throws {
+        _ = beginMutation()
+        let context = LAContext()
+        context.localizedReason = "读取并保留这台 Mac 上现有的 PromptStudio License"
+        try store.withInteractiveAuthentication(context: context) {
+            try store.migrateLegacyItemsToVault()
+        }
+        try store.prepareForBackgroundAccess()
+        state = try resolveLocalState()
     }
 
     func activate(email: String, licenseCode: String, replacing activationId: String? = nil) async throws {
+        let generation = beginMutation()
+        try store.prepareForBackgroundAccess()
         let identity = try identityManager.loadOrCreateIdentity()
         let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -78,10 +102,12 @@ final class LicenseManager: ObservableObject {
                 replaceActivationId: activationId
             )
         )
-        try saveActivation(response, identity: identity)
+        try saveActivation(response, identity: identity, generation: generation)
     }
 
     func activate(recoveryToken: String, replacing activationId: String? = nil) async throws {
+        let generation = beginMutation()
+        try store.prepareForBackgroundAccess()
         let identity = try identityManager.loadOrCreateIdentity()
         let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -117,10 +143,15 @@ final class LicenseManager: ObservableObject {
                 replaceActivationId: activationId
             )
         )
-        try saveActivation(response, identity: identity)
+        try saveActivation(response, identity: identity, generation: generation)
     }
 
-    private func saveActivation(_ response: LicenseAPIClient.ActivateResponse, identity: DeviceIdentity) throws {
+    private func saveActivation(
+        _ response: LicenseAPIClient.ActivateResponse,
+        identity: DeviceIdentity,
+        generation: UInt64
+    ) throws {
+        guard generation == mutationGeneration else { return }
         _ = try verifier.verify(
             response.licenseCertificate,
             expectedActivationId: response.activationId,
@@ -129,7 +160,12 @@ final class LicenseManager: ObservableObject {
         try store.save(response.activationId, for: .activationId)
         try store.save(response.licenseCertificate, for: .licenseCertificate)
         try store.save(formatter.string(from: response.serverTime ?? Date()), for: .lastTrustedServerTime)
-        state = resolveLocalState()
+        try store.delete(.licenseRevocation)
+        // A successful activation establishes new ownership even when the
+        // server reuses the same activation ID. Older in-flight operations
+        // must not be allowed to revoke this newly established activation.
+        activationEpoch &+= 1
+        state = try resolveLocalState()
     }
 
     func refreshIfNeeded() async {
@@ -143,20 +179,24 @@ final class LicenseManager: ObservableObject {
     }
 
     func forceRefresh() async throws {
+        let generation = beginMutation()
+        let ownershipEpoch = activationEpoch
+        try store.prepareForBackgroundAccess()
         guard let activationId = try store.string(.activationId) else {
             state = .limited(reason: .noLicense)
             return
         }
-        let challenge = try await api.refreshChallenge(activationId: activationId)
-        let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
-        let message = buildDeviceProofMessage(
-            activationId: activationId,
-            challengeId: challenge.challengeId,
-            nonce: challenge.nonce,
-            bundleId: bundleId
-        )
-        let signature = try identityManager.sign(message)
         do {
+            let challenge = try await api.refreshChallenge(activationId: activationId)
+            guard try mutationIsCurrent(generation, activationId: activationId) else { return }
+            let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
+            let message = buildDeviceProofMessage(
+                activationId: activationId,
+                challengeId: challenge.challengeId,
+                nonce: challenge.nonce,
+                bundleId: bundleId
+            )
+            let signature = try identityManager.sign(message)
             let response = try await api.refresh(
                 activationId: activationId,
                 challengeId: challenge.challengeId,
@@ -164,6 +204,7 @@ final class LicenseManager: ObservableObject {
                 appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0",
                 osVersion: Self.osVersionString()
             )
+            guard try mutationIsCurrent(generation, activationId: activationId) else { return }
             let identity = try identityManager.loadOrCreateIdentity()
             _ = try verifier.verify(
                 response.licenseCertificate,
@@ -172,17 +213,24 @@ final class LicenseManager: ObservableObject {
             )
             try store.save(response.licenseCertificate, for: .licenseCertificate)
             try store.save(formatter.string(from: response.serverTime ?? Date()), for: .lastTrustedServerTime)
-            state = resolveLocalState()
+            state = try resolveLocalState()
         } catch LicenseError.api(let code, let message, let data) where code == "LICENSE_REVOKED" || code == "LICENSE_NOT_AVAILABLE" {
-            state = .revoked(reason: message)
+            if try activationOwnershipIsCurrent(ownershipEpoch, activationId: activationId) {
+                try persistRevocation(message)
+            }
             throw LicenseError.api(code: code, message: message, data: data)
         } catch LicenseError.api(let code, let message, let data) where code == "INVALID_DEVICE_PROOF" {
-            state = .limited(reason: .deviceMismatch)
+            if try mutationIsCurrent(generation, activationId: activationId) {
+                state = .limited(reason: .deviceMismatch)
+            }
             throw LicenseError.api(code: code, message: message, data: data)
         }
     }
 
     func deactivateCurrentDevice() async throws {
+        _ = beginMutation()
+        let ownershipEpoch = activationEpoch
+        try store.prepareForBackgroundAccess()
         guard let activationId = try store.string(.activationId) else { return }
         let challenge = try await api.refreshChallenge(activationId: activationId)
         let bundleId = Bundle.main.bundleIdentifier ?? "com.creatigo.promptstudio"
@@ -200,9 +248,8 @@ final class LicenseManager: ObservableObject {
             signature: signature,
             reason: "user_requested"
         )
-        try store.delete(.licenseCertificate)
-        try store.delete(.activationId)
-        state = resolveLocalState()
+        guard try activationOwnershipIsCurrent(ownershipEpoch, activationId: activationId) else { return }
+        try persistRevocation("本机授权已停用。如需继续使用 Pro，请重新激活。")
     }
 
     func listDevices() async throws -> LicenseDeviceList {
@@ -226,6 +273,9 @@ final class LicenseManager: ObservableObject {
     }
 
     func deactivateDevice(activationId targetActivationId: String) async throws {
+        _ = beginMutation()
+        let ownershipEpoch = activationEpoch
+        try store.prepareForBackgroundAccess()
         let currentActivationId = try store.string(.activationId)
         let proof = try await makeSignedDeviceChallenge()
         try await api.deactivateDevice(
@@ -235,10 +285,10 @@ final class LicenseManager: ObservableObject {
             targetActivationId: targetActivationId,
             reason: "user_requested"
         )
-        if targetActivationId == currentActivationId {
-            try store.delete(.licenseCertificate)
-            try store.delete(.activationId)
-            state = resolveLocalState()
+        if let currentActivationId,
+           targetActivationId == currentActivationId,
+           try activationOwnershipIsCurrent(ownershipEpoch, activationId: currentActivationId) {
+            try persistRevocation("本机授权已停用。如需继续使用 Pro，请重新激活。")
         }
     }
 
@@ -247,6 +297,7 @@ final class LicenseManager: ObservableObject {
     }
 
     private func makeSignedDeviceChallenge() async throws -> SignedDeviceChallenge {
+        try store.prepareForBackgroundAccess()
         guard let activationId = try store.string(.activationId) else {
             throw LicenseError.invalidResponse("未检测到本机授权。")
         }
@@ -267,9 +318,12 @@ final class LicenseManager: ObservableObject {
         )
     }
 
-    private func resolveLocalState(now localNow: Date = Date()) -> LicenseState {
-        let certificateString = try? store.string(.licenseCertificate)
-        let activationId = try? store.string(.activationId)
+    private func resolveLocalState(now localNow: Date = Date()) throws -> LicenseState {
+        if let revocation = try store.string(.licenseRevocation) {
+            return .revoked(reason: revocation.isEmpty ? nil : revocation)
+        }
+        let certificateString = try store.string(.licenseCertificate)
+        let activationId = try store.string(.activationId)
         if certificateString != nil || activationId != nil {
             guard let certificateString, let activationId else {
                 return .limited(reason: .invalidCertificate)
@@ -277,6 +331,8 @@ final class LicenseManager: ObservableObject {
             let identity: DeviceIdentity
             do {
                 identity = try identityManager.loadOrCreateIdentity()
+            } catch LicenseError.keychainAccessRequired {
+                throw LicenseError.keychainAccessRequired
             } catch {
                 return .limited(reason: .deviceMismatch)
             }
@@ -290,10 +346,11 @@ final class LicenseManager: ObservableObject {
             } catch {
                 return .limited(reason: .invalidCertificate)
             }
-            if let trusted = trustedServerTime(), localNow < trusted.addingTimeInterval(-24 * 60 * 60) {
+            let trusted = try trustedServerTime()
+            if let trusted, localNow < trusted.addingTimeInterval(-24 * 60 * 60) {
                 return .limited(reason: .clockInvalid)
             }
-            let now = effectiveNow(localNow)
+            let now = effectiveNow(localNow, trustedServerTime: trusted)
             if now <= certificate.expiresAt {
                 return .proActive(certificate: certificate)
             }
@@ -303,19 +360,45 @@ final class LicenseManager: ObservableObject {
             return .limited(reason: .certificateExpired)
         }
 
-        let trial = trialManager.currentState(now: localNow)
+        let trial = try trialManager.currentState(now: localNow)
         return trial.isActive ? .trialActive(daysRemaining: trial.daysRemaining) : .trialExpired
     }
 
-    private func effectiveNow(_ localNow: Date) -> Date {
-        guard let trusted = trustedServerTime() else {
+    private func persistRevocation(_ reason: String) throws {
+        state = .revoked(reason: reason)
+        // The tombstone must land before either delete. Once the server has
+        // confirmed deactivation, a cleanup failure must never revive the older
+        // certificate on the next offline launch.
+        try store.save(reason, for: .licenseRevocation)
+        try store.delete(.licenseCertificate)
+        try store.delete(.activationId)
+    }
+
+    @discardableResult
+    private func beginMutation() -> UInt64 {
+        mutationGeneration &+= 1
+        return mutationGeneration
+    }
+
+    private func mutationIsCurrent(_ generation: UInt64, activationId: String) throws -> Bool {
+        guard generation == mutationGeneration else { return false }
+        return try store.string(.activationId) == activationId
+    }
+
+    private func activationOwnershipIsCurrent(_ epoch: UInt64, activationId: String) throws -> Bool {
+        guard epoch == activationEpoch else { return false }
+        return try store.string(.activationId) == activationId
+    }
+
+    private func effectiveNow(_ localNow: Date, trustedServerTime: Date?) -> Date {
+        guard let trusted = trustedServerTime else {
             return localNow
         }
         return max(localNow, trusted)
     }
 
-    private func trustedServerTime() -> Date? {
-        guard let raw = try? store.string(.lastTrustedServerTime) else {
+    private func trustedServerTime() throws -> Date? {
+        guard let raw = try store.string(.lastTrustedServerTime) else {
             return nil
         }
         return formatter.date(from: raw)

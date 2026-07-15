@@ -23,6 +23,10 @@ struct FeatureGate {
                 return denied(feature, reason: .licenseExpired)
             case .revoked:
                 return denied(feature, reason: .licenseRevoked)
+            case .keychainAccessRequired:
+                return denied(feature, reason: .keychainAccessRequired)
+            case .keychainUnavailable:
+                return denied(feature, reason: .keychainUnavailable)
             case .noLicense, .trialExpired, .invalidCertificate, .deviceMismatch, .clockInvalid:
                 return denied(feature, reason: .licenseRequired)
             }
@@ -60,6 +64,14 @@ struct FeatureGate {
             title = "\(featureName)需要 PromptStudio Pro"
             message = "该功能属于 Pro 功能。你仍可以打开、搜索、复制和基础导出已有数据。"
             action = .activate
+        case .keychainAccessRequired:
+            title = "需要恢复 License 钥匙串访问"
+            message = "PromptStudio 检测到旧版本保存的授权记录。请执行一次修复以保留当前设备身份和激活状态。"
+            action = .repairKeychainAccess
+        case .keychainUnavailable:
+            title = "License 钥匙串不可用"
+            message = "PromptStudio 无法读取本机 License 数据。请先检查登录钥匙串状态；现有资料库不会受影响。"
+            action = .contactSupport
         case .featureNotIncluded:
             title = "当前授权不包含此功能"
             message = "该功能不在当前授权权益中。"

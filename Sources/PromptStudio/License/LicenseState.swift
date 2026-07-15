@@ -63,6 +63,8 @@ enum LimitedReason: Equatable {
     case revoked
     case refreshRequired
     case clockInvalid
+    case keychainAccessRequired
+    case keychainUnavailable(String)
 
     var localizedDescription: String {
         switch self {
@@ -82,6 +84,10 @@ enum LimitedReason: Equatable {
             "需要联网刷新授权。"
         case .clockInvalid:
             "检测到系统时间异常。"
+        case .keychainAccessRequired:
+            "需要授权 PromptStudio 读取原有 License 钥匙串记录。"
+        case .keychainUnavailable(let message):
+            "License 钥匙串不可用：\(message)"
         }
     }
 }
@@ -141,6 +147,8 @@ enum FeatureDeniedReason: Equatable {
     case licenseRequired
     case licenseExpired
     case licenseRevoked
+    case keychainAccessRequired
+    case keychainUnavailable
     case featureNotIncluded
 }
 
@@ -148,6 +156,7 @@ enum UpgradeAction: Equatable {
     case activate
     case buyPro
     case refreshLicense
+    case repairKeychainAccess
     case contactSupport
 }
 
@@ -170,6 +179,8 @@ struct LicenseAPIErrorData: Codable, Equatable {
 
 enum LicenseError: Error, LocalizedError, Equatable {
     case keychain(String)
+    case keychainAccessRequired
+    case keychainVaultCorrupted
     case invalidCertificate
     case invalidDeviceIdentity
     case invalidResponse(String)
@@ -180,6 +191,10 @@ enum LicenseError: Error, LocalizedError, Equatable {
         switch self {
         case .keychain(let message):
             "Keychain 操作失败：\(message)"
+        case .keychainAccessRequired:
+            "PromptStudio 需要你完成一次修复授权，才能读取原有 License 钥匙串记录。"
+        case .keychainVaultCorrupted:
+            "License Vault 已损坏；如旧记录仍在，可通过“修复访问”安全重建。"
         case .invalidCertificate:
             "授权证书无效。"
         case .invalidDeviceIdentity:

@@ -117,9 +117,13 @@ Use a temporary library for destructive UI checks. Do not run create, edit,
 delete, restore, import, or bulk tests against a real user library.
 
 ```sh
-Scripts/build_app.sh release
+APP_PATH="$(
+  SIGN_IDENTITY='Developer ID Application: Team Name (ABCDE12345)' \
+  EXPECTED_TEAM_ID='ABCDE12345' \
+  Scripts/build_app.sh debug
+)"
 LIB="$(mktemp -d /tmp/promptstudio-ui-qa.XXXXXX)"
-open .build/release/PromptStudio.app --args --library "$LIB"
+open "$APP_PATH" --args --library "$LIB"
 ```
 
 The UI run can be marked PASS only when the app is confirmed to use the test
@@ -218,13 +222,47 @@ they depend on the real macOS app process and UI rendering.
 Local release QA requires a signed app bundle that passes strict verification:
 
 ```sh
-Scripts/build_app.sh release
-codesign --verify --deep --strict --verbose=2 .build/release/PromptStudio.app
-codesign -dv --verbose=4 .build/release/PromptStudio.app 2>&1
+APP_PATH="$(
+  LICENSE_SIGNING_KEY_ID=prod-2026-01 \
+  LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL='...' \
+  SIGN_IDENTITY='Developer ID Application: Team Name (ABCDE12345)' \
+  EXPECTED_TEAM_ID='ABCDE12345' \
+  Scripts/build_app.sh release
+)"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+codesign -dv --verbose=4 "$APP_PATH" 2>&1
+codesign -d -r- "$APP_PATH" 2>&1
 ```
 
-`Scripts/build_app.sh` defaults to ad-hoc signing for local QA. For Developer ID
-release signing, provide `SIGN_IDENTITY` and optionally `ENTITLEMENTS_PATH`.
+To preserve the debug build's development License behavior while giving Keychain
+a stable application identity, package debug with the same Developer ID identity:
+
+```sh
+SIGN_IDENTITY='Developer ID Application: Team Name (ABCDE12345)' \
+EXPECTED_TEAM_ID='ABCDE12345' \
+Scripts/build_app.sh debug
+```
+
+`Scripts/build_app.sh` defaults to release and fails closed when signing inputs are
+missing. Ad-hoc signing is permitted only for `Scripts/build_app.sh debug`. Any
+Developer ID build requires hardened runtime, a secure timestamp, an explicitly
+expected Team ID, and a stable designated requirement pinned to that Team ID.
+Release additionally requires a valid 32-byte Ed25519 License public key. Run
+`bash Scripts/test_codesign_policy.sh` to verify the local release gate and
+`bash Scripts/test_license_keychain.sh` for the License Keychain regression suite.
+Optionally provide `ENTITLEMENTS_PATH`; release packaging rejects
+`com.apple.security.get-task-allow=true`.
+
+The app target currently uses Swift 5 language mode with a Swift 6.2-or-newer
+toolchain. This keeps the existing AppKit image-loading code buildable until its
+`NSImage` concurrency boundaries are migrated to Swift 6.
+
+For the one-time Keychain migration, verify that launch itself shows no password
+dialog, use **License → 修复访问**, quit and relaunch, then confirm License state is
+preserved without another dialog. The repair keeps legacy records and writes a
+single new consolidated Vault generation while retaining older generations;
+test both an existing ad-hoc Vault and the original seven-record layout before
+release.
 Run notarization when Apple credentials are available. If credentials are not
 available, mark notarization as `ENVIRONMENT/SKIPPED`; do not mark the product
 failed solely because credentials are missing.
