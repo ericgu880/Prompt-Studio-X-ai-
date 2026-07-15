@@ -43,7 +43,6 @@ struct SidePanelChipFlow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
