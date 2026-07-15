@@ -16,7 +16,25 @@ const activateSchema = z.object({
   deviceLabel: z.string().min(1).max(120),
   bundleId: z.string().min(1),
   appVersion: z.string().optional(),
-  osVersion: z.string().optional()
+  osVersion: z.string().optional(),
+  replaceActivationId: z.string().min(1).optional()
+});
+
+const recoveryActivateSchema = z.object({
+  recoveryToken: z.string().min(20),
+  installIdHash: z.string().min(20),
+  devicePublicKey: z.string().min(40),
+  deviceProof: z.object({
+    version: z.literal("PromptStudio-Recovery-Proof-v1"),
+    clientNonce: z.string().min(20),
+    createdAt: z.string().datetime(),
+    signature: z.string().min(40)
+  }),
+  deviceLabel: z.string().min(1).max(120),
+  bundleId: z.string().min(1),
+  appVersion: z.string().optional(),
+  osVersion: z.string().optional(),
+  replaceActivationId: z.string().min(1).optional()
 });
 
 const challengeSchema = z.object({
@@ -58,7 +76,7 @@ const recoverSchema = z.object({
   email: z.string().email()
 });
 
-function mapError(error: unknown): { statusCode: number; body: unknown } {
+function mapError(error: unknown, requestId: string): { statusCode: number; body: unknown } {
   if (error instanceof LicenseAPIError) {
     return {
       statusCode: error.statusCode,
@@ -67,20 +85,21 @@ function mapError(error: unknown): { statusCode: number; body: unknown } {
         error: {
           code: error.code,
           message: error.message,
-          ...(typeof error.data === "object" && error.data !== null ? error.data : {})
-        }
+          ...(error.data === undefined ? {} : { data: error.data })
+        },
+        requestId
       }
     };
   }
   if (error instanceof z.ZodError) {
     return {
       statusCode: 400,
-      body: { ok: false, error: { code: "INVALID_REQUEST", message: "请求格式不正确。" } }
+      body: { ok: false, error: { code: "INVALID_REQUEST", message: "请求格式不正确。" }, requestId }
     };
   }
   return {
     statusCode: 500,
-    body: { ok: false, error: { code: "SERVER_ERROR", message: "授权服务暂时不可用，请稍后再试。" } }
+    body: { ok: false, error: { code: "SERVER_ERROR", message: "授权服务暂时不可用，请稍后再试。" }, requestId }
   };
 }
 
@@ -95,7 +114,19 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.activate(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
+      return reply.code(mapped.statusCode).send(mapped.body);
+    }
+  });
+
+  app.post("/v1/licenses/recovery/activate", async (request, reply) => {
+    try {
+      const body = recoveryActivateSchema.parse(request.body);
+      services.rateLimit.check(`recovery-activate:${services.recovery.hashToken(body.recoveryToken)}`, 10, 10 * 60 * 1000);
+      const response = await services.activation.activateWithRecovery(body);
+      return { ok: true, ...response };
+    } catch (error) {
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -107,7 +138,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.createRefreshChallenge(body.activationId);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -119,7 +150,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.refresh(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -131,7 +162,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.deactivate(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -143,7 +174,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       const response = await services.activation.listDevices(body);
       return { ok: true, ...response };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -155,7 +186,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.renameDevice(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });
@@ -167,7 +198,7 @@ export async function licenseRoutes(app: FastifyInstance): Promise<void> {
       await services.activation.deactivateDeviceById(body);
       return { ok: true };
     } catch (error) {
-      const mapped = mapError(error);
+      const mapped = mapError(error, request.id);
       return reply.code(mapped.statusCode).send(mapped.body);
     }
   });

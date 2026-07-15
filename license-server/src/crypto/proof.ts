@@ -31,6 +31,33 @@ export function buildActivateProofMessage(input: ActivateProofMessageInput): str
   ].join("\n");
 }
 
+export interface RecoveryProofMessageInput {
+  recoveryToken: string;
+  installIdHash: string;
+  devicePublicKey: string;
+  bundleId: string;
+  appVersion?: string | null;
+  osVersion?: string | null;
+  clientNonce: string;
+  createdAt: string;
+}
+
+export function buildRecoveryProofMessage(input: RecoveryProofMessageInput): string {
+  const appVersion = input.appVersion?.trim() || "-";
+  const osVersion = input.osVersion?.trim() || "-";
+  return [
+    "PromptStudio-Recovery-Proof-v1",
+    `recoveryTokenSha256:${sha256Base64URL(input.recoveryToken)}`,
+    `installIdHash:${input.installIdHash}`,
+    `devicePublicKey:${input.devicePublicKey}`,
+    `bundleId:${input.bundleId}`,
+    `appVersion:${appVersion}`,
+    `osVersion:${osVersion}`,
+    `clientNonce:${input.clientNonce}`,
+    `createdAt:${input.createdAt}`
+  ].join("\n");
+}
+
 export function buildDeviceProofMessage(input: {
   activationId: string;
   challengeId: string;

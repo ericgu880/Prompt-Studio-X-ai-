@@ -1,5 +1,5 @@
 import type { Activation, Prisma, PrismaClient } from "@prisma/client";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import { base64urlEncode } from "../crypto/base64url.js";
 import { codePrefix, hashLicenseCode } from "../crypto/licenseCode.js";
@@ -7,6 +7,32 @@ import { hashEmail, normalizeEmail } from "../crypto/email.js";
 import { AuditEventService } from "./AuditEventService.js";
 import { CertificateService } from "./CertificateService.js";
 import { DeviceProofService } from "./DeviceProofService.js";
+import { RecoveryService } from "./RecoveryService.js";
+
+type AuthorizedLicense = Prisma.LicenseGetPayload<{
+  include: { customer: true; activations: true };
+}>;
+
+interface ActivationDeviceInput {
+  installIdHash: string;
+  devicePublicKey: string;
+  deviceLabel: string;
+  bundleId: string;
+  appVersion?: string;
+  osVersion?: string;
+  replaceActivationId?: string;
+}
+
+interface ActivationResult {
+  activationId: string;
+  licenseCertificate: string;
+  refreshAfter: string;
+  expiresAt: string;
+  graceUntil: string;
+  deviceCount: number;
+  seatLimit: number;
+  serverTime: string;
+}
 
 export class LicenseAPIError extends Error {
   constructor(
@@ -25,47 +51,26 @@ export class ActivationService {
     private readonly config: AppConfig,
     private readonly audit: AuditEventService,
     private readonly certificates: CertificateService,
-    private readonly deviceProof: DeviceProofService
+    private readonly deviceProof: DeviceProofService,
+    private readonly recovery: RecoveryService
   ) {}
 
-  async activate(input: {
+  async activate(input: ActivationDeviceInput & {
     email: string;
     licenseCode: string;
-    installIdHash: string;
-    devicePublicKey: string;
     deviceProof: {
       version: string;
       clientNonce: string;
       createdAt: string;
       signature: string;
     };
-    deviceLabel: string;
-    bundleId: string;
-    appVersion?: string;
-    osVersion?: string;
-  }): Promise<{
-    activationId: string;
-    licenseCertificate: string;
-    refreshAfter: string;
-    expiresAt: string;
-    graceUntil: string;
-    deviceCount: number;
-    seatLimit: number;
-    serverTime: string;
-  }> {
+  }): Promise<ActivationResult> {
     if (input.deviceProof.version !== "PromptStudio-Activate-Proof-v1") {
       throw new LicenseAPIError("INVALID_ACTIVATE_PROOF", 401, "无法验证当前设备，请重试。");
     }
     const deviceKeyThumbprint = this.deviceProof.deviceKeyThumbprint(input.devicePublicKey);
     const nonceHash = this.deviceProof.nonceHash(input.deviceProof.clientNonce, deviceKeyThumbprint);
-
-    const reusedNonce = await this.prisma.activateProofNonce.findUnique({
-      where: { nonceHash_deviceKeyThumbprint: { nonceHash, deviceKeyThumbprint } }
-    });
-    if (reusedNonce) {
-      throw new LicenseAPIError("ACTIVATE_PROOF_REPLAYED", 401, "无法验证当前设备，请重试。");
-    }
-
+    await this.rejectReplayedProof(nonceHash, deviceKeyThumbprint);
     try {
       this.deviceProof.verifyActivateProof({
         email: input.email,
@@ -92,19 +97,7 @@ export class ActivationService {
     const displayCodePrefix = codePrefix(input.licenseCode);
 
     return this.prisma.$transaction(async (tx) => {
-      try {
-        await tx.activateProofNonce.create({
-          data: {
-            nonceHash,
-            deviceKeyThumbprint,
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-            consumedAt: new Date()
-          }
-        });
-      } catch {
-        throw new LicenseAPIError("ACTIVATE_PROOF_REPLAYED", 401, "无法验证当前设备，请重试。");
-      }
-
+      await this.consumeProofNonce(tx, nonceHash, deviceKeyThumbprint);
       const license = await tx.license.findUnique({
         where: { codeHash },
         include: { customer: true, activations: { where: { status: "active" } } }
@@ -132,117 +125,81 @@ export class ActivationService {
         });
         throw new LicenseAPIError("LICENSE_NOT_AVAILABLE", 403, "该授权当前不可用，如有疑问请联系支持。");
       }
+      return this.activateAuthorized(tx, license, emailHash, input, deviceKeyThumbprint, "license_code");
+    }, { isolationLevel: "Serializable" });
+  }
 
-      const activeForInstall = license.activations.find((activation) => activation.installIdHash === input.installIdHash);
-      let activation: Activation;
-      if (activeForInstall?.deviceKeyThumbprint === deviceKeyThumbprint) {
-        activation = await tx.activation.update({
-          where: { id: activeForInstall.id },
-          data: {
-            lastSeenAt: new Date(),
-            appVersion: input.appVersion,
-            osVersion: input.osVersion,
-            deviceLabel: input.deviceLabel
+  async activateWithRecovery(input: ActivationDeviceInput & {
+    recoveryToken: string;
+    deviceProof: {
+      version: string;
+      clientNonce: string;
+      createdAt: string;
+      signature: string;
+    };
+  }): Promise<ActivationResult> {
+    if (input.deviceProof.version !== "PromptStudio-Recovery-Proof-v1") {
+      throw new LicenseAPIError("INVALID_RECOVERY_PROOF", 401, "无法验证当前设备，请重新打开找回邮件。");
+    }
+    const deviceKeyThumbprint = this.deviceProof.deviceKeyThumbprint(input.devicePublicKey);
+    const nonceHash = this.deviceProof.nonceHash(input.deviceProof.clientNonce, deviceKeyThumbprint);
+    await this.rejectReplayedProof(nonceHash, deviceKeyThumbprint);
+    try {
+      this.deviceProof.verifyRecoveryProof({
+        recoveryToken: input.recoveryToken,
+        installIdHash: input.installIdHash,
+        devicePublicKey: input.devicePublicKey,
+        bundleId: input.bundleId,
+        appVersion: input.appVersion,
+        osVersion: input.osVersion,
+        clientNonce: input.deviceProof.clientNonce,
+        createdAt: input.deviceProof.createdAt,
+        signature: input.deviceProof.signature
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_BUNDLE_ID") {
+        throw new LicenseAPIError("INVALID_BUNDLE_ID", 403, "当前应用无法使用此授权。");
+      }
+      throw new LicenseAPIError("INVALID_RECOVERY_PROOF", 401, "无法验证当前设备，请重新打开找回邮件。");
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.consumeProofNonce(tx, nonceHash, deviceKeyThumbprint);
+      const token = await tx.licenseRecoveryToken.findUnique({
+        where: { tokenHash: this.recovery.hashToken(input.recoveryToken) },
+        include: {
+          license: {
+            include: { customer: true, activations: { where: { status: "active" } } }
           }
-        });
-      } else if (activeForInstall) {
-        const replacement = await tx.activation.create({
-          data: {
-            licenseId: license.id,
-            installIdHash: input.installIdHash,
-            devicePublicKey: input.devicePublicKey,
-            deviceKeyThumbprint,
-            deviceLabel: input.deviceLabel,
-            appVersion: input.appVersion,
-            osVersion: input.osVersion,
-            lastSeenAt: new Date()
-          }
-        });
-        await tx.activation.update({
-          where: { id: activeForInstall.id },
-          data: {
-            status: "stale",
-            deactivatedAt: new Date(),
-            deactivatedReason: "device_key_replaced",
-            replacedByActivationId: replacement.id
-          }
-        });
-        activation = replacement;
-      } else {
-        if (license.activations.length >= license.seatLimit) {
-          const devices = license.activations.map((item) => ({
-            activationId: item.id,
-            deviceLabel: item.deviceLabel,
-            activatedAt: item.activatedAt.toISOString(),
-            lastSeenAt: item.lastSeenAt?.toISOString() ?? null
-          }));
-          await tx.licenseEvent.create({
-            data: {
-              licenseId: license.id,
-              eventType: "seat_limit_exceeded",
-              eventSource: "api",
-              emailHash,
-              codePrefix: license.codePrefix
-            }
-          });
-          throw new LicenseAPIError("SEAT_LIMIT_EXCEEDED", 409, "该激活码已达到设备上限。", {
-            deviceCount: license.activations.length,
-            seatLimit: license.seatLimit,
-            devices
-          });
         }
-        activation = await tx.activation.create({
-          data: {
-            licenseId: license.id,
-            installIdHash: input.installIdHash,
-            devicePublicKey: input.devicePublicKey,
-            deviceKeyThumbprint,
-            deviceLabel: input.deviceLabel,
-            appVersion: input.appVersion,
-            osVersion: input.osVersion,
-            lastSeenAt: new Date()
-          }
-        });
+      });
+      if (!token || token.consumedAt) {
+        throw new LicenseAPIError("RECOVERY_TOKEN_INVALID", 401, "找回链接无效，请重新发送邮件。");
+      }
+      if (token.expiresAt <= new Date()) {
+        throw new LicenseAPIError("RECOVERY_TOKEN_EXPIRED", 401, "找回链接已过期，请重新发送邮件。");
+      }
+      if (["refunded", "revoked", "disabled"].includes(token.license.status)) {
+        throw new LicenseAPIError("LICENSE_NOT_AVAILABLE", 403, "该授权当前不可用，如有疑问请联系支持。");
       }
 
-      const updatedLicense = license.status === "unused"
-        ? await tx.license.update({
-            where: { id: license.id },
-            data: { status: "active", activatedAt: license.activatedAt ?? new Date() }
-          })
-        : license;
-
-      const issued = await this.certificates.issue({
-        license: updatedLicense,
-        activation,
-        customerEmailHash: emailHash,
-        tx
+      const result = await this.activateAuthorized(
+        tx,
+        token.license,
+        token.requestEmailHash,
+        input,
+        deviceKeyThumbprint,
+        "recovery",
+      );
+      const consumed = await tx.licenseRecoveryToken.updateMany({
+        where: { id: token.id, consumedAt: null },
+        data: { consumedAt: new Date() }
       });
-
-      await tx.licenseEvent.create({
-        data: {
-          licenseId: license.id,
-          activationId: activation.id,
-          eventType: "activation_success",
-          eventSource: "api",
-          emailHash,
-          codePrefix: license.codePrefix
-        }
-      });
-
-      const deviceCount = await tx.activation.count({ where: { licenseId: license.id, status: "active" } });
-
-      return {
-        activationId: activation.id,
-        licenseCertificate: issued.certificate,
-        refreshAfter: issued.refreshAfter.toISOString(),
-        expiresAt: issued.expiresAt.toISOString(),
-        graceUntil: issued.graceUntil.toISOString(),
-        deviceCount,
-        seatLimit: updatedLicense.seatLimit,
-        serverTime: issued.issuedAt.toISOString()
-      };
-    });
+      if (consumed.count !== 1) {
+        throw new LicenseAPIError("RECOVERY_TOKEN_INVALID", 401, "找回链接无效，请重新发送邮件。");
+      }
+      return result;
+    }, { isolationLevel: "Serializable" });
   }
 
   async createRefreshChallenge(activationId: string): Promise<{
@@ -452,9 +409,176 @@ export class ActivationService {
     });
   }
 
-  async recover(email: string): Promise<void> {
-    const emailHash = hashEmail(this.config.licenseCodePepper, normalizeEmail(email));
-    await this.audit.record({ eventType: "license_recover_requested", emailHash });
+  private async activateAuthorized(
+    tx: Prisma.TransactionClient,
+    license: AuthorizedLicense,
+    emailHash: string,
+    input: ActivationDeviceInput,
+    deviceKeyThumbprint: string,
+    credentialSource: "license_code" | "recovery",
+  ): Promise<ActivationResult> {
+    const now = new Date();
+    const activeForInstall = license.activations.find((item) => item.installIdHash === input.installIdHash);
+    let activation: Activation;
+    let replacedActivationId: string | undefined;
+
+    if (activeForInstall?.deviceKeyThumbprint === deviceKeyThumbprint) {
+      activation = await tx.activation.update({
+        where: { id: activeForInstall.id },
+        data: {
+          lastSeenAt: now,
+          appVersion: input.appVersion,
+          osVersion: input.osVersion,
+          deviceLabel: input.deviceLabel,
+        },
+      });
+    } else if (activeForInstall) {
+      const replacementId = randomUUID();
+      await tx.activation.update({
+        where: { id: activeForInstall.id },
+        data: {
+          status: "stale",
+          deactivatedAt: now,
+          deactivatedReason: "device_key_replaced",
+          replacedByActivationId: replacementId,
+        },
+      });
+      activation = await tx.activation.create({
+        data: this.activationData(replacementId, license.id, input, deviceKeyThumbprint, now),
+      });
+      replacedActivationId = activeForInstall.id;
+    } else if (input.replaceActivationId) {
+      const target = license.activations.find((item) => item.id === input.replaceActivationId);
+      if (!target) {
+        throw new LicenseAPIError("DEVICE_NOT_REPLACEABLE", 409, "所选设备已停用，请刷新设备列表后重试。");
+      }
+      const replacementId = randomUUID();
+      await tx.activation.update({
+        where: { id: target.id },
+        data: {
+          status: "deactivated",
+          deactivatedAt: now,
+          deactivatedReason: "seat_replaced",
+          replacedByActivationId: replacementId,
+        },
+      });
+      activation = await tx.activation.create({
+        data: this.activationData(replacementId, license.id, input, deviceKeyThumbprint, now),
+      });
+      replacedActivationId = target.id;
+      await tx.licenseEvent.create({
+        data: {
+          licenseId: license.id,
+          activationId: target.id,
+          eventType: "device_replaced",
+          eventSource: "api",
+          metadataJson: { replacementActivationId: replacementId },
+        },
+      });
+    } else {
+      if (license.activations.length >= license.seatLimit) {
+        throw new LicenseAPIError("SEAT_LIMIT_EXCEEDED", 409, "该激活码已达到设备上限。", {
+          deviceCount: license.activations.length,
+          seatLimit: license.seatLimit,
+          devices: license.activations.map((item) => ({
+            activationId: item.id,
+            deviceLabel: item.deviceLabel,
+            platform: item.platform,
+            appVersion: item.appVersion,
+            activatedAt: item.activatedAt.toISOString(),
+            lastSeenAt: item.lastSeenAt?.toISOString() ?? null,
+          })),
+        });
+      }
+      activation = await tx.activation.create({
+        data: this.activationData(randomUUID(), license.id, input, deviceKeyThumbprint, now),
+      });
+    }
+
+    const updatedLicense = license.status === "unused"
+      ? await tx.license.update({
+          where: { id: license.id },
+          data: { status: "active", activatedAt: license.activatedAt ?? now },
+        })
+      : license;
+    const issued = await this.certificates.issue({
+      license: updatedLicense,
+      activation,
+      customerEmailHash: emailHash,
+      tx,
+    });
+    await tx.licenseEvent.create({
+      data: {
+        licenseId: license.id,
+        activationId: activation.id,
+        eventType: "activation_success",
+        eventSource: "api",
+        emailHash,
+        codePrefix: license.codePrefix,
+        metadataJson: {
+          credentialSource,
+          ...(replacedActivationId ? { replacedActivationId } : {}),
+        },
+      },
+    });
+    const deviceCount = await tx.activation.count({ where: { licenseId: license.id, status: "active" } });
+    return {
+      activationId: activation.id,
+      licenseCertificate: issued.certificate,
+      refreshAfter: issued.refreshAfter.toISOString(),
+      expiresAt: issued.expiresAt.toISOString(),
+      graceUntil: issued.graceUntil.toISOString(),
+      deviceCount,
+      seatLimit: updatedLicense.seatLimit,
+      serverTime: issued.issuedAt.toISOString(),
+    };
+  }
+
+  private activationData(
+    id: string,
+    licenseId: string,
+    input: ActivationDeviceInput,
+    deviceKeyThumbprint: string,
+    now: Date,
+  ): Prisma.ActivationUncheckedCreateInput {
+    return {
+      id,
+      licenseId,
+      installIdHash: input.installIdHash,
+      devicePublicKey: input.devicePublicKey,
+      deviceKeyThumbprint,
+      deviceLabel: input.deviceLabel,
+      platform: "macos",
+      appVersion: input.appVersion,
+      osVersion: input.osVersion,
+      lastSeenAt: now,
+    };
+  }
+
+  private async rejectReplayedProof(nonceHash: string, deviceKeyThumbprint: string): Promise<void> {
+    const reusedNonce = await this.prisma.activateProofNonce.findUnique({
+      where: { nonceHash_deviceKeyThumbprint: { nonceHash, deviceKeyThumbprint } },
+    });
+    if (reusedNonce) throw new LicenseAPIError("ACTIVATE_PROOF_REPLAYED", 401, "无法验证当前设备，请重试。");
+  }
+
+  private async consumeProofNonce(
+    tx: Prisma.TransactionClient,
+    nonceHash: string,
+    deviceKeyThumbprint: string,
+  ): Promise<void> {
+    try {
+      await tx.activateProofNonce.create({
+        data: {
+          nonceHash,
+          deviceKeyThumbprint,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000),
+          consumedAt: new Date(),
+        },
+      });
+    } catch {
+      throw new LicenseAPIError("ACTIVATE_PROOF_REPLAYED", 401, "无法验证当前设备，请重试。");
+    }
   }
 
   private async withDeviceChallenge<T>(

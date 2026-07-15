@@ -39,7 +39,7 @@ export function buildServices(prisma: PrismaClient, config: AppConfig) {
     rateLimit: new RateLimitService(config.rateLimitEnabled),
     certificates,
     deviceProof,
-    activation: new ActivationService(prisma, config, audit, certificates, deviceProof),
+    activation: new ActivationService(prisma, config, audit, certificates, deviceProof, recovery),
     licenses,
     commerceFulfillment,
     commerceInbox,
@@ -64,6 +64,7 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
       level: process.env.LOG_LEVEL ?? "info",
       redact: [
         "req.body.licenseCode",
+        "req.body.recoveryToken",
         "req.body.deviceProof.signature",
         "req.body.signature",
         "licenseCode",

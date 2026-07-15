@@ -38,7 +38,8 @@ describe("license device management routes", () => {
     await app.close();
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: { code: "INVALID_REQUEST", message: "请求格式不正确。" } });
+    expect(response.json()).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST", message: "请求格式不正确。" } });
+    expect(response.json().requestId).toBeTruthy();
   });
 
   it("lists devices without sensitive fields", async () => {
@@ -120,5 +121,45 @@ describe("license device management routes", () => {
       targetActivationId: "act_other",
       reason: "user_requested"
     }));
+  });
+
+  it("returns seat conflict details under error.data with a request id", async () => {
+    const activate = vi.fn(async () => {
+      throw new LicenseAPIError("SEAT_LIMIT_EXCEEDED", 409, "该激活码已达到设备上限。", {
+        deviceCount: 2,
+        seatLimit: 2,
+        devices: [{ activationId: "act_old", deviceLabel: "Office Mac", platform: "macos" }],
+      });
+    });
+    const app = await buildTestApp({ activate });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/licenses/activate",
+      payload: {
+        email: "buyer@example.com",
+        licenseCode: "PS-2345-6789-ABCD-EFGH-JKLM",
+        installIdHash: "i".repeat(20),
+        devicePublicKey: "p".repeat(40),
+        deviceProof: {
+          version: "PromptStudio-Activate-Proof-v1",
+          clientNonce: "n".repeat(20),
+          createdAt: new Date().toISOString(),
+          signature: "s".repeat(40),
+        },
+        deviceLabel: "New Mac",
+        bundleId: "com.creatigo.promptstudio",
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "SEAT_LIMIT_EXCEEDED",
+        data: { deviceCount: 2, seatLimit: 2, devices: [{ activationId: "act_old" }] },
+      },
+    });
+    expect(response.json().deviceCount).toBeUndefined();
+    expect(response.json().requestId).toBeTruthy();
   });
 });
