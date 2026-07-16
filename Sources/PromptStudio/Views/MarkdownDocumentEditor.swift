@@ -245,8 +245,12 @@ final class MarkdownEditorContainerView: NSView {
             height: bounds.height
         )
         textView.frame.size.width = scrollView.contentSize.width
+        let availableTextWidth = max(
+            0,
+            scrollView.contentSize.width - textView.textContainerInset.width * 2
+        )
         textView.textContainer?.containerSize = NSSize(
-            width: scrollView.contentSize.width,
+            width: availableTextWidth,
             height: CGFloat.greatestFiniteMagnitude
         )
         gutterView.needsDisplay = true

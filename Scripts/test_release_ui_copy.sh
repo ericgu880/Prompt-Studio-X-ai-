@@ -80,4 +80,12 @@ if [[ $(/usr/bin/grep -c '\.studioTopTrailingCloseButton' \
     exit 1
 fi
 
+MARKDOWN_EDITOR_FILE="$ROOT_DIR/Sources/PromptStudio/Views/MarkdownDocumentEditor.swift"
+if ! /usr/bin/grep -q 'let availableTextWidth = max(' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'scrollView.contentSize.width - textView.textContainerInset.width \* 2' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'width: availableTextWidth' "$MARKDOWN_EDITOR_FILE"; then
+    echo "Markdown preview must wrap inside the visible viewport after subtracting both text insets." >&2
+    exit 1
+fi
+
 echo "Release UI copy tests passed"
