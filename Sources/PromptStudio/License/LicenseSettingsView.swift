@@ -15,6 +15,7 @@ struct LicenseSettingsView: View {
     @State private var isRepairingKeychain = false
     @State private var message: String?
     @State private var confirmsCurrentDeviceDeactivation = false
+    @State private var confirmsFreshLicenseIdentity = false
 
     @ViewBuilder
     var body: some View {
@@ -61,6 +62,17 @@ struct LicenseSettingsView: View {
             if token != nil {
                 openPendingRecoveryIfNeeded()
             }
+        }
+        .confirmationDialog(
+            "创建新的 License 身份？",
+            isPresented: $confirmsFreshLicenseIdentity
+        ) {
+            Button("保留旧记录并重新激活") {
+                recover(.newIdentityAndReactivate)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("不读取或删除旧 License，不影响本地资料库。原激活和试用不会复制，需要联网重新激活，并且不会获得新的试用期。")
         }
     }
 
@@ -113,12 +125,23 @@ struct LicenseSettingsView: View {
     private var actionsPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             if needsKeychainRepair {
-                licenseActionRow("钥匙串访问", detail: "执行一次修复，保留原设备身份和激活状态。") {
-                    Button(isRepairingKeychain ? "修复中" : "修复访问") {
-                        repairKeychainAccess()
+                licenseActionRow(
+                    "钥匙串访问",
+                    detail: "旧 License 由 macOS 分别保护。保留迁移可能出现多个系统授权框；创建新身份不会读取旧记录，需要重新激活。"
+                ) {
+                    HStack(spacing: 8) {
+                        Button(isRepairingKeychain ? "迁移中" : "保留并迁移") {
+                            recover(.preserveAndMigrate)
+                        }
+                        .buttonStyle(CapsuleButtonStyle())
+                        .disabled(isRepairingKeychain)
+
+                        Button("创建新身份") {
+                            confirmsFreshLicenseIdentity = true
+                        }
+                        .buttonStyle(CapsuleButtonStyle(filled: true))
+                        .disabled(isRepairingKeychain)
                     }
-                    .buttonStyle(CapsuleButtonStyle(filled: true))
-                    .disabled(isRepairingKeychain)
                 }
             }
             licenseActionRow("激活码", detail: "输入购买邮箱和激活码。") {
@@ -245,13 +268,22 @@ struct LicenseSettingsView: View {
         }
     }
 
-    private func repairKeychainAccess() {
+    private func recover(_ option: LicenseRecoveryOption) {
         isRepairingKeychain = true
         defer { isRepairingKeychain = false }
         do {
-            try state.licenseManager.repairKeychainAccess()
+            try state.licenseManager.recoverLicense(using: option)
             message = nil
-            state.showToast("License 钥匙串访问已恢复")
+            if state.licenseManager.recoveryPhase == .reactivationRequired {
+                route = .activation(recoveryToken: nil)
+                state.showToast(
+                    option == .newIdentityAndReactivate
+                        ? "新的 License 身份已建立，请重新激活"
+                        : "旧 License 已保留，请重新激活"
+                )
+            } else {
+                state.showToast("License 钥匙串访问已恢复")
+            }
         } catch {
             message = error.localizedDescription
         }
@@ -1129,7 +1161,6 @@ struct FeatureDeniedSheet: View {
     @EnvironmentObject private var state: AppState
     let decision: FeatureDecision
     @State private var isRefreshing = false
-    @State private var isRepairingKeychain = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1164,12 +1195,11 @@ struct FeatureDeniedSheet: View {
                     }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
                     .disabled(isRefreshing)
-                case .repairKeychainAccess:
-                    Button(isRepairingKeychain ? "修复中" : "修复钥匙串访问") {
-                        repairKeychainAccess()
+                case .chooseKeychainRecovery, .repairKeychainAccess:
+                    Button("选择恢复方式") {
+                        state.openLicenseSettings()
                     }
                     .buttonStyle(CapsuleButtonStyle(filled: true))
-                    .disabled(isRepairingKeychain)
                 case .contactSupport:
                     Button("打开授权设置") {
                         state.openLicenseSettings()
@@ -1218,18 +1248,6 @@ struct FeatureDeniedSheet: View {
         do {
             try await state.licenseManager.forceRefresh()
             state.modal = nil
-        } catch {
-            state.modal = .error(error.localizedDescription)
-        }
-    }
-
-    private func repairKeychainAccess() {
-        isRepairingKeychain = true
-        defer { isRepairingKeychain = false }
-        do {
-            try state.licenseManager.repairKeychainAccess()
-            state.modal = nil
-            state.showToast("License 钥匙串访问已恢复")
         } catch {
             state.modal = .error(error.localizedDescription)
         }
