@@ -17,6 +17,7 @@ enum StudioColor {
     static let mutedText = Color(hex: 0x7D8187)
     static let primaryAction = Color(hex: 0xFFFFFF)
     static let primaryActionText = Color(hex: 0x0A0A0A)
+    static let sidebarCreateAction = Color(hex: 0xE8491F)
     static let blue = Color(hex: 0x0285FF)
     static let blueSoft = Color(hex: 0x0D1726)
     static let orange = Color(hex: 0xFF7A17)

@@ -208,9 +208,10 @@ final class LicenseAPIClient {
             return .invalidResponse("授权服务响应超时，请稍后重试。")
         case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
             return .invalidResponse("暂时无法连接授权服务，请稍后重试。")
-        case .secureConnectionFailed, .serverCertificateHasBadDate,
-             .serverCertificateUntrusted, .serverCertificateNotYetValid:
-            return .invalidResponse("无法建立安全连接，请检查系统时间后重试。")
+        case .secureConnectionFailed, .serverCertificateUntrusted:
+            return .invalidResponse("授权服务的安全连接失败，请稍后重试或联系支持。")
+        case .serverCertificateHasBadDate, .serverCertificateNotYetValid:
+            return .invalidResponse("系统时间可能不正确，请校准后重试；若时间无误，请联系支持。")
         case .cancelled:
             return .invalidResponse("授权请求已取消。")
         default:

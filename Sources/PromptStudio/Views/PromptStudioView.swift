@@ -1214,16 +1214,16 @@ private struct SidebarCreateButtonBody: View {
     var body: some View {
         configuration.label
             .font(StudioFont.button())
-            .foregroundStyle(StudioColor.primaryActionText)
+            .foregroundStyle(StudioColor.sidebarCreateAction)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .padding(.horizontal, 16)
             .frame(height: 34)
             .background {
                 Capsule()
-                    .fill(StudioColor.primaryAction.opacity(fillOpacity))
+                    .fill(StudioColor.sidebarCreateAction.opacity(fillOpacity))
             }
-            .overlay(Capsule().stroke(StudioColor.primaryAction.opacity(strokeOpacity), lineWidth: 1))
+            .overlay(Capsule().stroke(StudioColor.sidebarCreateAction.opacity(strokeOpacity), lineWidth: 1))
             .opacity(configuration.isPressed ? 0.86 : 1)
             .contentShape(Capsule())
             .animation(.easeInOut(duration: 0.12), value: isHovered)
@@ -1231,12 +1231,12 @@ private struct SidebarCreateButtonBody: View {
     }
 
     private var fillOpacity: Double {
-        if configuration.isPressed { return 0.80 }
-        return isHovered ? 0.92 : 1
+        if configuration.isPressed { return 0.16 }
+        return isHovered ? 0.28 : 0.20
     }
 
     private var strokeOpacity: Double {
-        isHovered ? 1 : 0.72
+        isHovered ? 0.62 : 0.40
     }
 }
 

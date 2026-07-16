@@ -45,4 +45,22 @@ if ! /usr/bin/grep -q 'isLibraryEmpty' \
     exit 1
 fi
 
+if ! /usr/bin/grep -q 'static let sidebarCreateAction = Color(hex: 0xE8491F)' \
+    "$ROOT_DIR/Sources/PromptStudio/Theme.swift" || \
+   ! /usr/bin/grep -q 'StudioColor.sidebarCreateAction' \
+    "$ROOT_DIR/Sources/PromptStudio/Views/PromptStudioView.swift"; then
+    echo "The sidebar create CTA must keep its established orange accent instead of the white primary action token." >&2
+    exit 1
+fi
+
+if /usr/bin/grep -q '无法建立安全连接，请检查系统时间后重试' \
+    "$ROOT_DIR/Sources/PromptStudio/License/LicenseAPIClient.swift" || \
+   ! /usr/bin/grep -q '授权服务的安全连接失败，请稍后重试或联系支持' \
+    "$ROOT_DIR/Sources/PromptStudio/License/LicenseAPIClient.swift" || \
+   ! /usr/bin/grep -q '系统时间可能不正确，请校准后重试' \
+    "$ROOT_DIR/Sources/PromptStudio/License/LicenseAPIClient.swift"; then
+    echo "License TLS failures must distinguish service failures from certificate date errors." >&2
+    exit 1
+fi
+
 echo "Release UI copy tests passed"
