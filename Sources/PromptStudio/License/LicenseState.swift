@@ -67,6 +67,7 @@ enum LimitedReason: Equatable {
     case revoked
     case refreshRequired
     case clockInvalid
+    case reactivationRequiredAfterKeychainRecovery
     case keychainAccessRequired
     case keychainUnavailable(String)
 
@@ -88,6 +89,8 @@ enum LimitedReason: Equatable {
             "需要联网刷新授权。"
         case .clockInvalid:
             "检测到系统时间异常。"
+        case .reactivationRequiredAfterKeychainRecovery:
+            "已建立新的 License 身份；原激活和试用未复制，请重新激活。"
         case .keychainAccessRequired:
             "需要授权 PromptStudio 读取原有 License 钥匙串记录。"
         case .keychainUnavailable(let message):
@@ -160,6 +163,7 @@ enum UpgradeAction: Equatable {
     case activate
     case buyPro
     case refreshLicense
+    case chooseKeychainRecovery
     case repairKeychainAccess
     case contactSupport
 }

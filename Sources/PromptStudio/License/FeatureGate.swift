@@ -27,6 +27,8 @@ struct FeatureGate {
                 return denied(feature, reason: .keychainAccessRequired)
             case .keychainUnavailable:
                 return denied(feature, reason: .keychainUnavailable)
+            case .reactivationRequiredAfterKeychainRecovery:
+                return deniedAfterKeychainRecovery(feature)
             case .noLicense, .trialExpired, .invalidCertificate, .deviceMismatch, .clockInvalid:
                 return denied(feature, reason: .licenseRequired)
             }
@@ -66,8 +68,8 @@ struct FeatureGate {
             action = .activate
         case .keychainAccessRequired:
             title = "需要恢复 License 钥匙串访问"
-            message = "PromptStudio 检测到旧版本保存的授权记录。请执行一次修复以保留当前设备身份和激活状态。"
-            action = .repairKeychainAccess
+            message = "PromptStudio 检测到旧版本保存的授权记录。请先选择保留迁移或创建新的 License 身份。"
+            action = .chooseKeychainRecovery
         case .keychainUnavailable:
             title = "License 钥匙串不可用"
             message = "PromptStudio 无法读取本机 License 数据。请先检查登录钥匙串状态；现有资料库不会受影响。"
@@ -84,6 +86,17 @@ struct FeatureGate {
             title: title,
             message: message,
             primaryAction: action
+        )
+    }
+
+    private func deniedAfterKeychainRecovery(_ feature: FeatureKey) -> FeatureDecision {
+        FeatureDecision(
+            allowed: false,
+            feature: feature,
+            reason: .licenseRequired,
+            title: "需要重新激活 PromptStudio Pro",
+            message: "已建立新的 License 身份；原激活和试用未复制，请联网重新激活。",
+            primaryAction: .activate
         )
     }
 

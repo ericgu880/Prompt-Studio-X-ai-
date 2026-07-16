@@ -241,6 +241,7 @@ private final class RecordingLicenseStore: LicenseStore {
     var values: [String: Data] = [:]
     var legacyMigrationRequired = false
     var preparationError: LicenseError?
+    var freshVaultCreationFailure: RecordingStoreFailure?
     var deleteFailureKey: KeychainLicenseStore.Key?
     private(set) var reads: [KeychainLicenseStore.Key] = []
     private(set) var saves: [KeychainLicenseStore.Key] = []
@@ -263,9 +264,29 @@ private final class RecordingLicenseStore: LicenseStore {
         }
         legacyMigrations += 1
         legacyMigrationRequired = false
+        if values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] == nil {
+            let hasTrustedTrialStart: Bool
+            if let data = values[KeychainLicenseStore.Key.trialStartedAt.rawValue],
+               let raw = String(data: data, encoding: .utf8) {
+                hasTrustedTrialStart = ISO8601DateFormatter().date(from: raw) != nil
+            } else {
+                hasTrustedTrialStart = false
+            }
+            let marker = LicenseRecoveryMarker(
+                version: 1,
+                mode: .migratedExisting,
+                createdAt: Date(),
+                blocksTrialBootstrap: !hasTrustedTrialStart
+            )
+            values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] =
+                try JSONEncoder().encode(marker)
+        }
     }
 
     func createFreshVaultForReactivation(now: Date) throws {
+        if let freshVaultCreationFailure {
+            throw freshVaultCreationFailure
+        }
         freshVaultCreationDates.append(now)
         let marker = LicenseRecoveryMarker(
             version: 1,
@@ -370,10 +391,16 @@ private enum LicenseKeychainRegressionTests {
         try deviceIdentityDoesNotRewriteDerivedPublicKey()
         try trialStateReadsItsKeyOnce()
         try launchAccessFailureDoesNotCreateTrialOrIdentity()
+        try freshRecoveryRequiresReactivationWithoutStartingTrial()
+        try launchWithRecoveryMarkerNeverRestartsTrial()
+        try failedFreshRecoveryKeepsTheChoiceState()
         try nonInteractiveKeychainFailuresAreNotReportedAsRepairable()
         try legacyIdentityAloneRequiresRepairAtLaunch()
         try repairRunsOneInteractiveSessionAndReloadsState()
+        try preservationRecoveryWithoutTrialDoesNotIssueANewTrial()
         try featureGateOffersKeychainRepair()
+        try await activationFailureKeepsRecoveryBlocked()
+        try await successfulActivationCompletesRecovery()
         try releaseRuntimeConfigurationFailsClosed()
         try lifetimeLicensePresentationBuildsTrust()
         try await serverRevocationPersistsUntilAValidReactivation()
@@ -1412,8 +1439,90 @@ private enum LicenseKeychainRegressionTests {
         guard manager.state == .limited(reason: .keychainAccessRequired) else {
             throw Failure("launch access failure must surface a repairable limited state")
         }
+        guard manager.recoveryPhase == .choiceRequired else {
+            throw Failure("launch access failure must expose the explicit recovery choice")
+        }
         guard store.saves.isEmpty else {
             throw Failure("launch access failure must not create a trial or device identity")
+        }
+    }
+
+    @MainActor
+    private static func freshRecoveryRequiresReactivationWithoutStartingTrial() throws {
+        let store = RecordingLicenseStore()
+        store.legacyMigrationRequired = true
+        let manager = LicenseManager(store: store)
+
+        try manager.recoverLicense(using: .newIdentityAndReactivate)
+
+        guard manager.state == .limited(
+            reason: .reactivationRequiredAfterKeychainRecovery
+        ), manager.recoveryPhase == .reactivationRequired else {
+            throw Failure("B recovery must enter a persistent reactivation-required state")
+        }
+        guard store.freshVaultCreationDates.count == 1,
+              store.interactiveRuns == 0,
+              store.legacyMigrations == 0,
+              store.values[KeychainLicenseStore.Key.trialStartedAt.rawValue] == nil,
+              store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] != nil else {
+            throw Failure("B recovery must create only a recovery marker without Trial or legacy access")
+        }
+        let decision = manager.featureGate.evaluate(.proEditPrompt)
+        guard decision.primaryAction == .activate,
+              decision.message?.contains("原激活和试用未复制") == true else {
+            throw Failure("recovered identities must route Pro features to reactivation")
+        }
+    }
+
+    @MainActor
+    private static func launchWithRecoveryMarkerNeverRestartsTrial() throws {
+        let store = RecordingLicenseStore()
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .newIdentity,
+            createdAt: Date(timeIntervalSince1970: 1_752_624_000),
+            blocksTrialBootstrap: true
+        )
+        store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] =
+            try JSONEncoder().encode(marker)
+
+        let manager = LicenseManager(store: store)
+
+        guard manager.state == .limited(
+            reason: .reactivationRequiredAfterKeychainRecovery
+        ), manager.recoveryPhase == .reactivationRequired else {
+            throw Failure("a recovery marker must remain blocked after relaunch")
+        }
+        guard !store.saves.contains(.trialStartedAt),
+              store.values[KeychainLicenseStore.Key.trialStartedAt.rawValue] == nil else {
+            throw Failure("a recovery marker must prevent Trial bootstrap on every relaunch")
+        }
+    }
+
+    @MainActor
+    private static func failedFreshRecoveryKeepsTheChoiceState() throws {
+        let store = RecordingLicenseStore()
+        store.legacyMigrationRequired = true
+        store.freshVaultCreationFailure = RecordingStoreFailure(
+            message: "injected fresh Vault failure"
+        )
+        let manager = LicenseManager(store: store)
+
+        do {
+            try manager.recoverLicense(using: .newIdentityAndReactivate)
+            throw Failure("fresh Vault errors must propagate")
+        } catch is RecordingStoreFailure {
+            // Expected: the user can explicitly retry either recovery option.
+        }
+
+        guard case .failed(
+            option: .newIdentityAndReactivate,
+            message: let message
+        ) = manager.recoveryPhase,
+              message.contains("injected fresh Vault failure"),
+              manager.state == .limited(reason: .keychainAccessRequired),
+              store.interactiveRuns == 0 else {
+            throw Failure("failed B recovery must remain non-interactive and preserve the prior limited state")
         }
     }
 
@@ -1462,7 +1571,7 @@ private enum LicenseKeychainRegressionTests {
             Data(formatter.string(from: Date()).utf8)
         let manager = LicenseManager(store: store)
 
-        try manager.repairKeychainAccess()
+        try manager.recoverLicense(using: .preserveAndMigrate)
 
         guard store.interactiveRuns == 1 else {
             throw Failure("repair must use exactly one interactive authentication session")
@@ -1476,6 +1585,36 @@ private enum LicenseKeychainRegressionTests {
         guard case .trialActive = manager.state else {
             throw Failure("repair must reload license state after authentication")
         }
+        guard manager.recoveryPhase == .completed else {
+            throw Failure("successful preservation recovery must complete its state machine")
+        }
+    }
+
+    @MainActor
+    private static func preservationRecoveryWithoutTrialDoesNotIssueANewTrial() throws {
+        let store = RecordingLicenseStore()
+        store.legacyMigrationRequired = true
+        store.values[KeychainLicenseStore.Key.installId.rawValue] =
+            Data("preserved-install-id".utf8)
+        let manager = LicenseManager(store: store)
+
+        try manager.recoverLicense(using: .preserveAndMigrate)
+
+        guard manager.state == .limited(
+            reason: .reactivationRequiredAfterKeychainRecovery
+        ), manager.recoveryPhase == .reactivationRequired,
+              !store.saves.contains(.trialStartedAt),
+              let markerData = store.values[
+                  KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue
+              ],
+              let marker = try? JSONDecoder().decode(
+                  LicenseRecoveryMarker.self,
+                  from: markerData
+              ),
+              marker.mode == .migratedExisting,
+              marker.blocksTrialBootstrap else {
+            throw Failure("preservation recovery without a trusted Trial date must require reactivation")
+        }
     }
 
     private static func featureGateOffersKeychainRepair() throws {
@@ -1484,8 +1623,103 @@ private enum LicenseKeychainRegressionTests {
         ).evaluate(.proEditPrompt)
 
         guard decision.reason == .keychainAccessRequired,
-              decision.primaryAction == .repairKeychainAccess else {
-            throw Failure("keychain access failures must offer repair, not reactivation")
+              decision.primaryAction == .chooseKeychainRecovery else {
+            throw Failure("keychain access failures must open the recovery choice without touching secrets")
+        }
+    }
+
+    @MainActor
+    private static func activationFailureKeepsRecoveryBlocked() async throws {
+        let store = RecordingLicenseStore()
+        let devicePrivateKey = Curve25519.Signing.PrivateKey()
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .newIdentity,
+            createdAt: Date(),
+            blocksTrialBootstrap: true
+        )
+        store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] =
+            try JSONEncoder().encode(marker)
+        store.values[KeychainLicenseStore.Key.installId.rawValue] = Data("install-id".utf8)
+        store.values[KeychainLicenseStore.Key.devicePrivateKey.rawValue] =
+            devicePrivateKey.rawRepresentation
+        let api = LicenseAPIClient(
+            activateHandler: { _ in
+                throw LicenseError.invalidResponse("offline activation failure")
+            }
+        )
+        let manager = LicenseManager(store: store, api: api)
+
+        do {
+            try await manager.activate(email: "test@example.com", licenseCode: "TEST-CODE")
+            throw Failure("activation failure must propagate")
+        } catch LicenseError.invalidResponse(let message)
+            where message == "offline activation failure" {
+            // Expected: the marker and recovery phase remain in place.
+        }
+
+        guard manager.state == .limited(
+            reason: .reactivationRequiredAfterKeychainRecovery
+        ), manager.recoveryPhase == .reactivationRequired,
+              store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] != nil,
+              store.values[KeychainLicenseStore.Key.trialStartedAt.rawValue] == nil else {
+            throw Failure("failed activation must not clear recovery state or start Trial")
+        }
+    }
+
+    @MainActor
+    private static func successfulActivationCompletesRecovery() async throws {
+        let store = RecordingLicenseStore()
+        let devicePrivateKey = Curve25519.Signing.PrivateKey()
+        let activationId = "recovered-activation"
+        let now = Date()
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .newIdentity,
+            createdAt: now,
+            blocksTrialBootstrap: true
+        )
+        let signed = try makeSignedTestCertificate(
+            activationId: activationId,
+            devicePrivateKey: devicePrivateKey,
+            now: now
+        )
+        store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] =
+            try JSONEncoder().encode(marker)
+        store.values[KeychainLicenseStore.Key.installId.rawValue] = Data("install-id".utf8)
+        store.values[KeychainLicenseStore.Key.devicePrivateKey.rawValue] =
+            devicePrivateKey.rawRepresentation
+        let api = LicenseAPIClient(
+            activateHandler: { _ in
+                LicenseAPIClient.ActivateResponse(
+                    ok: true,
+                    activationId: activationId,
+                    licenseCertificate: signed.certificate,
+                    refreshAfter: now.addingTimeInterval(3_600),
+                    expiresAt: now.addingTimeInterval(86_400),
+                    graceUntil: now.addingTimeInterval(172_800),
+                    deviceCount: 1,
+                    seatLimit: 1,
+                    serverTime: now
+                )
+            }
+        )
+        let manager = LicenseManager(
+            store: store,
+            verifier: signed.verifier,
+            api: api
+        )
+        guard manager.recoveryPhase == .reactivationRequired else {
+            throw Failure("test setup must begin in recovery reactivation state")
+        }
+
+        try await manager.activate(email: "test@example.com", licenseCode: "TEST-CODE")
+
+        guard case .proActive = manager.state,
+              manager.recoveryPhase == .completed,
+              store.values[KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue] != nil,
+              store.values[KeychainLicenseStore.Key.trialStartedAt.rawValue] == nil else {
+            throw Failure("successful activation must complete recovery while retaining its Trial tombstone")
         }
     }
 

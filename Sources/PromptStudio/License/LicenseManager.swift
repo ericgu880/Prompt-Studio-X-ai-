@@ -6,6 +6,7 @@ import LocalAuthentication
 @MainActor
 final class LicenseManager: ObservableObject {
     @Published private(set) var state: LicenseState = .limited(reason: .noLicense)
+    @Published private(set) var recoveryPhase: LicenseRecoveryPhase = .notRequired
 
     private let store: any LicenseStore
     private let trialManager: TrialManager
@@ -44,22 +45,53 @@ final class LicenseManager: ObservableObject {
         do {
             try store.prepareForBackgroundAccess()
             state = try resolveLocalState()
+            if state == .limited(reason: .reactivationRequiredAfterKeychainRecovery) {
+                recoveryPhase = .reactivationRequired
+            } else if recoveryPhase != .completed {
+                recoveryPhase = .notRequired
+            }
         } catch LicenseError.keychainAccessRequired {
             state = .limited(reason: .keychainAccessRequired)
+            recoveryPhase = .choiceRequired
         } catch {
             state = .limited(reason: .keychainUnavailable(error.localizedDescription))
         }
     }
 
     func repairKeychainAccess() throws {
+        try recoverLicense(using: .preserveAndMigrate)
+    }
+
+    func recoverLicense(using option: LicenseRecoveryOption) throws {
         _ = beginMutation()
-        let context = LAContext()
-        context.localizedReason = "读取并保留这台 Mac 上现有的 PromptStudio License"
-        try store.withInteractiveAuthentication(context: context) {
-            try store.migrateLegacyItemsToVault()
+        recoveryPhase = .working(option)
+        do {
+            switch option {
+            case .preserveAndMigrate:
+                let context = LAContext()
+                context.localizedReason = "读取并保留这台 Mac 上现有的 PromptStudio License"
+                try store.withInteractiveAuthentication(context: context) {
+                    try store.migrateLegacyItemsToVault()
+                }
+                try store.prepareForBackgroundAccess()
+                state = try resolveLocalState()
+                recoveryPhase = state == .limited(
+                    reason: .reactivationRequiredAfterKeychainRecovery
+                ) ? .reactivationRequired : .completed
+            case .newIdentityAndReactivate:
+                try store.createFreshVaultForReactivation(now: Date())
+                state = .limited(
+                    reason: .reactivationRequiredAfterKeychainRecovery
+                )
+                recoveryPhase = .reactivationRequired
+            }
+        } catch {
+            recoveryPhase = .failed(
+                option: option,
+                message: Self.recoveryErrorMessage(error)
+            )
+            throw error
         }
-        try store.prepareForBackgroundAccess()
-        state = try resolveLocalState()
     }
 
     func activate(email: String, licenseCode: String, replacing activationId: String? = nil) async throws {
@@ -152,6 +184,7 @@ final class LicenseManager: ObservableObject {
         generation: UInt64
     ) throws {
         guard generation == mutationGeneration else { return }
+        let completesRecovery = recoveryPhase == .reactivationRequired
         _ = try verifier.verify(
             response.licenseCertificate,
             expectedActivationId: response.activationId,
@@ -166,6 +199,9 @@ final class LicenseManager: ObservableObject {
         // must not be allowed to revoke this newly established activation.
         activationEpoch &+= 1
         state = try resolveLocalState()
+        if completesRecovery {
+            recoveryPhase = .completed
+        }
     }
 
     func refreshIfNeeded() async {
@@ -360,6 +396,22 @@ final class LicenseManager: ObservableObject {
             return .limited(reason: .certificateExpired)
         }
 
+        if let markerData = try store.data(.licenseRecoveryMarker) {
+            guard let marker = try? JSONDecoder().decode(
+                LicenseRecoveryMarker.self,
+                from: markerData
+            ) else {
+                return .limited(
+                    reason: .reactivationRequiredAfterKeychainRecovery
+                )
+            }
+            if marker.blocksTrialBootstrap {
+                return .limited(
+                    reason: .reactivationRequiredAfterKeychainRecovery
+                )
+            }
+        }
+
         let trial = try trialManager.currentState(now: localNow)
         return trial.isActive ? .trialActive(daysRemaining: trial.daysRemaining) : .trialExpired
     }
@@ -477,5 +529,14 @@ final class LicenseManager: ObservableObject {
     private static func osVersionString() -> String {
         let version = ProcessInfo.processInfo.operatingSystemVersion
         return "macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    private static func recoveryErrorMessage(_ error: Error) -> String {
+        if let localized = error as? any LocalizedError,
+           let description = localized.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+        return String(describing: error)
     }
 }

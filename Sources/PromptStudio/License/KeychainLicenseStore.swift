@@ -122,11 +122,12 @@ final class KeychainLicenseStore: LicenseStore {
         }
 
         guard let highestExistingIndex, let highestRead else {
-            let values = try readAllLegacyValues()
+            var values = try readAllLegacyValues()
             guard !values.isEmpty else {
                 confirmedNoLegacyItems = true
                 return
             }
+            values = try addingMigrationMarker(to: values)
             let vault = Vault(migrationVersion: Self.currentMigrationVersion, values: values)
             try writeAndVerify(vault, service: vaultServices[0])
             preferredVaultService = vaultServices[0]
@@ -183,7 +184,7 @@ final class KeychainLicenseStore: LicenseStore {
 
         let reboundVault = Vault(
             migrationVersion: Self.currentMigrationVersion,
-            values: values
+            values: try addingMigrationMarker(to: values)
         )
         try writeAndVerify(
             reboundVault,
@@ -383,6 +384,40 @@ final class KeychainLicenseStore: LicenseStore {
         ), verified == vault else {
             throw LicenseError.keychainVaultCorrupted
         }
+    }
+
+    private func addingMigrationMarker(
+        to originalValues: [String: Data],
+        now: Date = Date()
+    ) throws -> [String: Data] {
+        if let existingData = originalValues[Key.licenseRecoveryMarker.rawValue],
+           let existingMarker = try? JSONDecoder().decode(
+               LicenseRecoveryMarker.self,
+               from: existingData
+           ), existingMarker.version == 1 {
+            return originalValues
+        }
+
+        let hasTrustedTrialStart: Bool
+        if let data = originalValues[Key.trialStartedAt.rawValue],
+           let raw = String(data: data, encoding: .utf8) {
+            hasTrustedTrialStart = ISO8601DateFormatter().date(from: raw) != nil
+        } else {
+            hasTrustedTrialStart = false
+        }
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .migratedExisting,
+            createdAt: now,
+            blocksTrialBootstrap: !hasTrustedTrialStart
+        )
+        var values = originalValues
+        do {
+            values[Key.licenseRecoveryMarker.rawValue] = try JSONEncoder().encode(marker)
+        } catch {
+            throw LicenseError.keychain("License 恢复标记编码失败。")
+        }
+        return values
     }
 
     private func writeVault(_ vault: Vault, service: String) throws {
