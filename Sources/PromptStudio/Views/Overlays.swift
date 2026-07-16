@@ -24,6 +24,10 @@ enum PreviewStepDirection: Equatable {
     case next
 }
 
+private enum ImmersivePreviewLayoutMetrics {
+    static let contentInset: CGFloat = 42
+}
+
 struct ImmersivePreviewOverlay: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
@@ -85,7 +89,7 @@ struct ImmersivePreviewOverlay: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .padding(.leading, 42)
                             .padding(.trailing, showsRail ? 18 : 34)
-                            .padding(.vertical, 42)
+                            .padding(.vertical, ImmersivePreviewLayoutMetrics.contentInset)
 
                         if showsRail {
                             PreviewThumbnailRail(
@@ -268,7 +272,7 @@ struct ImmersivePreviewOverlay: View {
             previewPromptContent
                 .frame(maxHeight: .infinity, alignment: .top)
         }
-        .padding(.top, 58)
+        .padding(.top, ImmersivePreviewLayoutMetrics.contentInset)
         .padding(.horizontal, 24)
         .padding(.bottom, 28)
     }
@@ -460,7 +464,7 @@ private struct MarkdownDocumentPreviewContent: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.leading, 42)
                         .padding(.trailing, showsRail ? 18 : 34)
-                        .padding(.vertical, 42)
+                        .padding(.vertical, ImmersivePreviewLayoutMetrics.contentInset)
 
                     if showsRail {
                         PreviewThumbnailRail(
@@ -591,7 +595,7 @@ private struct MarkdownDocumentPreviewContent: View {
 
                 documentFileInfo
             }
-            .padding(.top, 58)
+            .padding(.top, ImmersivePreviewLayoutMetrics.contentInset)
             .padding(.horizontal, 24)
             .padding(.bottom, 28)
         }

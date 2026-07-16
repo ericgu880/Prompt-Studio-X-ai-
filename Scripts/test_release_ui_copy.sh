@@ -91,6 +91,21 @@ if /usr/bin/grep -q '\.frame(width: 360)' "$PREVIEW_OVERLAY_FILE" || \
     exit 1
 fi
 
+if /usr/bin/grep -q '\.padding(\.top, 58)' "$PREVIEW_OVERLAY_FILE" || \
+   ! /usr/bin/grep -q 'static let contentInset: CGFloat = 42' "$PREVIEW_OVERLAY_FILE" || \
+   [[ $(/usr/bin/grep -c '\.padding(\.vertical, ImmersivePreviewLayoutMetrics\.contentInset)' "$PREVIEW_OVERLAY_FILE") -ne 2 ]] || \
+   [[ $(/usr/bin/grep -c '\.padding(\.top, ImmersivePreviewLayoutMetrics\.contentInset)' "$PREVIEW_OVERLAY_FILE") -ne 2 ]]; then
+    echo "Preview inspector content must align with the preview canvas top." >&2
+    exit 1
+fi
+
+SIDE_PANEL_COMPONENT_FILE="$ROOT_DIR/Sources/PromptStudio/Views/AssetSidePanelComponents.swift"
+if ! /usr/bin/grep -q 'static let overlayScrollerClearance: CGFloat = 10' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.overlayScrollerClearance' "$SIDE_PANEL_COMPONENT_FILE"; then
+    echo "Scrollable Prompt text must reserve trailing space beside the overlay scroller." >&2
+    exit 1
+fi
+
 MARKDOWN_EDITOR_FILE="$ROOT_DIR/Sources/PromptStudio/Views/MarkdownDocumentEditor.swift"
 if ! /usr/bin/grep -q 'let availableTextWidth = max(' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'scrollView.contentSize.width - textView.textContainerInset.width \* 2' "$MARKDOWN_EDITOR_FILE" || \

@@ -4,6 +4,7 @@ import PromptStudioCore
 
 enum SidePanelPromptBoxLayout {
     static let textPadding: CGFloat = 14
+    static let overlayScrollerClearance: CGFloat = 10
     static let bottomReserveAfterLastLine: CGFloat = 32
     static let copyHintHeight: CGFloat = 24
     static let copyHintOuterPadding: CGFloat = 8
@@ -310,7 +311,12 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
         scrollView.scrollerKnobStyle = .light
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsetsZero
+        scrollView.contentInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: SidePanelPromptBoxLayout.overlayScrollerClearance
+        )
         scrollView.scrollerInsets = NSEdgeInsetsZero
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.backgroundColor = .clear
