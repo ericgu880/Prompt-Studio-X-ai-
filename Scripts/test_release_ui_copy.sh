@@ -67,7 +67,8 @@ CLOSE_BUTTON_FILE="$ROOT_DIR/Sources/PromptStudio/Views/StudioCloseButton.swift"
 if [[ ! -f "$CLOSE_BUTTON_FILE" ]] || \
    ! /usr/bin/grep -q 'static let diameter: CGFloat = 34' "$CLOSE_BUTTON_FILE" || \
    ! /usr/bin/grep -q 'static let topInset: CGFloat = 24' "$CLOSE_BUTTON_FILE" || \
-   ! /usr/bin/grep -q 'static let trailingInset: CGFloat = 24' "$CLOSE_BUTTON_FILE"; then
+   ! /usr/bin/grep -q 'static let trailingInset: CGFloat = 24' "$CLOSE_BUTTON_FILE" || \
+   ! /usr/bin/grep -Fq '.ignoresSafeArea(.container, edges: [.top, .trailing])' "$CLOSE_BUTTON_FILE"; then
     echo "Page-level close buttons must share the 34pt control and 24pt top/trailing insets." >&2
     exit 1
 fi

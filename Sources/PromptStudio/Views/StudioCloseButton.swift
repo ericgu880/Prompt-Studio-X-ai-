@@ -57,6 +57,7 @@ private struct StudioTopTrailingCloseButtonModifier: ViewModifier {
                 StudioCloseButton(help: help, action: action)
                     .padding(.top, StudioCloseButtonMetrics.topInset)
                     .padding(.trailing, StudioCloseButtonMetrics.trailingInset)
+                    .ignoresSafeArea(.container, edges: [.top, .trailing])
             }
         }
     }
