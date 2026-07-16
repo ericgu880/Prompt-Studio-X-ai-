@@ -264,12 +264,30 @@ The app target currently uses Swift 5 language mode with a Swift 6.2-or-newer
 toolchain. This keeps the existing AppKit image-loading code buildable until its
 `NSImage` concurrency boundaries are migrated to Swift 6.
 
-For the one-time Keychain migration, verify that launch itself shows no password
-dialog, use **License → 修复访问**, quit and relaunch, then confirm License state is
-preserved without another dialog. The repair keeps legacy records and writes a
-single new consolidated Vault generation while retaining older generations;
-test both an existing ad-hoc Vault and the original seven-record layout before
-release.
+For License Keychain recovery, launch must never open an authentication dialog by
+itself. A denied Pro action must open **License → 钥匙串访问** and present two
+explicit choices:
+
+- **保留并迁移** may require separate macOS approval for multiple historical
+  records. It preserves every legacy item and never deletes an older Vault.
+- **创建新身份** must not read, update, or delete the legacy service or any
+  `v2...v16` Vault. It writes and verifies one randomly named Vault, preserves the
+  local library, does not copy the prior activation or Trial, does not start a new
+  Trial, and routes directly to online activation.
+
+Confirm the B dialog includes the full no-delete, no-library-impact,
+reactivation, and no-new-Trial warning. After B, quit and relaunch: the app must
+read only the active random Vault and remain in reactivation-required state until
+a valid activation succeeds. Failed or cancelled activation must not remove the
+recovery marker.
+
+Ad-hoc Debug signatures are intentionally unstable: a rebuild changes the code
+requirement and cannot prove cross-build zero-prompt behavior. Final Keychain
+acceptance therefore requires two separately built bundles signed with the same
+Developer ID Team ID. Recover with the first bundle, launch the second bundle,
+and verify that neither startup nor a Pro action presents a Keychain password
+dialog. In both runs, confirm the selected library path and resource counts are
+unchanged.
 Run notarization when Apple credentials are available. If credentials are not
 available, mark notarization as `ENVIRONMENT/SKIPPED`; do not mark the product
 failed solely because credentials are missing.
