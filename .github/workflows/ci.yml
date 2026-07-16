@@ -1,0 +1,62 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Verify Swift app and release policies
+        shell: bash
+        run: |
+          source Scripts/swift_toolchain.sh
+          SWIFT_EXEC="$(find_compatible_swift_tool swift)"
+          "$SWIFT_EXEC" build
+          "$SWIFT_EXEC" build -c release --product PromptStudio
+          "$SWIFT_EXEC" test
+          "$SWIFT_EXEC" run PromptStudioCoreUnitTests
+          "$SWIFT_EXEC" run PromptStudioSmokeTests
+          bash Scripts/test_swift_toolchain.sh
+          bash Scripts/test_license_keychain.sh
+          bash Scripts/test_codesign_policy.sh
+          bash Scripts/test_release_ui_copy.sh
+
+  license-server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: promptstudio
+          POSTGRES_PASSWORD: promptstudio
+          POSTGRES_DB: promptstudio_license_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U promptstudio -d promptstudio_license_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    defaults:
+      run:
+        working-directory: license-server
+    env:
+      DATABASE_URL: postgresql://promptstudio:promptstudio@localhost:5432/promptstudio_license_test
+      TEST_DATABASE_URL: postgresql://promptstudio:promptstudio@localhost:5432/promptstudio_license_test
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: license-server/package-lock.json
+      - run: npm ci
+      - run: npm run prisma:generate
+      - run: npm run prisma:deploy
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev
