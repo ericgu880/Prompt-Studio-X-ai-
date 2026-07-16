@@ -81,6 +81,16 @@ if [[ $(/usr/bin/grep -c '\.studioTopTrailingCloseButton' \
     exit 1
 fi
 
+PREVIEW_OVERLAY_FILE="$ROOT_DIR/Sources/PromptStudio/Views/Overlays.swift"
+PREVIEW_HOST_FILE="$ROOT_DIR/Sources/PromptStudio/Views/PromptStudioView.swift"
+if /usr/bin/grep -q '\.frame(width: 360)' "$PREVIEW_OVERLAY_FILE" || \
+   [[ $(/usr/bin/grep -c 'let inspectorWidth: CGFloat' "$PREVIEW_OVERLAY_FILE") -ne 2 ]] || \
+   [[ $(/usr/bin/grep -c '\.frame(width: inspectorWidth)' "$PREVIEW_OVERLAY_FILE") -ne 2 ]] || \
+   ! /usr/bin/grep -q 'inspectorWidth: constrainedLayout(totalWidth: proxy.size.width).inspector' "$PREVIEW_HOST_FILE"; then
+    echo "Media and Markdown previews must inherit the main layout's resolved inspector width." >&2
+    exit 1
+fi
+
 MARKDOWN_EDITOR_FILE="$ROOT_DIR/Sources/PromptStudio/Views/MarkdownDocumentEditor.swift"
 if ! /usr/bin/grep -q 'let availableTextWidth = max(' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'scrollView.contentSize.width - textView.textContainerInset.width \* 2' "$MARKDOWN_EDITOR_FILE" || \

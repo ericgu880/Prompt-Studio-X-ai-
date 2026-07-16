@@ -160,14 +160,17 @@ struct PromptStudioView: View {
             .background(StudioColor.appBackground)
 
             if state.isPreviewPresented, let item = state.selectedItem {
-                ImmersivePreviewOverlay(
-                    item: item,
-                    railItems: previewSessionSnapshot.railItems(currentID: item.id, allItems: state.items),
-                    onSelectRailItemID: selectPreviewRailItem,
-                    onNavigateStep: navigatePreviewStep
-                )
-                    .environmentObject(state)
-                    .zIndex(80)
+                GeometryReader { proxy in
+                    ImmersivePreviewOverlay(
+                        item: item,
+                        inspectorWidth: constrainedLayout(totalWidth: proxy.size.width).inspector,
+                        railItems: previewSessionSnapshot.railItems(currentID: item.id, allItems: state.items),
+                        onSelectRailItemID: selectPreviewRailItem,
+                        onNavigateStep: navigatePreviewStep
+                    )
+                        .environmentObject(state)
+                }
+                .zIndex(80)
             }
 
             if let mode = state.promptComposerMode {

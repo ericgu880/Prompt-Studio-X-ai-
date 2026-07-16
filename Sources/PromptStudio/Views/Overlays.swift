@@ -27,6 +27,7 @@ enum PreviewStepDirection: Equatable {
 struct ImmersivePreviewOverlay: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
+    let inspectorWidth: CGFloat
     let railItems: [PreviewRailItem]
     let onSelectRailItemID: (String) -> Void
     let onNavigateStep: (PreviewStepDirection) -> Void
@@ -39,11 +40,13 @@ struct ImmersivePreviewOverlay: View {
 
     init(
         item: PromptItem,
+        inspectorWidth: CGFloat,
         railItems: [PreviewRailItem] = [],
         onSelectRailItemID: @escaping (String) -> Void = { _ in },
         onNavigateStep: @escaping (PreviewStepDirection) -> Void = { _ in }
     ) {
         self.item = item
+        self.inspectorWidth = inspectorWidth
         self.railItems = railItems
         self.onSelectRailItemID = onSelectRailItemID
         self.onNavigateStep = onNavigateStep
@@ -57,6 +60,7 @@ struct ImmersivePreviewOverlay: View {
             if item.isTextDocumentLike {
                 MarkdownDocumentPreviewContent(
                     item: item,
+                    inspectorWidth: inspectorWidth,
                     railItems: railItems,
                     onSelectRailItemID: selectPreviewRailItem,
                     onNavigateStep: navigatePreviewStep
@@ -98,7 +102,7 @@ struct ImmersivePreviewOverlay: View {
                         }
 
                         previewInspector
-                            .frame(width: 360)
+                            .frame(width: inspectorWidth)
                             .frame(maxHeight: .infinity)
                             .background(StudioColor.panel.opacity(0.96))
                             .overlay(alignment: .leading) {
@@ -424,6 +428,7 @@ struct ImmersivePreviewOverlay: View {
 private struct MarkdownDocumentPreviewContent: View {
     @EnvironmentObject private var state: AppState
     let item: PromptItem
+    let inspectorWidth: CGFloat
     let railItems: [PreviewRailItem]
     let onSelectRailItemID: (String) -> Void
     let onNavigateStep: (PreviewStepDirection) -> Void
@@ -472,7 +477,7 @@ private struct MarkdownDocumentPreviewContent: View {
                     }
 
                     inspectorPane
-                        .frame(width: 360)
+                        .frame(width: inspectorWidth)
                         .frame(maxHeight: .infinity)
                         .background(StudioColor.panel.opacity(0.96))
                         .overlay(alignment: .leading) {
