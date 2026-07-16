@@ -13,6 +13,7 @@ protocol LicenseValueStore: AnyObject {
 protocol LicenseStore: LicenseValueStore {
     func prepareForBackgroundAccess() throws
     func migrateLegacyItemsToVault() throws
+    func createFreshVaultForReactivation(now: Date) throws
     func withInteractiveAuthentication(
         context: LAContext,
         _ operation: () throws -> Void
@@ -33,6 +34,8 @@ final class KeychainLicenseStore: LicenseStore {
     private let copyMatching: CopyMatching
     private let update: Update
     private let add: Add
+    private let locator: any LicenseVaultLocatorStore
+    private let makeUUID: () -> UUID
     private let backgroundContext: LAContext
     private var interactiveContext: LAContext?
     private var preferredVaultService: String?
@@ -49,6 +52,7 @@ final class KeychainLicenseStore: LicenseStore {
         case licenseRevocation = "promptstudio.licenseRevocation"
         case trialStartedAt = "promptstudio.trialStartedAt"
         case lastTrustedServerTime = "promptstudio.lastTrustedServerTime"
+        case licenseRecoveryMarker = "promptstudio.licenseRecoveryMarker"
     }
 
     private struct Vault: Codable, Equatable {
@@ -71,11 +75,15 @@ final class KeychainLicenseStore: LicenseStore {
     init(
         copyMatching: @escaping CopyMatching = SecItemCopyMatching,
         update: @escaping Update = SecItemUpdate,
-        add: @escaping Add = SecItemAdd
+        add: @escaping Add = SecItemAdd,
+        locator: any LicenseVaultLocatorStore = UserDefaultsLicenseVaultLocator(),
+        makeUUID: @escaping () -> UUID = UUID.init
     ) {
         self.copyMatching = copyMatching
         self.update = update
         self.add = add
+        self.locator = locator
+        self.makeUUID = makeUUID
         let context = LAContext()
         context.interactionNotAllowed = true
         self.backgroundContext = context
@@ -185,6 +193,43 @@ final class KeychainLicenseStore: LicenseStore {
         confirmedNoLegacyItems = true
     }
 
+    func createFreshVaultForReactivation(now: Date) throws {
+        let id = makeUUID()
+        let reference = LicenseVaultReference(
+            id: id,
+            service: "com.creatigo.promptstudio.license.vault.\(id.uuidString.lowercased())",
+            account: vaultAccount
+        )
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .newIdentity,
+            createdAt: now,
+            blocksTrialBootstrap: true
+        )
+        let markerData: Data
+        do {
+            markerData = try JSONEncoder().encode(marker)
+        } catch {
+            throw LicenseError.keychain("License 恢复标记编码失败。")
+        }
+        let vault = Vault(
+            migrationVersion: Self.currentMigrationVersion,
+            values: [Key.licenseRecoveryMarker.rawValue: markerData]
+        )
+
+        var locatorState = try locator.load()
+        locatorState.pending = reference
+        try locator.save(locatorState)
+        try addNewVaultAndVerify(vault, reference: reference)
+        locatorState.active = reference
+        locatorState.pending = nil
+        try locator.save(locatorState)
+
+        preferredVaultService = reference.service
+        discoveredLegacyKeys = []
+        confirmedNoLegacyItems = true
+    }
+
     func withInteractiveAuthentication(
         context: LAContext,
         _ operation: () throws -> Void
@@ -226,6 +271,40 @@ final class KeychainLicenseStore: LicenseStore {
     }
 
     private func readPreferredVault() throws -> LocatedVault? {
+        var locatorState = try locator.load()
+        if let active = locatorState.active {
+            guard isValidRandomVaultReference(active) else {
+                throw LicenseError.keychainVaultCorrupted
+            }
+            if locatorState.pending != nil {
+                locatorState.pending = nil
+                try locator.save(locatorState)
+            }
+            guard let vault = try readVault(
+                service: active.service,
+                account: active.account
+            ) else {
+                throw LicenseError.keychainVaultCorrupted
+            }
+            preferredVaultService = active.service
+            return LocatedVault(service: active.service, vault: vault)
+        }
+        if let pending = locatorState.pending {
+            guard isValidRandomVaultReference(pending),
+                  let vault = try readVault(
+                      service: pending.service,
+                      account: pending.account
+                  ),
+                  hasRecoveryMarker(vault) else {
+                throw LicenseError.keychainVaultCorrupted
+            }
+            locatorState.active = pending
+            locatorState.pending = nil
+            try locator.save(locatorState)
+            preferredVaultService = pending.service
+            return LocatedVault(service: pending.service, vault: vault)
+        }
+
         if let preferredVaultService,
            let vault = try readVault(service: preferredVaultService) {
             return LocatedVault(service: preferredVaultService, vault: vault)
@@ -241,7 +320,11 @@ final class KeychainLicenseStore: LicenseStore {
     }
 
     private func readVault(service: String) throws -> Vault? {
-        let repairRead = try readVaultForRepair(service: service)
+        try readVault(service: service, account: vaultAccount)
+    }
+
+    private func readVault(service: String, account: String) throws -> Vault? {
+        let repairRead = try readVaultForRepair(service: service, account: account)
         if repairRead.isCorrupted {
             throw LicenseError.keychainVaultCorrupted
         }
@@ -249,7 +332,13 @@ final class KeychainLicenseStore: LicenseStore {
     }
 
     private func readVaultForRepair(service: String) throws -> VaultRepairRead {
-        guard let encoded = try readItem(vaultQuery(service: service)) else {
+        try readVaultForRepair(service: service, account: vaultAccount)
+    }
+
+    private func readVaultForRepair(service: String, account: String) throws -> VaultRepairRead {
+        guard let encoded = try readItem(
+            itemQuery(service: service, account: account)
+        ) else {
             return VaultRepairRead(vault: nil, isCorrupted: false)
         }
         do {
@@ -266,6 +355,33 @@ final class KeychainLicenseStore: LicenseStore {
         try writeVault(vault, service: service)
         guard try readVault(service: service) == vault else {
             throw LicenseError.keychain("迁移后的 License Vault 校验失败。旧记录仍保留，未做删除。")
+        }
+    }
+
+    private func addNewVaultAndVerify(
+        _ vault: Vault,
+        reference: LicenseVaultReference
+    ) throws {
+        let value: Data
+        do {
+            value = try JSONEncoder().encode(vault)
+        } catch {
+            throw LicenseError.keychain("License Vault 编码失败。")
+        }
+
+        var addQuery = itemQuery(
+            service: reference.service,
+            account: reference.account
+        )
+        addQuery[kSecValueData as String] = value
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        try check(add(addQuery as CFDictionary, nil))
+
+        guard let verified = try readVault(
+            service: reference.service,
+            account: reference.account
+        ), verified == vault else {
+            throw LicenseError.keychainVaultCorrupted
         }
     }
 
@@ -360,6 +476,23 @@ final class KeychainLicenseStore: LicenseStore {
 
     private func vaultQuery(service: String) -> [String: Any] {
         itemQuery(service: service, account: vaultAccount)
+    }
+
+    private func isValidRandomVaultReference(_ reference: LicenseVaultReference) -> Bool {
+        reference.account == vaultAccount
+            && reference.service
+                == "com.creatigo.promptstudio.license.vault.\(reference.id.uuidString.lowercased())"
+    }
+
+    private func hasRecoveryMarker(_ vault: Vault) -> Bool {
+        guard let data = vault.values[Key.licenseRecoveryMarker.rawValue],
+              let marker = try? JSONDecoder().decode(
+                  LicenseRecoveryMarker.self,
+                  from: data
+              ) else {
+            return false
+        }
+        return marker.version == 1
     }
 
     private func itemQuery(service: String, account: String?) -> [String: Any] {

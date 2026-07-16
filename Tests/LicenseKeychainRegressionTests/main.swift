@@ -24,6 +24,31 @@ private struct RecordingStoreFailure: Error {
     let message: String
 }
 
+private final class RecordingVaultLocator: LicenseVaultLocatorStore, @unchecked Sendable {
+    var stored = LicenseVaultLocatorState.empty
+    private(set) var saves: [LicenseVaultLocatorState] = []
+    var failOnSaveNumber: Int?
+
+    func load() throws -> LicenseVaultLocatorState {
+        stored
+    }
+
+    func save(_ state: LicenseVaultLocatorState) throws {
+        let saveNumber = saves.count + 1
+        if failOnSaveNumber == saveNumber {
+            failOnSaveNumber = nil
+            throw RecordingStoreFailure(message: "injected locator failure")
+        }
+        stored = state
+        saves.append(state)
+    }
+}
+
+private struct DecodedLicenseVault: Codable, Equatable {
+    let migrationVersion: Int?
+    let values: [String: Data]
+}
+
 private actor AsyncOperationGate {
     private var hasStarted = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
@@ -56,6 +81,19 @@ private actor AsyncOperationGate {
 }
 
 private final class KeychainBackend {
+    enum OperationKind: Equatable {
+        case copyAttributes
+        case copyData
+        case update
+        case add
+    }
+
+    struct Operation: Equatable {
+        let service: String
+        let account: String?
+        let kind: OperationKind
+    }
+
     struct ItemKey: Hashable {
         let service: String
         let account: String
@@ -66,7 +104,9 @@ private final class KeychainBackend {
     private(set) var legacyAttributeDiscoveries = 0
     private(set) var interactiveLegacyDataReads = 0
     private(set) var invalidBulkPasswordDataQueries = 0
+    private(set) var operations: [Operation] = []
     private var backgroundRestrictedServices: Set<String> = []
+    private var corruptedDataReadServices: Set<String> = []
 
     func seedLegacy(_ key: KeychainLicenseStore.Key, value: Data) {
         items[ItemKey(service: "com.creatigo.promptstudio.license", account: key.rawValue)] = value
@@ -84,11 +124,26 @@ private final class KeychainBackend {
         }
     }
 
+    func corruptDataReads(service: String) {
+        corruptedDataReadServices.insert(service)
+    }
+
     func copyMatching(
         _ query: CFDictionary,
         _ result: UnsafeMutablePointer<CFTypeRef?>?
     ) -> OSStatus {
         let attributes = query as NSDictionary
+        let service = attributes[kSecAttrService as String] as? String ?? "<missing-service>"
+        let account = attributes[kSecAttrAccount as String] as? String
+        operations.append(
+            Operation(
+                service: service,
+                account: account,
+                kind: attributes[kSecReturnData as String] as? Bool == true
+                    ? .copyData
+                    : .copyAttributes
+            )
+        )
         if attributes[kSecReturnData as String] as? Bool == true,
            attributes[kSecMatchLimit as String] as? String == kSecMatchLimitAll as String {
             invalidBulkPasswordDataQueries += 1
@@ -119,12 +174,22 @@ private final class KeychainBackend {
         if key.service == "com.creatigo.promptstudio.license" {
             interactiveLegacyDataReads += 1
         }
-        result?.pointee = value as CFData
+        let returnedValue = corruptedDataReadServices.contains(key.service)
+            ? Data("corrupted-vault-read".utf8)
+            : value
+        result?.pointee = returnedValue as CFData
         return errSecSuccess
     }
 
     func update(_ query: CFDictionary, _ attributes: CFDictionary) -> OSStatus {
         let queryAttributes = query as NSDictionary
+        operations.append(
+            Operation(
+                service: queryAttributes[kSecAttrService as String] as? String ?? "<missing-service>",
+                account: queryAttributes[kSecAttrAccount as String] as? String,
+                kind: .update
+            )
+        )
         guard let key = itemKey(queryAttributes), items[key] != nil else {
             return errSecItemNotFound
         }
@@ -140,6 +205,13 @@ private final class KeychainBackend {
         _ result: UnsafeMutablePointer<CFTypeRef?>?
     ) -> OSStatus {
         let dictionary = attributes as NSDictionary
+        operations.append(
+            Operation(
+                service: dictionary[kSecAttrService as String] as? String ?? "<missing-service>",
+                account: dictionary[kSecAttrAccount as String] as? String,
+                kind: .add
+            )
+        )
         guard let key = itemKey(dictionary),
               let value = dictionary[kSecValueData as String] as? Data else {
             return errSecParam
@@ -174,6 +246,7 @@ private final class RecordingLicenseStore: LicenseStore {
     private(set) var saves: [KeychainLicenseStore.Key] = []
     private(set) var interactiveRuns = 0
     private(set) var legacyMigrations = 0
+    private(set) var freshVaultCreationDates: [Date] = []
     private(set) var backgroundReadsAfterMigration = 0
     private var isInteractive = false
 
@@ -190,6 +263,20 @@ private final class RecordingLicenseStore: LicenseStore {
         }
         legacyMigrations += 1
         legacyMigrationRequired = false
+    }
+
+    func createFreshVaultForReactivation(now: Date) throws {
+        freshVaultCreationDates.append(now)
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .newIdentity,
+            createdAt: now,
+            blocksTrialBootstrap: true
+        )
+        values = [
+            KeychainLicenseStore.Key.licenseRecoveryMarker.rawValue:
+                try JSONEncoder().encode(marker)
+        ]
     }
 
     func string(_ key: KeychainLicenseStore.Key) throws -> String? {
@@ -231,6 +318,22 @@ private final class RecordingLicenseStore: LicenseStore {
     }
 }
 
+private func makeKeychainStore(
+    copyMatching: @escaping KeychainLicenseStore.CopyMatching = SecItemCopyMatching,
+    update: @escaping KeychainLicenseStore.Update = SecItemUpdate,
+    add: @escaping KeychainLicenseStore.Add = SecItemAdd,
+    locator: any LicenseVaultLocatorStore = RecordingVaultLocator(),
+    makeUUID: @escaping () -> UUID = UUID.init
+) -> KeychainLicenseStore {
+    KeychainLicenseStore(
+        copyMatching: copyMatching,
+        update: update,
+        add: add,
+        locator: locator,
+        makeUUID: makeUUID
+    )
+}
+
 @main
 private enum LicenseKeychainRegressionTests {
     @MainActor
@@ -241,6 +344,13 @@ private enum LicenseKeychainRegressionTests {
         try vaultLocatorPersistsWholeStateUnderOneDataKey()
         try emptyVaultLocatorDefaultsLoadEmpty()
         try malformedVaultLocatorDataFailsClosed()
+        try freshRecoveryCreatesOnlyOneRandomVaultWithoutLegacyAccess()
+        try pendingLocatorFailurePreventsAnyKeychainMutation()
+        try failedFreshRecoveryDoesNotPublishAnActiveLocator()
+        try pendingRecoveryWithoutAVaultFailsClosed()
+        try failedFreshVaultVerificationPreservesLegacyState()
+        try activeRandomVaultIsTheOnlyServiceReadAfterRestart()
+        try missingActiveRandomVaultFailsClosedWithoutLegacyFallback()
         try backgroundReadsNeverPresentAuthenticationUI()
         try interactionRequiredHasAFirstClassError()
         try recoverableSecurityStatusesAreClassified()
@@ -429,6 +539,298 @@ private enum LicenseKeychainRegressionTests {
         try operation(defaults, suiteName)
     }
 
+    private static func freshRecoveryCreatesOnlyOneRandomVaultWithoutLegacyAccess() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.activationId, value: Data("legacy-activation".utf8))
+        backend.seedLegacy(.trialStartedAt, value: Data("2026-01-01T00:00:00Z".utf8))
+        backend.seedVault(
+            Data(#"{"migrationVersion":1,"values":{"promptstudio.installId":"b2xkLXZhdWx0"}}"#.utf8),
+            generation: 7
+        )
+        let oldItems = backend.items
+        let locator = RecordingVaultLocator()
+        let fixedID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let expectedService = "com.creatigo.promptstudio.license.vault.\(fixedID.uuidString.lowercased())"
+        let fixedDate = Date(timeIntervalSince1970: 1_752_624_000)
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator,
+            makeUUID: { fixedID }
+        )
+        let before = backend.operations.count
+
+        try store.createFreshVaultForReactivation(now: fixedDate)
+
+        let delta = Array(backend.operations.dropFirst(before))
+        let forbiddenLegacyServices = Set(
+            ["com.creatigo.promptstudio.license"]
+                + (2...16).map { "com.creatigo.promptstudio.license.v\($0)" }
+        )
+        guard delta.map(\.kind) == [.add, .copyData],
+              delta.allSatisfy({ $0.service == expectedService }),
+              delta.allSatisfy({ !forbiddenLegacyServices.contains($0.service) }) else {
+            throw Failure("B recovery may only add and verify its random Vault")
+        }
+        for (key, value) in oldItems {
+            guard backend.items[key] == value else {
+                throw Failure("B recovery must preserve every legacy License item byte-for-byte")
+            }
+        }
+
+        let reference = LicenseVaultReference(
+            id: fixedID,
+            service: expectedService,
+            account: "promptstudio.licenseVault"
+        )
+        guard locator.stored == LicenseVaultLocatorState(active: reference, pending: nil),
+              locator.saves == [
+                  LicenseVaultLocatorState(active: nil, pending: reference),
+                  LicenseVaultLocatorState(active: reference, pending: nil)
+              ] else {
+            throw Failure("B recovery must publish pending before atomically promoting the random Vault")
+        }
+        let vaultKey = KeychainBackend.ItemKey(
+            service: expectedService,
+            account: "promptstudio.licenseVault"
+        )
+        guard let encodedVault = backend.items[vaultKey],
+              let vault = try? JSONDecoder().decode(DecodedLicenseVault.self, from: encodedVault),
+              vault.migrationVersion == 1,
+              vault.values.count == 1,
+              let markerData = vault.values["promptstudio.licenseRecoveryMarker"],
+              let marker = try? JSONDecoder().decode(LicenseRecoveryMarker.self, from: markerData),
+              marker == LicenseRecoveryMarker(
+                  version: 1,
+                  mode: .newIdentity,
+                  createdAt: fixedDate,
+                  blocksTrialBootstrap: true
+              ),
+              vault.values["promptstudio.trialStartedAt"] == nil else {
+            throw Failure("a fresh B Vault must contain only the permanent Trial-blocking recovery marker")
+        }
+    }
+
+    private static func failedFreshRecoveryDoesNotPublishAnActiveLocator() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.installId, value: Data("preserved-install".utf8))
+        let originalItems = backend.items
+        let locator = RecordingVaultLocator()
+        locator.failOnSaveNumber = 2
+        let fixedID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator,
+            makeUUID: { fixedID }
+        )
+
+        do {
+            try store.createFreshVaultForReactivation(now: Date(timeIntervalSince1970: 1_752_624_000))
+            throw Failure("injected locator commit failure must abort B recovery")
+        } catch is RecordingStoreFailure {
+            // Expected: the uncommitted random Vault may remain orphaned, but never becomes active.
+        }
+
+        guard locator.stored.active == nil,
+              locator.stored.pending?.id == fixedID else {
+            throw Failure("failed recovery must not publish an active Vault")
+        }
+        for (key, value) in originalItems {
+            guard backend.items[key] == value else {
+                throw Failure("locator failure must not change preserved legacy records")
+            }
+        }
+
+        let beforeRestart = backend.operations.count
+        let restartedStore = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator
+        )
+        try restartedStore.prepareForBackgroundAccess()
+        let restartOperations = Array(backend.operations.dropFirst(beforeRestart))
+        guard locator.stored.active?.id == fixedID,
+              locator.stored.pending == nil,
+              restartOperations.count == 1,
+              restartOperations[0].service == locator.stored.active?.service else {
+            throw Failure("restart must verify and finish a pending random Vault without legacy fallback")
+        }
+    }
+
+    private static func pendingLocatorFailurePreventsAnyKeychainMutation() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.installId, value: Data("preserved-install".utf8))
+        let originalItems = backend.items
+        let locator = RecordingVaultLocator()
+        locator.failOnSaveNumber = 1
+        let fixedID = UUID(uuidString: "77777777-7777-7777-7777-777777777777")!
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator,
+            makeUUID: { fixedID }
+        )
+
+        do {
+            try store.createFreshVaultForReactivation(
+                now: Date(timeIntervalSince1970: 1_752_624_000)
+            )
+            throw Failure("pending locator failure must abort before adding a random Vault")
+        } catch is RecordingStoreFailure {
+            // Expected: no Keychain operation is allowed before pending is durable.
+        }
+
+        guard locator.stored == .empty,
+              locator.saves.isEmpty,
+              backend.operations.isEmpty,
+              backend.items == originalItems else {
+            throw Failure("pending locator failure must leave Keychain and locator state untouched")
+        }
+    }
+
+    private static func pendingRecoveryWithoutAVaultFailsClosed() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.trialStartedAt, value: Data("2026-01-01T00:00:00Z".utf8))
+        backend.seedVault(Data(#"{"migrationVersion":1,"values":{}}"#.utf8), generation: 4)
+        let fixedID = UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
+        let reference = LicenseVaultReference(
+            id: fixedID,
+            service: "com.creatigo.promptstudio.license.vault.\(fixedID.uuidString.lowercased())",
+            account: "promptstudio.licenseVault"
+        )
+        let locator = RecordingVaultLocator()
+        locator.stored = LicenseVaultLocatorState(active: nil, pending: reference)
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator
+        )
+        let before = backend.operations.count
+
+        do {
+            _ = try store.data(.licenseRecoveryMarker)
+            throw Failure("an interrupted recovery without a Vault must remain fail-closed")
+        } catch LicenseError.keychainVaultCorrupted {
+            // Expected: the pending proof remains so Trial cannot bootstrap on restart.
+        }
+
+        let delta = Array(backend.operations.dropFirst(before))
+        guard locator.stored == LicenseVaultLocatorState(active: nil, pending: reference),
+              delta.count == 1,
+              delta[0].service == reference.service else {
+            throw Failure("an incomplete pending recovery must not be cleared or fall back to old services")
+        }
+    }
+
+    private static func failedFreshVaultVerificationPreservesLegacyState() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.licenseCertificate, value: Data("old-certificate".utf8))
+        let originalItems = backend.items
+        let locator = RecordingVaultLocator()
+        let fixedID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let service = "com.creatigo.promptstudio.license.vault.\(fixedID.uuidString.lowercased())"
+        backend.corruptDataReads(service: service)
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator,
+            makeUUID: { fixedID }
+        )
+
+        do {
+            try store.createFreshVaultForReactivation(now: Date(timeIntervalSince1970: 1_752_624_000))
+            throw Failure("a random Vault that cannot be verified must not become active")
+        } catch LicenseError.keychainVaultCorrupted {
+            // Expected: verification is fail-closed.
+        }
+
+        guard locator.stored.active == nil,
+              locator.stored.pending?.id == fixedID else {
+            throw Failure("failed Vault verification must leave only the pending locator")
+        }
+        for (key, value) in originalItems {
+            guard backend.items[key] == value else {
+                throw Failure("verification failure must preserve every old License item")
+            }
+        }
+    }
+
+    private static func activeRandomVaultIsTheOnlyServiceReadAfterRestart() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.installId, value: Data("legacy-install".utf8))
+        backend.seedVault(Data(#"{"migrationVersion":1,"values":{}}"#.utf8), generation: 12)
+        let locator = RecordingVaultLocator()
+        let fixedID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let service = "com.creatigo.promptstudio.license.vault.\(fixedID.uuidString.lowercased())"
+        let firstStore = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator,
+            makeUUID: { fixedID }
+        )
+        try firstStore.createFreshVaultForReactivation(now: Date(timeIntervalSince1970: 1_752_624_000))
+
+        let before = backend.operations.count
+        let restartedStore = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator
+        )
+        try restartedStore.prepareForBackgroundAccess()
+        guard try restartedStore.data(.licenseRecoveryMarker) != nil else {
+            throw Failure("the recovery marker must survive a new store instance")
+        }
+        let delta = Array(backend.operations.dropFirst(before))
+        guard !delta.isEmpty,
+              delta.allSatisfy({ $0.service == service && $0.kind == .copyData }) else {
+            throw Failure("an active locator must prevent every legacy and generation scan after restart")
+        }
+    }
+
+    private static func missingActiveRandomVaultFailsClosedWithoutLegacyFallback() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.trialStartedAt, value: Data("2026-01-01T00:00:00Z".utf8))
+        backend.seedVault(Data(#"{"migrationVersion":1,"values":{}}"#.utf8), generation: 16)
+        let fixedID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        let reference = LicenseVaultReference(
+            id: fixedID,
+            service: "com.creatigo.promptstudio.license.vault.\(fixedID.uuidString.lowercased())",
+            account: "promptstudio.licenseVault"
+        )
+        let locator = RecordingVaultLocator()
+        locator.stored = LicenseVaultLocatorState(active: reference, pending: nil)
+        let store = makeKeychainStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add,
+            locator: locator
+        )
+        let before = backend.operations.count
+
+        do {
+            _ = try store.data(.licenseRecoveryMarker)
+            throw Failure("a missing active random Vault must fail closed")
+        } catch LicenseError.keychainVaultCorrupted {
+            // Expected: never fall back to legacy generations.
+        }
+
+        let delta = Array(backend.operations.dropFirst(before))
+        guard delta.count == 1,
+              delta[0].service == reference.service,
+              delta[0].kind == .copyData else {
+            throw Failure("missing active locator targets must not scan any old License service")
+        }
+    }
+
     private static func releaseRuntimeConfigurationFailsClosed() throws {
         let resolved = LicenseRuntimeConfiguration.resolvedServerURL(
             allowsRuntimeOverrides: false,
@@ -457,7 +859,7 @@ private enum LicenseKeychainRegressionTests {
 
     private static func backgroundReadsNeverPresentAuthenticationUI() throws {
         let recorder = CopyMatchingRecorder()
-        let store = KeychainLicenseStore(copyMatching: recorder.call)
+        let store = makeKeychainStore(copyMatching: recorder.call)
 
         _ = try store.data(.licenseCertificate)
 
@@ -471,7 +873,7 @@ private enum LicenseKeychainRegressionTests {
     private static func interactionRequiredHasAFirstClassError() throws {
         let recorder = CopyMatchingRecorder()
         recorder.status = errSecInteractionNotAllowed
-        let store = KeychainLicenseStore(copyMatching: recorder.call)
+        let store = makeKeychainStore(copyMatching: recorder.call)
 
         do {
             _ = try store.data(.licenseCertificate)
@@ -485,7 +887,7 @@ private enum LicenseKeychainRegressionTests {
         for status in [errSecInteractionNotAllowed, errSecInteractionRequired, errSecAuthFailed] {
             let recorder = CopyMatchingRecorder()
             recorder.status = status
-            let store = KeychainLicenseStore(copyMatching: recorder.call)
+            let store = makeKeychainStore(copyMatching: recorder.call)
 
             do {
                 _ = try store.data(.licenseCertificate)
@@ -497,7 +899,7 @@ private enum LicenseKeychainRegressionTests {
 
         let interactiveRecorder = CopyMatchingRecorder()
         interactiveRecorder.status = errSecAuthFailed
-        let interactiveStore = KeychainLicenseStore(copyMatching: interactiveRecorder.call)
+        let interactiveStore = makeKeychainStore(copyMatching: interactiveRecorder.call)
         do {
             try interactiveStore.withInteractiveAuthentication(context: LAContext()) {
                 _ = try interactiveStore.data(.licenseCertificate)
@@ -512,7 +914,7 @@ private enum LicenseKeychainRegressionTests {
 
         let parameterRecorder = CopyMatchingRecorder()
         parameterRecorder.status = errSecParam
-        let parameterStore = KeychainLicenseStore(copyMatching: parameterRecorder.call)
+        let parameterStore = makeKeychainStore(copyMatching: parameterRecorder.call)
         do {
             _ = try parameterStore.data(.licenseCertificate)
             throw Failure("non-recoverable Security failures must not be swallowed")
@@ -526,7 +928,7 @@ private enum LicenseKeychainRegressionTests {
 
     private static func interactiveReadsReuseOneAuthenticationContext() throws {
         let recorder = CopyMatchingRecorder()
-        let store = KeychainLicenseStore(copyMatching: recorder.call)
+        let store = makeKeychainStore(copyMatching: recorder.call)
         let context = LAContext()
 
         try store.withInteractiveAuthentication(context: context) {
@@ -552,7 +954,7 @@ private enum LicenseKeychainRegressionTests {
     private static func legacyDiscoveryAvoidsUnsupportedBulkPasswordData() throws {
         let backend = KeychainBackend()
         backend.seedLegacy(.installId, value: Data("legacy-install-id".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -579,7 +981,7 @@ private enum LicenseKeychainRegressionTests {
         let startedAt = "2026-07-16T00:00:00Z"
         backend.seedLegacy(.trialStartedAt, value: Data(startedAt.utf8))
         backend.seedLegacy(.installId, value: Data("old-install-id".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -596,7 +998,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -621,7 +1023,7 @@ private enum LicenseKeychainRegressionTests {
     private static func aSingleLegacyRecordCanBeMigrated() throws {
         let backend = KeychainBackend()
         backend.seedLegacy(.trialStartedAt, value: Data("2026-07-16T00:00:00Z".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -631,7 +1033,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -647,7 +1049,7 @@ private enum LicenseKeychainRegressionTests {
         backend.seedVault(Data(#"{"values":{"promptstudio.installId":"bmV3LWluc3RhbGwtaWQ="}}"#.utf8))
         backend.seedLegacy(.installId, value: Data("old-install-id".utf8))
         backend.seedLegacy(.trialStartedAt, value: Data("2026-07-16T00:00:00Z".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -663,7 +1065,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -687,7 +1089,7 @@ private enum LicenseKeychainRegressionTests {
             Data(#"{"values":{"promptstudio.installId":"djMtaW5zdGFsbA=="}}"#.utf8),
             generation: 3
         )
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -703,7 +1105,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -721,7 +1123,7 @@ private enum LicenseKeychainRegressionTests {
             Data(#"{"migrationVersion":1,"values":{"promptstudio.installId":"b2xkLXNpZ25hdHVyZS1pZA=="}}"#.utf8),
             requiresInteraction: true
         )
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -737,7 +1139,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -758,7 +1160,7 @@ private enum LicenseKeychainRegressionTests {
         let corruptVault = Data("not-json".utf8)
         backend.seedVault(corruptVault)
         backend.seedLegacy(.installId, value: Data("preserved-install-id".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -774,7 +1176,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -796,7 +1198,7 @@ private enum LicenseKeychainRegressionTests {
         let backend = KeychainBackend()
         let v3Data = Data(#"{"migrationVersion":1,"values":{"promptstudio.installId":"djMtaW5zdGFsbC1pZA=="}}"#.utf8)
         backend.seedVault(v3Data, generation: 3, requiresInteraction: true)
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -812,7 +1214,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -840,7 +1242,7 @@ private enum LicenseKeychainRegressionTests {
         let corruptV3 = Data("corrupt-v3".utf8)
         backend.seedVault(v2Data, generation: 2)
         backend.seedVault(corruptV3, generation: 3)
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -856,7 +1258,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -886,7 +1288,7 @@ private enum LicenseKeychainRegressionTests {
             generation: 2
         )
         backend.seedVault(Data("corrupt-v3".utf8), generation: 3)
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -896,7 +1298,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -913,7 +1315,7 @@ private enum LicenseKeychainRegressionTests {
         backend.seedLegacy(.installId, value: Data("preserved-install".utf8))
         backend.seedLegacy(.activationId, value: Data("deactivated-id".utf8))
         backend.seedLegacy(.licenseCertificate, value: Data("stale-certificate".utf8))
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -923,7 +1325,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -945,7 +1347,7 @@ private enum LicenseKeychainRegressionTests {
             generation: 2
         )
         backend.seedVault(Data("corrupt-v3-after-deactivation".utf8), generation: 3)
-        let store = KeychainLicenseStore(
+        let store = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
@@ -955,7 +1357,7 @@ private enum LicenseKeychainRegressionTests {
             try store.migrateLegacyItemsToVault()
         }
 
-        let freshStore = KeychainLicenseStore(
+        let freshStore = makeKeychainStore(
             copyMatching: backend.copyMatching,
             update: backend.update,
             add: backend.add
