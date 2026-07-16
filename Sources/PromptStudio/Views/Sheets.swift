@@ -788,6 +788,9 @@ struct SettingsSheet: View {
         .foregroundStyle(StudioColor.text)
         .background(StudioColor.appBackground)
         .frame(width: 1180, height: 760)
+        .studioTopTrailingCloseButton(help: "关闭设置") {
+            state.modal = nil
+        }
         .onAppear {
             shortcutDraft = shortcutStore.bindings
             if let pageID = state.preferredSettingsPageID,
@@ -826,23 +829,7 @@ struct SettingsSheet: View {
     }
 
     private var settingsTopBar: some View {
-        HStack(spacing: 12) {
-            Spacer()
-            Button {
-                state.modal = nil
-            } label: {
-                Image(systemName: "xmark")
-                    .font(StudioFont.symbol(12, weight: .semibold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(StudioColor.secondaryText)
-            .background(Circle().fill(StudioColor.control))
-            .overlay(Circle().stroke(StudioColor.hairline, lineWidth: 1))
-            .contentShape(Circle())
-            .help("关闭设置")
-        }
-        .padding(.horizontal, 28)
+        Color.clear
         .frame(height: 58)
         .background(StudioColor.appBackground)
         .overlay(alignment: .bottom) {

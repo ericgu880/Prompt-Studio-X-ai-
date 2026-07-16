@@ -121,14 +121,9 @@ struct ImmersivePreviewOverlay: View {
                 }
             }
 
-            if !item.isTextDocumentLike {
-                OverlayCloseButton {
-                    state.isPreviewPresented = false
-                }
-                .padding(.top, 28)
-                .padding(.trailing, 28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
+        }
+        .studioTopTrailingCloseButton(isPresented: !item.isTextDocumentLike) {
+            state.isPreviewPresented = false
         }
         .transition(.opacity)
         .background {
@@ -488,12 +483,9 @@ private struct MarkdownDocumentPreviewContent: View {
                 }
             }
 
-            OverlayCloseButton(help: isEditing ? "取消" : "关闭") {
-                requestClose()
-            }
-            .padding(.top, 28)
-            .padding(.trailing, 28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        }
+        .studioTopTrailingCloseButton(help: isEditing ? "取消" : "关闭") {
+            requestClose()
         }
         .foregroundStyle(StudioColor.text)
         .transaction { transaction in
@@ -824,6 +816,9 @@ struct PromptComposerOverlay: View {
             EscapeKeyMonitor {
                 requestClose()
             }
+        }
+        .studioTopTrailingCloseButton {
+            requestClose()
         }
     }
 
@@ -1246,9 +1241,6 @@ struct PromptComposerOverlay: View {
                         .foregroundStyle(StudioColor.tertiaryText)
                 }
                 Spacer()
-                OverlayCloseButton {
-                    requestClose()
-                }
             }
 
             if hasMeaningfulPreviewContent {
@@ -3091,38 +3083,6 @@ private struct PreviewThumbnailRail: View {
             hoveredItemID = hovering ? railItem.id : nil
         }
         .accessibilityLabel(railItem.item.title)
-    }
-}
-
-private struct OverlayCloseButton: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var help = "关闭"
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(StudioFont.symbol(12, weight: .semibold))
-                .frame(width: 34, height: 34)
-                .background(
-                    Circle().fill(isHovered ? StudioColor.selection : StudioColor.control.opacity(0.92))
-                )
-                .overlay(
-                    Circle().stroke(
-                        isHovered ? StudioColor.primaryAction.opacity(0.42) : StudioColor.hairline,
-                        lineWidth: 1
-                    )
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .frame(width: 34, height: 34)
-        .contentShape(Circle())
-        .onHover { isHovered = $0 }
-        .scaleEffect(reduceMotion ? 1 : (isHovered ? 1.04 : 1))
-        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
-        .help(help)
     }
 }
 

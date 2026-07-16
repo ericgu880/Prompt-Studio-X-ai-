@@ -63,4 +63,21 @@ if /usr/bin/grep -q '无法建立安全连接，请检查系统时间后重试' 
     exit 1
 fi
 
+CLOSE_BUTTON_FILE="$ROOT_DIR/Sources/PromptStudio/Views/StudioCloseButton.swift"
+if [[ ! -f "$CLOSE_BUTTON_FILE" ]] || \
+   ! /usr/bin/grep -q 'static let diameter: CGFloat = 34' "$CLOSE_BUTTON_FILE" || \
+   ! /usr/bin/grep -q 'static let topInset: CGFloat = 24' "$CLOSE_BUTTON_FILE" || \
+   ! /usr/bin/grep -q 'static let trailingInset: CGFloat = 24' "$CLOSE_BUTTON_FILE"; then
+    echo "Page-level close buttons must share the 34pt control and 24pt top/trailing insets." >&2
+    exit 1
+fi
+
+if [[ $(/usr/bin/grep -c '\.studioTopTrailingCloseButton' \
+        "$ROOT_DIR/Sources/PromptStudio/Views/Overlays.swift") -ne 3 ]] || \
+   [[ $(/usr/bin/grep -c '\.studioTopTrailingCloseButton' \
+        "$ROOT_DIR/Sources/PromptStudio/Views/Sheets.swift") -ne 1 ]]; then
+    echo "Media preview, Markdown preview, Prompt composer, and Settings must use the shared close-button placement." >&2
+    exit 1
+fi
+
 echo "Release UI copy tests passed"
