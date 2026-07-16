@@ -70,7 +70,7 @@ private static func vaultLocatorRoundTripsOneAtomicState() throws {
 
 - [ ] **Step 2: Run the regression harness and verify RED**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: compilation fails because `LicenseVaultLocatorStore`, `LicenseVaultLocatorState`, and `LicenseVaultReference` do not exist.
 
 - [ ] **Step 3: Create the recovery model**
@@ -152,7 +152,7 @@ Add `LicenseVaultRecovery.swift` immediately before `KeychainLicenseStore.swift`
 
 - [ ] **Step 4: Run the regression harness and verify GREEN**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: `License keychain regression tests passed`.
 
 ### Task 2: Correct legacy discovery and Security error classification
@@ -174,7 +174,7 @@ if attributes[kSecReturnData as String] as? Bool == true,
 
 - [ ] **Step 2: Verify RED against the pre-fix implementation**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected before production correction: failure message `generic-password discovery cannot combine kSecReturnData with kSecMatchLimitAll`.
 
 - [ ] **Step 3: Implement attribute-only discovery and individual reads**
@@ -239,7 +239,7 @@ private func check(_ status: OSStatus) throws {
 
 - [ ] **Step 5: Run the regression harness**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: `License keychain regression tests passed`.
 
 ### Task 3: Create a random B Vault without touching old secrets
@@ -268,7 +268,7 @@ Also assert the generated service starts with `com.creatigo.promptstudio.license
 
 - [ ] **Step 2: Run the test and verify RED**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: failure because the current prototype scans `v2...v16` before creating a Vault.
 
 - [ ] **Step 3: Inject the locator and UUID generator**
@@ -358,7 +358,7 @@ Then create a fresh store with the same locator and assert it reads only the act
 
 - [ ] **Step 7: Run the regression harness**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: `License keychain regression tests passed`.
 
 ### Task 4: Block Trial restart and expose recovery state
@@ -375,7 +375,7 @@ Add tests that expect B recovery to produce `.limited(reason: .reactivationRequi
 
 - [ ] **Step 2: Run the test and verify RED**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: failure because the recovery-specific limited reason does not exist.
 
 - [ ] **Step 3: Add recovery state and user-facing text**
@@ -431,7 +431,7 @@ In `loadStateOnLaunch`, set `recoveryPhase = .choiceRequired` whenever backgroun
 
 - [ ] **Step 5: Run the regression harness**
 
-Run: `bash Scripts/test_license_keychain.sh`  
+Run: `bash Scripts/test_license_keychain.sh`
 Expected: `License keychain regression tests passed`.
 
 ### Task 5: Replace direct repair with a recovery choice UI
@@ -487,7 +487,7 @@ For `.chooseKeychainRecovery`, show one `选择恢复方式` button that calls `
 
 - [ ] **Step 4: Build the app**
 
-Run: `swift build` through `Scripts/swift_toolchain.sh` or `bash Scripts/build_app.sh debug`.  
+Run: `swift build` through `Scripts/swift_toolchain.sh` or `bash Scripts/build_app.sh debug`.
 Expected: build succeeds with no Swift errors.
 
 ### Task 6: Complete automated and static verification
@@ -544,7 +544,7 @@ Expected: no whitespace errors; only intended tracked files plus the user's pre-
 
 - [ ] **Step 1: Build the final Debug bundle once**
 
-Run: `bash Scripts/build_app.sh debug`  
+Run: `bash Scripts/build_app.sh debug`
 Expected: prints the exact migration-project Debug App path and passes Debug signing verification.
 
 - [ ] **Step 2: Quit only the current PromptStudio process and open the rebuilt bundle**
@@ -600,7 +600,7 @@ Do not stage the user's unrelated untracked QA documents, exports, images, or DO
 
 - [ ] **Step 3: Push the feature branch**
 
-Run: `git push origin codex/license-commercial-flow`  
+Run: `git push origin codex/license-commercial-flow`
 Expected: remote branch advances to the new commit.
 
 - [ ] **Step 4: Report the immutable constraint**
