@@ -63,7 +63,9 @@ private final class KeychainBackend {
 
     private(set) var items: [ItemKey: Data] = [:]
     private(set) var addedVaults = 0
-    private(set) var interactiveLegacyBulkReads = 0
+    private(set) var legacyAttributeDiscoveries = 0
+    private(set) var interactiveLegacyDataReads = 0
+    private(set) var invalidBulkPasswordDataQueries = 0
     private var backgroundRestrictedServices: Set<String> = []
 
     func seedLegacy(_ key: KeychainLicenseStore.Key, value: Data) {
@@ -87,18 +89,19 @@ private final class KeychainBackend {
         _ result: UnsafeMutablePointer<CFTypeRef?>?
     ) -> OSStatus {
         let attributes = query as NSDictionary
+        if attributes[kSecReturnData as String] as? Bool == true,
+           attributes[kSecMatchLimit as String] as? String == kSecMatchLimitAll as String {
+            invalidBulkPasswordDataQueries += 1
+            return errSecParam
+        }
         if attributes[kSecAttrService as String] as? String == "com.creatigo.promptstudio.license",
            attributes[kSecAttrAccount as String] == nil {
             let legacyItems = items.filter { $0.key.service == "com.creatigo.promptstudio.license" }
             guard !legacyItems.isEmpty else { return errSecItemNotFound }
-            if isBackground(attributes) {
-                return errSecInteractionNotAllowed
-            }
-            interactiveLegacyBulkReads += 1
+            legacyAttributeDiscoveries += 1
             let payload: [[String: Any]] = legacyItems.map { entry in
                 [
-                    kSecAttrAccount as String: entry.key.account,
-                    kSecValueData as String: entry.value
+                    kSecAttrAccount as String: entry.key.account
                 ]
             }
             result?.pointee = payload.count == 1
@@ -112,6 +115,9 @@ private final class KeychainBackend {
         if (key.service == "com.creatigo.promptstudio.license" || backgroundRestrictedServices.contains(key.service)),
            isBackground(attributes) {
             return errSecInteractionNotAllowed
+        }
+        if key.service == "com.creatigo.promptstudio.license" {
+            interactiveLegacyDataReads += 1
         }
         result?.pointee = value as CFData
         return errSecSuccess
@@ -237,7 +243,9 @@ private enum LicenseKeychainRegressionTests {
         try malformedVaultLocatorDataFailsClosed()
         try backgroundReadsNeverPresentAuthenticationUI()
         try interactionRequiredHasAFirstClassError()
+        try recoverableSecurityStatusesAreClassified()
         try interactiveReadsReuseOneAuthenticationContext()
+        try legacyDiscoveryAvoidsUnsupportedBulkPasswordData()
         try legacyMigrationSurvivesANewBackgroundStore()
         try aSingleLegacyRecordCanBeMigrated()
         try aPartialVaultMergesMissingLegacyValues()
@@ -473,6 +481,49 @@ private enum LicenseKeychainRegressionTests {
         }
     }
 
+    private static func recoverableSecurityStatusesAreClassified() throws {
+        for status in [errSecInteractionNotAllowed, errSecInteractionRequired, errSecAuthFailed] {
+            let recorder = CopyMatchingRecorder()
+            recorder.status = status
+            let store = KeychainLicenseStore(copyMatching: recorder.call)
+
+            do {
+                _ = try store.data(.licenseCertificate)
+                throw Failure("background Security status \(status) must require explicit recovery")
+            } catch LicenseError.keychainAccessRequired {
+                // Expected: these statuses are recoverable only through a user action.
+            }
+        }
+
+        let interactiveRecorder = CopyMatchingRecorder()
+        interactiveRecorder.status = errSecAuthFailed
+        let interactiveStore = KeychainLicenseStore(copyMatching: interactiveRecorder.call)
+        do {
+            try interactiveStore.withInteractiveAuthentication(context: LAContext()) {
+                _ = try interactiveStore.data(.licenseCertificate)
+            }
+            throw Failure("interactive authentication failure must surface the actual Security error")
+        } catch LicenseError.keychain(let message) {
+            guard message.contains("OSStatus \(errSecAuthFailed)"),
+                  message != errSecAuthFailed.description else {
+                throw Failure("interactive Security errors must include a readable message and OSStatus")
+            }
+        }
+
+        let parameterRecorder = CopyMatchingRecorder()
+        parameterRecorder.status = errSecParam
+        let parameterStore = KeychainLicenseStore(copyMatching: parameterRecorder.call)
+        do {
+            _ = try parameterStore.data(.licenseCertificate)
+            throw Failure("non-recoverable Security failures must not be swallowed")
+        } catch LicenseError.keychain(let message) {
+            guard message.contains("OSStatus \(errSecParam)"),
+                  message != errSecParam.description else {
+                throw Failure("Security failures must expose a readable message and numeric status")
+            }
+        }
+    }
+
     private static func interactiveReadsReuseOneAuthenticationContext() throws {
         let recorder = CopyMatchingRecorder()
         let store = KeychainLicenseStore(copyMatching: recorder.call)
@@ -495,6 +546,31 @@ private enum LicenseKeychainRegressionTests {
             guard !recorded.interactionNotAllowed else {
                 throw Failure("interactive reads must not reuse the background non-interactive context")
             }
+        }
+    }
+
+    private static func legacyDiscoveryAvoidsUnsupportedBulkPasswordData() throws {
+        let backend = KeychainBackend()
+        backend.seedLegacy(.installId, value: Data("legacy-install-id".utf8))
+        let store = KeychainLicenseStore(
+            copyMatching: backend.copyMatching,
+            update: backend.update,
+            add: backend.add
+        )
+
+        do {
+            try store.prepareForBackgroundAccess()
+            throw Failure("discovered legacy records must require an explicit recovery choice")
+        } catch LicenseError.keychainAccessRequired {
+            // Expected: name discovery is safe, while secret data remains unread.
+        }
+
+        guard backend.invalidBulkPasswordDataQueries == 0 else {
+            throw Failure("generic-password discovery cannot combine kSecReturnData with kSecMatchLimitAll")
+        }
+        guard backend.legacyAttributeDiscoveries == 1,
+              backend.interactiveLegacyDataReads == 0 else {
+            throw Failure("background startup must discover legacy account names without reading secrets")
         }
     }
 
@@ -533,8 +609,9 @@ private enum LicenseKeychainRegressionTests {
         guard backend.addedVaults == 1 else {
             throw Failure("legacy migration must create exactly one consolidated vault")
         }
-        guard backend.interactiveLegacyBulkReads == 1 else {
-            throw Failure("legacy records must be fetched in one interactive keychain operation")
+        guard backend.legacyAttributeDiscoveries == 1,
+              backend.interactiveLegacyDataReads == 2 else {
+            throw Failure("legacy records must be discovered once and then read account by account")
         }
         guard backend.items.keys.filter({ $0.service == "com.creatigo.promptstudio.license" }).count == 2 else {
             throw Failure("legacy records must be preserved after migration")

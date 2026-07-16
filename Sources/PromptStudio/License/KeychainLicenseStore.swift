@@ -36,6 +36,7 @@ final class KeychainLicenseStore: LicenseStore {
     private let backgroundContext: LAContext
     private var interactiveContext: LAContext?
     private var preferredVaultService: String?
+    private var discoveredLegacyKeys: [Key]?
     private var confirmedNoLegacyItems = false
     private static let currentMigrationVersion = 1
 
@@ -94,8 +95,7 @@ final class KeychainLicenseStore: LicenseStore {
             }
             throw LicenseError.keychainAccessRequired
         }
-        let legacyValues = try readAllLegacyValues()
-        if !legacyValues.isEmpty {
+        if !(try discoverLegacyKeys()).isEmpty {
             throw LicenseError.keychainAccessRequired
         }
         confirmedNoLegacyItems = true
@@ -303,42 +303,58 @@ final class KeychainLicenseStore: LicenseStore {
         return result as? Data
     }
 
-    private func readAllLegacyValues() throws -> [String: Data] {
+    private func discoverLegacyKeys() throws -> [Key] {
+        if let discoveredLegacyKeys {
+            return discoveredLegacyKeys
+        }
+
         var query = itemQuery(service: legacyService, account: nil)
         query[kSecReturnAttributes as String] = true
-        query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitAll
         var result: CFTypeRef?
         let status = copyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return [:] }
+        if status == errSecItemNotFound {
+            discoveredLegacyKeys = []
+            return []
+        }
         try check(status)
 
-        let items: [Any]
-        if let resultItems = result as? [Any] {
-            items = resultItems
-        } else if let resultItem = result as? [String: Any] {
-            items = [resultItem]
-        } else {
-            throw LicenseError.keychain("无法解析旧版 License 钥匙串记录。")
-        }
-        var values: [String: Data] = [:]
-        for case let attributes as [String: Any] in items {
-            guard let account = attributes[kSecAttrAccount as String] as? String,
-                  Key(rawValue: account) != nil,
-                  let value = attributes[kSecValueData as String] as? Data else {
-                continue
+        let items = (result as? [Any]) ?? (result.map { [$0] } ?? [])
+        let found = Set(items.compactMap { item -> Key? in
+            guard let attributes = item as? [String: Any],
+                  let account = attributes[kSecAttrAccount as String] as? String else {
+                return nil
             }
-            values[account] = value
+            return Key(rawValue: account)
+        })
+        let keys = Key.allCases.filter(found.contains)
+        discoveredLegacyKeys = keys
+        return keys
+    }
+
+    private func readAllLegacyValues() throws -> [String: Data] {
+        let keys = try discoverLegacyKeys()
+        var values: [String: Data] = [:]
+        for key in keys {
+            if let value = try readItem(
+                itemQuery(service: legacyService, account: key.rawValue)
+            ) {
+                values[key.rawValue] = value
+            }
         }
         return values
     }
 
     private func check(_ status: OSStatus) throws {
-        if status == errSecInteractionNotAllowed {
+        if status == errSecInteractionNotAllowed
+            || status == errSecInteractionRequired
+            || (status == errSecAuthFailed && interactiveContext == nil) {
             throw LicenseError.keychainAccessRequired
         }
         guard status == errSecSuccess else {
-            throw LicenseError.keychain(status.description)
+            let message = SecCopyErrorMessageString(status, nil) as String?
+                ?? "未知 Keychain 错误"
+            throw LicenseError.keychain("\(message)（OSStatus \(status)）")
         }
     }
 
