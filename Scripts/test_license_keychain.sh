@@ -16,6 +16,7 @@ mkdir -p "$OUTPUT_DIR"
     -sdk "$SDK_PATH" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseCertificate.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseState.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/License/LicenseVaultRecovery.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/KeychainLicenseStore.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseEncoding.swift" \
     "$ROOT_DIR/Sources/PromptStudio/License/LicenseDateCoding.swift" \

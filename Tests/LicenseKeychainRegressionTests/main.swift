@@ -229,6 +229,12 @@ private final class RecordingLicenseStore: LicenseStore {
 private enum LicenseKeychainRegressionTests {
     @MainActor
     static func main() async throws {
+        try recoveryDomainModelsHaveStableRepresentations()
+        try vaultLocatorRoundTripsActiveAndPending()
+        try vaultLocatorStateCanPromotePendingReference()
+        try vaultLocatorPersistsWholeStateUnderOneDataKey()
+        try emptyVaultLocatorDefaultsLoadEmpty()
+        try malformedVaultLocatorDataFailsClosed()
         try backgroundReadsNeverPresentAuthenticationUI()
         try interactionRequiredHasAFirstClassError()
         try interactiveReadsReuseOneAuthenticationContext()
@@ -257,6 +263,162 @@ private enum LicenseKeychainRegressionTests {
         try await staleRevocationCannotDeleteANewerActivation()
         try await confirmedDeactivationSurvivesANewerSameActivationMutation()
         print("License keychain regression tests passed")
+    }
+
+    private static func recoveryDomainModelsHaveStableRepresentations() throws {
+        guard LicenseRecoveryOption.preserveAndMigrate.rawValue == "preserveAndMigrate",
+              LicenseRecoveryOption.newIdentityAndReactivate.rawValue == "newIdentityAndReactivate" else {
+            throw Failure("license recovery options must keep their persisted raw values")
+        }
+
+        let createdAt = Date(timeIntervalSince1970: 1_752_624_000)
+        let marker = LicenseRecoveryMarker(
+            version: 1,
+            mode: .migratedExisting,
+            createdAt: createdAt,
+            blocksTrialBootstrap: true
+        )
+        let encodedMarker = try JSONEncoder().encode(marker)
+        guard try JSONDecoder().decode(LicenseRecoveryMarker.self, from: encodedMarker) == marker else {
+            throw Failure("license recovery markers must round-trip without losing bootstrap policy")
+        }
+
+        let phases: [LicenseRecoveryPhase] = [
+            .notRequired,
+            .choiceRequired,
+            .working(.preserveAndMigrate),
+            .reactivationRequired,
+            .completed,
+            .failed(option: .newIdentityAndReactivate, message: "reactivation failed")
+        ]
+        guard phases[2] == .working(.preserveAndMigrate),
+              phases[5] == .failed(
+                  option: .newIdentityAndReactivate,
+                  message: "reactivation failed"
+              ) else {
+            throw Failure("license recovery phases must preserve their associated recovery context")
+        }
+    }
+
+    private static func vaultLocatorRoundTripsActiveAndPending() throws {
+        try withIsolatedUserDefaults { defaults, _ in
+            let expected = LicenseVaultLocatorState(
+                active: LicenseVaultReference(
+                    id: UUID(uuidString: "6A7B2E99-7D28-4E58-A056-D75C734EC971")!,
+                    service: "com.creatigo.promptstudio.license.v2",
+                    account: "promptstudio.licenseVault"
+                ),
+                pending: LicenseVaultReference(
+                    id: UUID(uuidString: "133D6CDA-5291-4598-B6A8-5DE4904A7796")!,
+                    service: "com.creatigo.promptstudio.license.v3",
+                    account: "promptstudio.pendingLicenseVault"
+                )
+            )
+            let store = UserDefaultsLicenseVaultLocator(defaults: defaults)
+
+            try store.save(expected)
+
+            guard try store.load() == expected else {
+                throw Failure("vault locator must round-trip active and pending references together")
+            }
+        }
+    }
+
+    private static func vaultLocatorPersistsWholeStateUnderOneDataKey() throws {
+        try withIsolatedUserDefaults { defaults, suiteName in
+            let store = UserDefaultsLicenseVaultLocator(defaults: defaults)
+            try store.save(
+                LicenseVaultLocatorState(
+                    active: LicenseVaultReference(
+                        id: UUID(),
+                        service: "com.creatigo.promptstudio.license.v2",
+                        account: "promptstudio.licenseVault"
+                    ),
+                    pending: nil
+                )
+            )
+            let replacement = LicenseVaultLocatorState(
+                active: LicenseVaultReference(
+                    id: UUID(),
+                    service: "com.creatigo.promptstudio.license.v3",
+                    account: "promptstudio.licenseVault"
+                ),
+                pending: LicenseVaultReference(
+                    id: UUID(),
+                    service: "com.creatigo.promptstudio.license.v4",
+                    account: "promptstudio.pendingLicenseVault"
+                )
+            )
+
+            try store.save(replacement)
+
+            let key = "PromptStudioLicenseVaultLocatorState.v1"
+            let persistedDomain = defaults.persistentDomain(forName: suiteName) ?? [:]
+            guard persistedDomain.count == 1,
+                  let encodedState = persistedDomain[key] as? Data,
+                  try JSONDecoder().decode(LicenseVaultLocatorState.self, from: encodedState) == replacement else {
+                throw Failure("vault locator updates must replace one complete encoded state under one key")
+            }
+        }
+    }
+
+    private static func vaultLocatorStateCanPromotePendingReference() throws {
+        let pending = LicenseVaultReference(
+            id: UUID(),
+            service: "com.creatigo.promptstudio.license.v3",
+            account: "promptstudio.pendingLicenseVault"
+        )
+        var state = LicenseVaultLocatorState(active: nil, pending: pending)
+
+        state.active = state.pending
+        state.pending = nil
+
+        guard state.active == pending, state.pending == nil else {
+            throw Failure("vault locator state must support promoting pending to active")
+        }
+    }
+
+    private static func emptyVaultLocatorDefaultsLoadEmpty() throws {
+        try withIsolatedUserDefaults { defaults, _ in
+            let store = UserDefaultsLicenseVaultLocator(defaults: defaults)
+
+            guard try store.load() == .empty else {
+                throw Failure("an uninitialized vault locator must load an empty state")
+            }
+        }
+    }
+
+    private static func malformedVaultLocatorDataFailsClosed() throws {
+        try withIsolatedUserDefaults { defaults, _ in
+            defaults.set(
+                Data("not valid locator JSON".utf8),
+                forKey: "PromptStudioLicenseVaultLocatorState.v1"
+            )
+            let store = UserDefaultsLicenseVaultLocator(defaults: defaults)
+            var didThrow = false
+
+            do {
+                _ = try store.load()
+            } catch {
+                didThrow = true
+            }
+
+            guard didThrow else {
+                throw Failure("malformed vault locator data must fail closed instead of loading empty")
+            }
+        }
+    }
+
+    private static func withIsolatedUserDefaults(
+        _ operation: (UserDefaults, String) throws -> Void
+    ) throws {
+        let suiteName = "LicenseKeychainRegressionTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw Failure("could not create isolated user defaults")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try operation(defaults, suiteName)
     }
 
     private static func releaseRuntimeConfigurationFailsClosed() throws {
