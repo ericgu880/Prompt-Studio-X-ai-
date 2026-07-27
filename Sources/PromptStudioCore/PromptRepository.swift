@@ -292,6 +292,28 @@ public final class PromptRepository: @unchecked Sendable {
         }
     }
 
+    public func updateItemFolders(_ items: [PromptItem]) throws {
+        guard !items.isEmpty else { return }
+        try database.transaction {
+            for item in items {
+                try database.run(
+                    """
+                    UPDATE prompt_items
+                    SET folderId = ?, folderName = ?, category = ?, updatedAt = ?
+                    WHERE id = ? AND deletedAt IS NULL;
+                    """,
+                    values: [
+                        .text(item.folderId),
+                        .text(item.folderName),
+                        .text(item.category),
+                        .text(Self.string(from: item.updatedAt)),
+                        .text(item.id)
+                    ]
+                )
+            }
+        }
+    }
+
     public func markDeleted(itemID: String, deletedAt: Date?) throws {
         try database.run(
             "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE id = ?;",

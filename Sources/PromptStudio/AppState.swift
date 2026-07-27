@@ -1565,6 +1565,10 @@ final class AppState: ObservableObject {
 
     func moveItems(_ itemIDs: [String], toFolderID folderID: String) {
         guard requireFeature(.proManageCollections) else { return }
+        guard let repository else {
+            modal = .error("资料库尚未连接")
+            return
+        }
         guard let folder = folder(withID: folderID) else {
             modal = .error("目标文件夹不存在")
             return
@@ -1586,10 +1590,13 @@ final class AppState: ObservableObject {
         }
 
         do {
-            try repository?.saveItems(plan.updatedItems)
-            folders = try repository?.loadFolders() ?? []
-            items = try repository?.loadItems() ?? []
-            tags = try repository?.loadTags() ?? []
+            try repository.updateItemFolders(plan.updatedItems)
+            let nextFolders = try repository.loadFolders()
+            let nextItems = try repository.loadItems()
+            let nextTags = try repository.loadTags()
+            folders = nextFolders
+            items = nextItems
+            tags = nextTags
 
             let retainedIDs = previousSelectedIDs.intersection(Set(filteredItems.map(\.id)))
             if !retainedIDs.isEmpty {

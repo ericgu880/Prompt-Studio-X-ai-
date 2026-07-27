@@ -314,6 +314,11 @@ func testPromptItemBatchMovePlanner() throws {
     first.folderId = "source"
     first.folderName = "Source"
 
+    var second = sampleItem(title: "Second", assetKind: .markdown, prompt: "second")
+    second.id = "second"
+    second.folderId = "source"
+    second.folderName = "Source"
+
     var already = sampleItem(title: "Already", assetKind: .video, prompt: "already")
     already.id = "already"
     already.folderId = "target"
@@ -324,23 +329,23 @@ func testPromptItemBatchMovePlanner() throws {
     deleted.deletedAt = fixedDate
 
     let plan = PromptItemBatchMovePlanner.plan(
-        items: [first, already, deleted],
-        requestedIDs: ["missing", "already", "first", "deleted", "first"],
+        items: [first, second, already, deleted],
+        requestedIDs: ["missing", "second", "already", "first", "deleted", "second", "missing"],
         targetFolderID: "target",
         targetFolderName: "Target",
         updatedAt: fixedDate
     )
 
-    try expect(plan.updatedItems.map(\.id) == ["first"], "planner should deduplicate requests and preserve their order")
-    try expect(plan.updatedItems[0].folderId == "target", "planner should assign the target folder ID")
-    try expect(plan.updatedItems[0].folderName == "Target", "planner should assign the target folder name")
-    try expect(plan.updatedItems[0].category == first.assetKind.displayName, "planner should derive category from asset kind")
-    try expect(plan.updatedItems[0].updatedAt == fixedDate, "planner should use the supplied update date")
+    try expect(plan.updatedItems.map(\.id) == ["second", "first"], "planner should deduplicate requests and preserve their requested order")
+    try expect(plan.updatedItems[1].folderId == "target", "planner should assign the target folder ID")
+    try expect(plan.updatedItems[1].folderName == "Target", "planner should assign the target folder name")
+    try expect(plan.updatedItems[1].category == first.assetKind.displayName, "planner should derive category from asset kind")
+    try expect(plan.updatedItems[1].updatedAt == fixedDate, "planner should use the supplied update date")
     try expect(plan.unchangedIDs == ["already"], "planner should report items already in the target")
-    try expect(Set(plan.ignoredIDs) == Set(["missing", "deleted"]), "planner should ignore missing and deleted items")
+    try expect(plan.ignoredIDs == ["missing", "deleted"], "planner should report ignored IDs in requested order")
 }
 
-func testPromptRepositoryBatchSaveRollsBack() throws {
+func testPromptRepositoryBatchFolderUpdateRollsBack() throws {
     let libraryURL = try temporaryLibraryURL()
     let repository = try PromptRepository(libraryURL: libraryURL)
     var first = sampleItem(title: "First", prompt: "first")
@@ -359,11 +364,11 @@ func testPromptRepositoryBatchSaveRollsBack() throws {
     let database = try SQLiteDatabase(path: databaseURL.path, mode: .existingReadWrite)
     try database.execute(
         """
-        CREATE TRIGGER abort_batch_folder_move
-        BEFORE INSERT ON prompt_items
+        CREATE TRIGGER abort_batch_folder_update
+        BEFORE UPDATE OF folderId ON prompt_items
         WHEN NEW.id = 'rollback-second' AND NEW.folderId = 'target'
         BEGIN
-            SELECT RAISE(ABORT, 'forced rollback');
+            SELECT RAISE(ABORT, 'forced folder rollback');
         END;
         """
     )
@@ -372,18 +377,68 @@ func testPromptRepositoryBatchSaveRollsBack() throws {
     first.folderName = "Target"
     second.folderId = "target"
     second.folderName = "Target"
+    var caughtError: Error?
     do {
-        try repository.saveItems([first, second])
-        throw CoreUnitTestError.failure("batch save should throw when a later item write aborts")
-    } catch CoreUnitTestError.failure {
-        throw CoreUnitTestError.failure("batch save should throw when a later item write aborts")
+        try repository.updateItemFolders([first, second])
     } catch {
-        // Expected: the trigger aborts the second insert and the repository rolls back the transaction.
+        caughtError = error
     }
+    try expect(caughtError?.localizedDescription.contains("forced folder rollback") == true, "batch folder update should expose the trigger error")
 
     let reloaded = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
     try expect(reloaded["rollback-first"]?.folderId == "source", "batch rollback should restore the first item")
     try expect(reloaded["rollback-second"]?.folderId == "source", "batch rollback should retain the second item")
+}
+
+func testPromptRepositoryFolderUpdatePreservesVersions() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    var first = sampleItem(title: "First", prompt: "first")
+    first.id = "versions-first"
+    first.versions = [PromptVersion(promptItemId: first.id, version: "V1.0", prompt: "first version")]
+    var second = sampleItem(title: "Second", prompt: "second")
+    second.id = "versions-second"
+    second.versions = [
+        PromptVersion(promptItemId: second.id, version: "V1.0", prompt: "second version"),
+        PromptVersion(promptItemId: second.id, version: "V1.1", prompt: "second revised version")
+    ]
+    try repository.saveItems([first, second])
+    let expectedVersions = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0.versions) })
+
+    first.folderId = "target"
+    first.folderName = "Target"
+    second.folderId = "target"
+    second.folderName = "Target"
+    try repository.updateItemFolders([first, second])
+
+    let reloaded = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
+    try expect(reloaded["versions-first"]?.versions == expectedVersions["versions-first"], "folder updates should preserve the first item's versions")
+    try expect(reloaded["versions-second"]?.versions == expectedVersions["versions-second"], "folder updates should preserve the second item's versions")
+}
+
+func testPromptRepositoryBatchFolderUpdatePerformanceWith1000Items() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let items = (0..<1_000).map { index -> PromptItem in
+        var item = performanceItem(index: index)
+        item.deletedAt = nil
+        return item
+    }
+    try repository.saveItems(items)
+    let movedItems = items.map { item -> PromptItem in
+        var moved = item
+        moved.folderId = "target"
+        moved.folderName = "Target"
+        moved.category = moved.assetKind.displayName
+        moved.updatedAt = Date()
+        return moved
+    }
+
+    let duration = try measurePerformance("1000-item batch folder update", threshold: 1.5) {
+        try repository.updateItemFolders(movedItems)
+    }
+    print("1000-item batch folder update: \(String(format: "%.3f", duration))s")
+
+    let movedIDs = Set(try repository.loadItems().filter { $0.folderId == "target" }.map(\.id))
+    try expect(movedIDs == Set(items.map(\.id)), "batch folder update should move every item")
 }
 
 func testFilteringPerformanceWith1000Items() throws {
@@ -1032,6 +1087,7 @@ do {
     try testFolderFilteringUsesStableFolderID()
     try testSQLiteRoundTrip()
     try testRepositoryBulkSaveLoadPerformanceWith1000Items()
+    try testPromptRepositoryBatchFolderUpdatePerformanceWith1000Items()
     try testAssetKindInferenceAndPromptParsing()
     try testAssetFormatCatalogCoversEagleMacOSFormats()
     try testAssetFormatCatalogRepresentativeMappings()
@@ -1054,7 +1110,8 @@ do {
     try testDocumentTextExtractorReadsRealDocx()
     try testAutomationServiceImportsRealDocxMetadata()
     try testAutomationServiceImportsImageMetadata()
-    try testPromptRepositoryBatchSaveRollsBack()
+    try testPromptRepositoryBatchFolderUpdateRollsBack()
+    try testPromptRepositoryFolderUpdatePreservesVersions()
     print("PromptStudioCoreUnitTests passed")
 } catch {
     fputs("PromptStudioCoreUnitTests failed: \(error.localizedDescription)\n", stderr)
