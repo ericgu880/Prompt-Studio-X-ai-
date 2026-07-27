@@ -6,6 +6,39 @@ import UniformTypeIdentifiers
 
 private let useNativeMasonryCollectionView = true
 
+private extension NSPasteboard.PasteboardType {
+    static let promptStudioItemIDs = NSPasteboard.PasteboardType(PromptItemDragPayload.pasteboardTypeIdentifier)
+}
+
+private extension UTType {
+    static let promptStudioItemIDs = UTType(importedAs: PromptItemDragPayload.pasteboardTypeIdentifier)
+}
+
+private func promptStudioPasteboardItem(itemIDs: [String]) -> NSPasteboardItem? {
+    let payload = PromptItemDragPayload(itemIDs: itemIDs)
+    guard let primaryID = payload.itemIDs.first, let data = try? payload.encoded() else { return nil }
+    let item = NSPasteboardItem()
+    item.setData(data, forType: .promptStudioItemIDs)
+    item.setString(primaryID, forType: .string)
+    return item
+}
+
+private func promptStudioItemProvider(itemIDs: [String]) -> NSItemProvider {
+    let payload = PromptItemDragPayload(itemIDs: itemIDs)
+    let provider = NSItemProvider()
+    provider.registerDataRepresentation(
+        forTypeIdentifier: PromptItemDragPayload.pasteboardTypeIdentifier,
+        visibility: .ownProcess
+    ) { completion in
+        completion(try? payload.encoded(), nil)
+        return nil
+    }
+    if let primaryID = payload.itemIDs.first {
+        provider.registerObject(primaryID as NSString, visibility: .ownProcess)
+    }
+    return provider
+}
+
 struct PromptStudioView: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var shortcutStore: AppShortcutStore
@@ -1648,7 +1681,7 @@ private struct FolderTreeRowView: View {
                 }
         )
         .onDrop(
-            of: [UTType.plainText.identifier, UTType.fileURL.identifier],
+            of: [UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier, UTType.fileURL.identifier],
             isTargeted: $isDropTargeted,
             perform: handleDrop
         )
@@ -1740,11 +1773,24 @@ private struct FolderTreeRowView: View {
             return true
         }
 
+        if let provider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(PromptItemDragPayload.pasteboardTypeIdentifier)
+        }) {
+            provider.loadDataRepresentation(forTypeIdentifier: PromptItemDragPayload.pasteboardTypeIdentifier) { data, _ in
+                guard let data, let payload = try? PromptItemDragPayload.decode(data) else { return }
+                let itemIDs = payload.itemIDs
+                Task { @MainActor in
+                    state.moveItems(itemIDs, toFolderID: row.folder.id)
+                }
+            }
+            return true
+        }
+
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
         provider.loadObject(ofClass: NSString.self) { object, _ in
             guard let itemID = object as? String else { return }
             Task { @MainActor in
-                state.moveItem(itemID, toFolderID: row.folder.id)
+                state.moveItems([itemID], toFolderID: row.folder.id)
             }
         }
         return true
@@ -2696,7 +2742,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let layout = MasonryCollectionLayout()
-        let collectionView = FlippedMasonryCollectionView(frame: .zero)
+        let collectionView = NativeMarqueeCollectionView(frame: .zero)
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = context.coordinator
         collectionView.delegate = context.coordinator
@@ -2733,6 +2779,21 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
 
         context.coordinator.collectionView = collectionView
         context.coordinator.layout = layout
+        collectionView.onBlankClick = { [weak coordinator = context.coordinator] in
+            coordinator?.clearSelectionFromBlankClick()
+        }
+        collectionView.onMarqueeBegin = { [weak coordinator = context.coordinator] _, additive in
+            coordinator?.beginMarquee(additive: additive)
+        }
+        collectionView.onMarqueeChange = { [weak coordinator = context.coordinator] rect in
+            coordinator?.updateMarquee(in: rect)
+        }
+        collectionView.onMarqueeEnd = { [weak coordinator = context.coordinator] in
+            coordinator?.endMarquee()
+        }
+        collectionView.onMarqueeCancel = { [weak coordinator = context.coordinator] in
+            coordinator?.cancelMarquee()
+        }
         context.coordinator.observeBounds(of: scrollView)
         return scrollView
     }
@@ -2776,6 +2837,11 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var pendingDatasetUpdate: PendingDatasetUpdate?
         private var isDatasetUpdateScheduled = false
         private var isInvalidated = false
+        private var marqueeBaseItemIDs: Set<String> = []
+        private var marqueeBaseFolderID: String?
+        private var marqueeBasePrimaryID: String?
+        private var isMarqueeAdditive = false
+        private var isMarqueeSelecting = false
         private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
 
         private struct PendingDatasetUpdate {
@@ -2893,6 +2959,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 return
             }
             pendingDatasetUpdate = nil
+            (collectionView as? NativeMarqueeCollectionView)?.finishMarqueeForDatasetChange()
             let start = DebugPerformanceProbe.now()
             let availableWidth = max(1, update.scrollView.contentView.bounds.width)
             let widthBucket = Self.widthBucket(for: availableWidth)
@@ -3083,6 +3150,85 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 nextFolderID: nil
             )
             lastRenderedSelectedItemIDs = state.selectedIDs
+        }
+
+        func clearSelectionFromBlankClick() {
+            let previousIDs = state?.selectedIDs ?? []
+            let previousFolderID = selectedFolderID
+            selectedFolderID = nil
+            state?.selectItems(ids: [])
+            reloadSelectionChanges(
+                previousItemIDs: previousIDs,
+                nextItemIDs: [],
+                previousFolderID: previousFolderID,
+                nextFolderID: nil
+            )
+            lastRenderedSelectedItemIDs = []
+        }
+
+        func beginMarquee(additive: Bool) {
+            marqueeBaseItemIDs = state?.selectedIDs ?? []
+            marqueeBaseFolderID = selectedFolderID
+            marqueeBasePrimaryID = state?.selectedID
+            isMarqueeAdditive = additive
+            isMarqueeSelecting = true
+            selectedFolderID = nil
+        }
+
+        func updateMarquee(in rect: CGRect) {
+            guard isMarqueeSelecting, let state, let layout else { return }
+            let hitIDs = Set(layout.indexPathsForItems(in: rect).compactMap { indexPath -> String? in
+                guard entries.indices.contains(indexPath.item),
+                      case .item(let item) = entries[indexPath.item] else { return nil }
+                return item.id
+            })
+            let nextIDs = MarqueeSelectionResolver.selection(
+                base: marqueeBaseItemIDs,
+                hits: hitIDs,
+                additive: isMarqueeAdditive
+            )
+            guard nextIDs != state.selectedIDs else { return }
+            let previousIDs = state.selectedIDs
+            let primaryID: String?
+            if isMarqueeAdditive,
+               let marqueeBasePrimaryID,
+               nextIDs.contains(marqueeBasePrimaryID) {
+                primaryID = marqueeBasePrimaryID
+            } else {
+                primaryID = layout.visualItemIDs.first(where: nextIDs.contains)
+            }
+            state.selectItems(ids: nextIDs, primaryID: primaryID)
+            reloadSelectionChanges(
+                previousItemIDs: previousIDs,
+                nextItemIDs: nextIDs,
+                previousFolderID: marqueeBaseFolderID,
+                nextFolderID: nil
+            )
+            lastRenderedSelectedItemIDs = nextIDs
+        }
+
+        func endMarquee() {
+            isMarqueeSelecting = false
+            marqueeBaseItemIDs = []
+            marqueeBaseFolderID = nil
+            marqueeBasePrimaryID = nil
+            isMarqueeAdditive = false
+        }
+
+        func cancelMarquee() {
+            guard isMarqueeSelecting, let state else { return }
+            let previousIDs = state.selectedIDs
+            let previousFolderID = selectedFolderID
+            selectedFolderID = marqueeBaseFolderID
+            state.selectItems(ids: marqueeBaseItemIDs, primaryID: marqueeBasePrimaryID)
+            reloadSelectionChanges(
+                previousItemIDs: previousIDs,
+                nextItemIDs: marqueeBaseItemIDs,
+                previousFolderID: previousFolderID,
+                nextFolderID: marqueeBaseFolderID
+            )
+            lastRenderedSelectedItemIDs = marqueeBaseItemIDs
+            endMarquee()
         }
 
         private func reloadSelectionChanges(
@@ -3354,10 +3500,6 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 }
 
-private final class FlippedMasonryCollectionView: NSCollectionView {
-    override var isFlipped: Bool { true }
-}
-
 private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
     private var hostingView: NSHostingView<AnyView>?
@@ -3417,6 +3559,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             cardView.frame = view.bounds
             cardView.configure(
                 item: item,
+                state: state,
                 isSelected: state.selectedIDs.contains(item.id),
                 selectAction: { modifiers in
                     selectItem(item, modifiers)
@@ -3583,6 +3726,8 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
     private var menuTargets: [NativeMarkdownMenuActionTarget] = []
     private var dragStartLocation: NSPoint?
     private var hasStartedDragging = false
+    private var isCardSelected = false
+    private var collapseSelectionOnMouseUp = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -3680,6 +3825,7 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
     }
 
     func setSelected(_ isSelected: Bool) {
+        isCardSelected = isSelected
         let start = DebugPerformanceProbe.now()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -3700,7 +3846,11 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
             selectAction?([])
             state?.previewSelected()
         } else {
-            selectAction?(event.modifierFlags)
+            let modifiers = event.modifierFlags.intersection([.command, .shift])
+            collapseSelectionOnMouseUp = modifiers.isEmpty && isCardSelected && (state?.selectedIDs.count ?? 0) > 1
+            if !collapseSelectionOnMouseUp {
+                selectAction?(event.modifierFlags)
+            }
         }
     }
 
@@ -3715,15 +3865,20 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(item.id, forType: .string)
+        let itemIDs = state?.orderedItemIDsForDrag(startingWith: item.id) ?? [item.id]
+        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
         draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        collapseSelectionOnMouseUp = false
         hasStartedDragging = true
         beginDraggingSession(with: [draggingItem], event: event, source: self)
     }
 
     override func mouseUp(with event: NSEvent) {
+        if collapseSelectionOnMouseUp && !hasStartedDragging {
+            selectAction?([])
+        }
+        collapseSelectionOnMouseUp = false
         dragStartLocation = nil
         hasStartedDragging = false
         super.mouseUp(with: event)
@@ -3950,12 +4105,14 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     private let editButton = NativeMarkdownIconButton(icon: .pencil, toolTip: "编辑")
     private let copyButton = NativeMarkdownIconButton(icon: .copy, toolTip: "复制文档信息")
     private var summaryLabels: [NSTextField] = []
+    private weak var state: AppState?
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
     private var isCardSelected = false
     private var draggedItemID: String?
     private var dragStartLocation: NSPoint?
     private var hasStartedDragging = false
+    private var collapseSelectionOnMouseUp = false
     private var areActionsVisible = false
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var previewAction: (() -> Void)?
@@ -3985,6 +4142,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
 
     func configure(
         item: PromptItem,
+        state: AppState,
         isSelected: Bool,
         selectAction: @escaping (NSEvent.ModifierFlags) -> Void,
         previewAction: @escaping () -> Void,
@@ -3996,6 +4154,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         trashAction: @escaping () -> Void
     ) {
         let snapshot = TextAssetCardSnapshot(item: item)
+        self.state = state
         let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
         draggedItemID = item.isDeleted ? nil : item.id
         self.selectAction = selectAction
@@ -4083,7 +4242,11 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
             selectAction?([])
             previewAction?()
         } else {
-            selectAction?(event.modifierFlags)
+            let modifiers = event.modifierFlags.intersection([.command, .shift])
+            collapseSelectionOnMouseUp = modifiers.isEmpty && isCardSelected && (state?.selectedIDs.count ?? 0) > 1
+            if !collapseSelectionOnMouseUp {
+                selectAction?(event.modifierFlags)
+            }
         }
     }
 
@@ -4097,15 +4260,20 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(draggedItemID, forType: .string)
+        let itemIDs = state?.orderedItemIDsForDrag(startingWith: draggedItemID) ?? [draggedItemID]
+        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
         draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        collapseSelectionOnMouseUp = false
         hasStartedDragging = true
         beginDraggingSession(with: [draggingItem], event: event, source: self)
     }
 
     override func mouseUp(with event: NSEvent) {
+        if collapseSelectionOnMouseUp && !hasStartedDragging {
+            selectAction?([])
+        }
+        collapseSelectionOnMouseUp = false
         dragStartLocation = nil
         hasStartedDragging = false
         super.mouseUp(with: event)
@@ -5320,12 +5488,13 @@ private final class AssetCardSelectionState: ObservableObject {
 private struct AssetCardExternalDragModifier: ViewModifier {
     let itemID: String
     let isEnabled: Bool
+    @EnvironmentObject private var state: AppState
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isEnabled {
             content.onDrag {
-                NSItemProvider(object: itemID as NSString)
+                promptStudioItemProvider(itemIDs: state.orderedItemIDsForDrag(startingWith: itemID))
             }
         } else {
             content

@@ -18,12 +18,18 @@ extract_scoped_region() {
         my ($start_pattern, $end_pattern, $label) = @ARGV;
         my @lines = <STDIN>;
         my @starts = grep { $lines[$_] =~ /$start_pattern/ } 0 .. $#lines;
-        my @ends = grep { $lines[$_] =~ /$end_pattern/ } 0 .. $#lines;
-        if (@starts != 1 || @ends != 1 || $ends[0] <= $starts[0]) {
-            print STDERR "$label start and end markers must each appear exactly once in order.\n";
+        if (@starts != 1) {
+            print STDERR "$label start marker must appear exactly once.\n";
             exit 1;
         }
-        print @lines[$starts[0] .. $ends[0] - 1];
+        my @ordered_ends = grep {
+            $_ > $starts[0] && $lines[$_] =~ /$end_pattern/
+        } 0 .. $#lines;
+        if (!@ordered_ends) {
+            print STDERR "$label must have an end marker after its start marker.\n";
+            exit 1;
+        }
+        print @lines[$starts[0] .. $ordered_ends[0] - 1];
     ' "$start_pattern" "$end_pattern" "$label" < "$file"
 }
 
@@ -132,15 +138,23 @@ run_self_tests() {
         '    let grid = NativeMarqueeCollectionView(' \
         '        frame: .zero' \
         '    )' \
+        '    let nearestRegion = true' \
         '}' \
+        'private final class MasonryCollectionLayout: NSCollectionViewLayout {}' \
+        'let outsideNearestRegion = true' \
         'private final class MasonryCollectionLayout: NSCollectionViewLayout {}' > "$fixture"
     region="$(extract_scoped_region "$fixture" \
         '^[[:space:]]*((public|private|fileprivate|internal|open)[[:space:]]+)*(struct|final[[:space:]]+class|class)[[:space:]]+MasonryCollectionGridView\b' \
         '^[[:space:]]*((public|private|fileprivate|internal|open)[[:space:]]+)*(struct|final[[:space:]]+class|class)[[:space:]]+MasonryCollectionLayout\b' \
         'MasonryCollectionGridView self-test')"
     normalized="$(printf '%s' "$region" | normalize_swift)"
-    if ! contains_normalized_token "$normalized" 'NativeMarqueeCollectionView( frame: .zero'; then
+    if ! /usr/bin/grep -Eq 'NativeMarqueeCollectionView\( ?frame: \.zero' <<<"$normalized"; then
         echo "Self-test failed: multiline NativeMarqueeCollectionView constructor was not recognized." >&2
+        exit 1
+    fi
+    if ! contains_normalized_token "$normalized" 'let nearestRegion = true' || \
+       contains_normalized_token "$normalized" 'outsideNearestRegion'; then
+        echo "Self-test failed: scoped extraction did not stop at the nearest end marker." >&2
         exit 1
     fi
 
@@ -177,25 +191,27 @@ MASONRY_GRID_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
     '^[[:space:]]*((public|private|fileprivate|internal|open)[[:space:]]+)*(struct|final[[:space:]]+class|class)[[:space:]]+MasonryCollectionLayout\b' \
     'MasonryCollectionGridView')"
 MASONRY_GRID_NORMALIZED="$(printf '%s' "$MASONRY_GRID_REGION" | normalize_swift)"
-require_normalized_token "$MASONRY_GRID_NORMALIZED" 'NativeMarqueeCollectionView( frame: .zero' \
+require_normalized_pattern "$MASONRY_GRID_NORMALIZED" 'NativeMarqueeCollectionView\( ?frame: \.zero' \
     "PromptStudioView must host NativeMarqueeCollectionView(frame: .zero)."
 require_normalized_token "$MASONRY_GRID_NORMALIZED" 'onMarqueeChange' \
     "PromptStudioView must handle native marquee selection changes."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'indexPathsForItems(in: rect)' \
+    "Native marquee selection must use indexPathsForItems(in: rect)."
 
 NATIVE_MARQUEE_REGION="$(extract_braced_declaration "$NATIVE_MARQUEE_FILE" \
     '^[[:space:]]*((public|private|fileprivate|internal|open)[[:space:]]+)*(struct|final[[:space:]]+class|class)[[:space:]]+NativeMarqueeCollectionView\b' \
     'NativeMarqueeCollectionView')"
 NATIVE_MARQUEE_NORMALIZED="$(printf '%s' "$NATIVE_MARQUEE_REGION" | normalize_swift)"
-require_normalized_token "$NATIVE_MARQUEE_NORMALIZED" 'indexPathsForItems(in: rect)' \
-    "Native marquee selection must use indexPathsForItems(in: rect)."
+require_normalized_token "$NATIVE_MARQUEE_NORMALIZED" 'onMarqueeChange' \
+    "Native marquee collection view must expose marquee callbacks."
 
 NATIVE_CARD_DRAG_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
     '^[[:space:]]*private[[:space:]]+final[[:space:]]+class[[:space:]]+NativeImageCardView\b' \
     '^[[:space:]]*private[[:space:]]+final[[:space:]]+class[[:space:]]+NativeMarkdownIconButton\b' \
     'native card drag sources')"
 NATIVE_CARD_DRAG_NORMALIZED="$(printf '%s' "$NATIVE_CARD_DRAG_REGION" | normalize_swift)"
-require_normalized_token "$NATIVE_CARD_DRAG_NORMALIZED" 'PromptItemDragPayload.pasteboardTypeIdentifier' \
-    "Native card drag sources must use PromptItemDragPayload.pasteboardTypeIdentifier."
+require_normalized_token "$NATIVE_CARD_DRAG_NORMALIZED" 'promptStudioPasteboardItem(itemIDs:' \
+    "Native card drag sources must publish the multi-item payload."
 
 SIDEBAR_DROP_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
     '^[[:space:]]*private[[:space:]]+func[[:space:]]+handleDrop\b' \
