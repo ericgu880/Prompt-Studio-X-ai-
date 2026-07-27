@@ -210,6 +210,53 @@ func testPromptSelectionResolver() throws {
     )
 }
 
+func testMarqueeSelectionResolver() throws {
+    let selectionRect = MarqueeSelectionResolver.normalizedRect(
+        from: CGPoint(x: 100, y: 80),
+        to: CGPoint(x: 20, y: 10)
+    )
+    try expect(
+        selectionRect == CGRect(x: 20, y: 10, width: 80, height: 70),
+        "marquee selection should normalize its endpoints"
+    )
+
+    let itemFrames = [
+        "image": CGRect(x: 0, y: 0, width: 40, height: 40),
+        "markdown": CGRect(x: 39, y: 39, width: 40, height: 40),
+        "outside": CGRect(x: 100, y: 100, width: 20, height: 20),
+    ]
+    let hitIDs = MarqueeSelectionResolver.hitIDs(
+        in: CGRect(x: 20, y: 20, width: 20, height: 20),
+        itemFrames: itemFrames
+    )
+    try expect(hitIDs == ["image", "markdown"], "marquee selection should include intersecting items")
+
+    let existing: Set<String> = ["existing"]
+    try expect(
+        MarqueeSelectionResolver.selection(base: existing, hits: hitIDs, additive: false) == hitIDs,
+        "non-additive marquee selection should replace the base selection"
+    )
+    try expect(
+        MarqueeSelectionResolver.selection(base: existing, hits: hitIDs, additive: true) == ["existing", "image", "markdown"],
+        "additive marquee selection should union with the base selection"
+    )
+}
+
+func testPromptItemDragPayload() throws {
+    let a = "a"
+    let b = "b"
+    let c = "c"
+    let payload = PromptItemDragPayload(itemIDs: [b, a, b, c])
+    try expect(payload.itemIDs == [b, a, c], "drag payload should preserve the first occurrence of each item ID")
+
+    let decoded = try PromptItemDragPayload.decode(payload.encoded())
+    try expect(decoded == payload, "drag payload should round-trip through JSON")
+    try expect(
+        PromptItemDragPayload.pasteboardTypeIdentifier == "com.promptstudio.internal.prompt-item-ids",
+        "drag payload should expose the internal pasteboard type identifier"
+    )
+}
+
 func testFilteringPerformanceWith1000Items() throws {
     let items = (0..<1_000).map(performanceItem(index:))
     let target = try expect(items.first { $0.title == "Forest Product Shot" } != nil, "performance fixture should include target")
@@ -841,6 +888,8 @@ do {
     try testSearchFiltering()
     try testThumbnailDecodeSizing()
     try testPromptSelectionResolver()
+    try testMarqueeSelectionResolver()
+    try testPromptItemDragPayload()
     try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
     try testPrimaryPromptAssetsAndAttachments()
