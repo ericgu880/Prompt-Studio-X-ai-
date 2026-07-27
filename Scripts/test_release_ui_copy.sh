@@ -114,6 +114,6 @@ if ! /usr/bin/grep -q 'let availableTextWidth = max(' "$MARKDOWN_EDITOR_FILE" ||
     exit 1
 fi
 
-"$ROOT_DIR/scripts/test_native_marquee_multiselect.sh"
+"$ROOT_DIR/Scripts/test_native_marquee_multiselect.sh"
 
 echo "Release UI copy tests passed"

@@ -28,6 +28,17 @@ require_pattern() {
     fi
 }
 
+require_block_fixed_text() {
+    local text="$1"
+    local block="$2"
+    local message="$3"
+
+    if ! /usr/bin/grep -Fq "$text" <<<"$block"; then
+        echo "$message" >&2
+        exit 1
+    fi
+}
+
 if [[ ! -f "$NATIVE_MARQUEE_FILE" ]]; then
     echo "Native marquee collection view source is missing: $NATIVE_MARQUEE_FILE" >&2
     exit 1
@@ -47,9 +58,17 @@ require_fixed_text 'state.moveItems(itemIDs, toFolderID: row.folder.id)' "$PROMP
 require_pattern 'func[[:space:]]+orderedItemIDsForDrag[[:space:]]*\([[:space:]]*startingWith[[:space:]]+itemID:[[:space:]]*String[[:space:]]*\)' \
     "$APP_STATE_FILE" \
     "AppState must provide orderedItemIDsForDrag(startingWith itemID: String)."
-require_pattern 'flags[[:space:]]*==[[:space:]]*\.command' "$PROMPT_STUDIO_VIEW_FILE" \
-    "DeleteSelectionKeyMonitor must only delete for an unmodified Delete key."
-require_fixed_text 'AppKitBridge.isTextInputActive()' "$PROMPT_STUDIO_VIEW_FILE" \
-    "DeleteSelectionKeyMonitor must not delete while text input is active."
+
+DELETE_SELECTION_MONITOR_BLOCK="$(/usr/bin/awk '
+    /^struct DeleteSelectionKeyMonitor:/ { in_block = 1 }
+    /^struct StandardTextEditingShortcutMonitor:/ { exit }
+    in_block { print }
+' "$PROMPT_STUDIO_VIEW_FILE")"
+require_block_fixed_text 'guard !textInputActive,' "$DELETE_SELECTION_MONITOR_BLOCK" \
+    "Batch trash must not run while text input is active."
+require_block_fixed_text 'guard flags == .command' "$DELETE_SELECTION_MONITOR_BLOCK" \
+    "Batch trash must require Command-Delete with no additional modifiers."
+require_block_fixed_text 'return event.keyCode == 51 || event.keyCode == 117' "$DELETE_SELECTION_MONITOR_BLOCK" \
+    "Batch trash must handle both Delete and Forward Delete key codes."
 
 echo "Native marquee multi-selection regression tests passed"
