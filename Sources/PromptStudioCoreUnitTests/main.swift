@@ -230,6 +230,21 @@ func testMarqueeSelectionResolver() throws {
         itemFrames: itemFrames
     )
     try expect(hitIDs == ["image", "markdown"], "marquee selection should include intersecting items")
+    try expect(
+        MarqueeSelectionResolver.hitIDs(in: selectionRect, itemFrames: [:]).isEmpty,
+        "marquee selection should not hit when there are no item frames"
+    )
+    try expect(
+        MarqueeSelectionResolver.hitIDs(in: CGRect(x: 20, y: 20, width: 0, height: 0), itemFrames: itemFrames).isEmpty,
+        "zero-area marquee selection should not hit items"
+    )
+    try expect(
+        MarqueeSelectionResolver.hitIDs(
+            in: CGRect(x: 0, y: 0, width: 40, height: 40),
+            itemFrames: ["edge": CGRect(x: 40, y: 0, width: 40, height: 40)]
+        ).isEmpty,
+        "edge-only contact should not count as an intersection"
+    )
 
     let existing: Set<String> = ["existing"]
     try expect(
@@ -240,6 +255,14 @@ func testMarqueeSelectionResolver() throws {
         MarqueeSelectionResolver.selection(base: existing, hits: hitIDs, additive: true) == ["existing", "image", "markdown"],
         "additive marquee selection should union with the base selection"
     )
+    try expect(
+        MarqueeSelectionResolver.selection(base: existing, hits: [], additive: false).isEmpty,
+        "non-additive marquee selection should replace the base selection with empty hits"
+    )
+    try expect(
+        MarqueeSelectionResolver.selection(base: existing, hits: [], additive: true) == existing,
+        "additive marquee selection should retain the base selection with empty hits"
+    )
 }
 
 func testPromptItemDragPayload() throws {
@@ -248,9 +271,36 @@ func testPromptItemDragPayload() throws {
     let c = "c"
     let payload = PromptItemDragPayload(itemIDs: [b, a, b, c])
     try expect(payload.itemIDs == [b, a, c], "drag payload should preserve the first occurrence of each item ID")
+    try expect(
+        PromptItemDragPayload(itemIDs: ["", "", ""]).itemIDs.isEmpty,
+        "drag payload should discard empty item IDs"
+    )
 
     let decoded = try PromptItemDragPayload.decode(payload.encoded())
     try expect(decoded == payload, "drag payload should round-trip through JSON")
+    let normalizedJSON = Data(#"{"version":1,"itemIDs":["","a","a","b"]}"#.utf8)
+    let directlyDecoded = try JSONDecoder().decode(PromptItemDragPayload.self, from: normalizedJSON)
+    try expect(
+        directlyDecoded.itemIDs == ["a", "b"],
+        "direct JSON decoding should normalize item IDs"
+    )
+
+    let unsupportedVersionJSON = Data(#"{"version":2,"itemIDs":["a"]}"#.utf8)
+    var staticDecodeRejected = false
+    do {
+        _ = try PromptItemDragPayload.decode(unsupportedVersionJSON)
+    } catch {
+        staticDecodeRejected = true
+    }
+    try expect(staticDecodeRejected, "static drag payload decoding should reject unsupported versions")
+
+    var directDecodeRejected = false
+    do {
+        _ = try JSONDecoder().decode(PromptItemDragPayload.self, from: unsupportedVersionJSON)
+    } catch {
+        directDecodeRejected = true
+    }
+    try expect(directDecodeRejected, "direct JSON decoding should reject unsupported versions")
     try expect(
         PromptItemDragPayload.pasteboardTypeIdentifier == "com.promptstudio.internal.prompt-item-ids",
         "drag payload should expose the internal pasteboard type identifier"

@@ -11,7 +11,8 @@ public enum MarqueeSelectionResolver {
     }
 
     public static func hitIDs(in selection: CGRect, itemFrames: [String: CGRect]) -> Set<String> {
-        Set(itemFrames.compactMap { id, frame in
+        guard !selection.isEmpty else { return [] }
+        return Set(itemFrames.compactMap { id, frame in
             selection.intersects(frame) ? id : nil
         })
     }
