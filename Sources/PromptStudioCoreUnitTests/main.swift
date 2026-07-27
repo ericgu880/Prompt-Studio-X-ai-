@@ -307,6 +307,85 @@ func testPromptItemDragPayload() throws {
     )
 }
 
+func testPromptItemBatchMovePlanner() throws {
+    let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+    var first = sampleItem(title: "First", assetKind: .image, prompt: "first")
+    first.id = "first"
+    first.folderId = "source"
+    first.folderName = "Source"
+
+    var already = sampleItem(title: "Already", assetKind: .video, prompt: "already")
+    already.id = "already"
+    already.folderId = "target"
+    already.folderName = "Target"
+
+    var deleted = sampleItem(title: "Deleted", assetKind: .audio, prompt: "deleted")
+    deleted.id = "deleted"
+    deleted.deletedAt = fixedDate
+
+    let plan = PromptItemBatchMovePlanner.plan(
+        items: [first, already, deleted],
+        requestedIDs: ["missing", "already", "first", "deleted", "first"],
+        targetFolderID: "target",
+        targetFolderName: "Target",
+        updatedAt: fixedDate
+    )
+
+    try expect(plan.updatedItems.map(\.id) == ["first"], "planner should deduplicate requests and preserve their order")
+    try expect(plan.updatedItems[0].folderId == "target", "planner should assign the target folder ID")
+    try expect(plan.updatedItems[0].folderName == "Target", "planner should assign the target folder name")
+    try expect(plan.updatedItems[0].category == first.assetKind.displayName, "planner should derive category from asset kind")
+    try expect(plan.updatedItems[0].updatedAt == fixedDate, "planner should use the supplied update date")
+    try expect(plan.unchangedIDs == ["already"], "planner should report items already in the target")
+    try expect(Set(plan.ignoredIDs) == Set(["missing", "deleted"]), "planner should ignore missing and deleted items")
+}
+
+func testPromptRepositoryBatchSaveRollsBack() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    var first = sampleItem(title: "First", prompt: "first")
+    first.id = "rollback-first"
+    first.folderId = "source"
+    first.folderName = "Source"
+    first.versions = []
+    var second = sampleItem(title: "Second", prompt: "second")
+    second.id = "rollback-second"
+    second.folderId = "source"
+    second.folderName = "Source"
+    second.versions = []
+    try repository.saveItems([first, second])
+
+    let databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path, mode: .existingReadWrite)
+    try database.execute(
+        """
+        CREATE TRIGGER abort_batch_folder_move
+        BEFORE INSERT ON prompt_items
+        WHEN NEW.id = 'rollback-second' AND NEW.folderId = 'target'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced rollback');
+        END;
+        """
+    )
+
+    first.folderId = "target"
+    first.folderName = "Target"
+    second.folderId = "target"
+    second.folderName = "Target"
+    do {
+        try repository.saveItems([first, second])
+        throw CoreUnitTestError.failure("batch save should throw when a later item write aborts")
+    } catch CoreUnitTestError.failure {
+        throw CoreUnitTestError.failure("batch save should throw when a later item write aborts")
+    } catch {
+        // Expected: the trigger aborts the second insert and the repository rolls back the transaction.
+    }
+
+    let reloaded = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
+    try expect(reloaded["rollback-first"]?.folderId == "source", "batch rollback should restore the first item")
+    try expect(reloaded["rollback-second"]?.folderId == "source", "batch rollback should retain the second item")
+}
+
 func testFilteringPerformanceWith1000Items() throws {
     let items = (0..<1_000).map(performanceItem(index:))
     let target = try expect(items.first { $0.title == "Forest Product Shot" } != nil, "performance fixture should include target")
@@ -940,6 +1019,7 @@ do {
     try testPromptSelectionResolver()
     try testMarqueeSelectionResolver()
     try testPromptItemDragPayload()
+    try testPromptItemBatchMovePlanner()
     try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
     try testPrimaryPromptAssetsAndAttachments()
@@ -974,6 +1054,7 @@ do {
     try testDocumentTextExtractorReadsRealDocx()
     try testAutomationServiceImportsRealDocxMetadata()
     try testAutomationServiceImportsImageMetadata()
+    try testPromptRepositoryBatchSaveRollsBack()
     print("PromptStudioCoreUnitTests passed")
 } catch {
     fputs("PromptStudioCoreUnitTests failed: \(error.localizedDescription)\n", stderr)

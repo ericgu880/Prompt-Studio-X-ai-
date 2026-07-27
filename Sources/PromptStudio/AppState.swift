@@ -562,6 +562,24 @@ final class AppState: ObservableObject {
         isPreservingSelectionSet = false
     }
 
+    func orderedItemIDsForDrag(startingWith itemID: String) -> [String] {
+        if !selectedIDs.contains(itemID), let item = itemsByID[itemID] {
+            select(item)
+        }
+
+        let requestedIDs = selectedIDs.isEmpty ? Set([itemID]) : selectedIDs
+        var orderedIDs: [String] = []
+        var seenIDs = Set<String>()
+
+        for item in filteredItems where requestedIDs.contains(item.id) && seenIDs.insert(item.id).inserted {
+            orderedIDs.append(item.id)
+        }
+        for item in items where requestedIDs.contains(item.id) && seenIDs.insert(item.id).inserted {
+            orderedIDs.append(item.id)
+        }
+        return orderedIDs
+    }
+
     @discardableResult
     func requireFeature(_ feature: FeatureKey) -> Bool {
         let decision = licenseManager.featureGate.evaluate(feature)
@@ -1545,21 +1563,53 @@ final class AppState: ObservableObject {
         }
     }
 
-    func moveItem(_ itemID: String, toFolderID folderID: String) {
+    func moveItems(_ itemIDs: [String], toFolderID folderID: String) {
         guard requireFeature(.proManageCollections) else { return }
-        guard var item = itemsByID[itemID], !item.isDeleted else { return }
-        guard let folder = folder(withID: folderID) else { return }
-        guard item.folderId != folder.id else {
-            selectedID = item.id
-            showToast("素材已在当前文件夹")
+        guard let folder = folder(withID: folderID) else {
+            modal = .error("目标文件夹不存在")
             return
         }
 
-        item.folderId = folder.id
-        item.folderName = folder.name
-        item.category = item.assetKind.displayName
-        item.updatedAt = Date()
-        save(item, toast: "已移动到 \(folder.name)")
+        let previousSelectedIDs = selectedIDs
+        let previousSelectedID = selectedID
+        let plan = PromptItemBatchMovePlanner.plan(
+            items: items,
+            requestedIDs: itemIDs,
+            targetFolderID: folder.id,
+            targetFolderName: folder.name
+        )
+        guard !plan.updatedItems.isEmpty else {
+            if !plan.unchangedIDs.isEmpty {
+                showToast("所选素材已在当前文件夹")
+            }
+            return
+        }
+
+        do {
+            try repository?.saveItems(plan.updatedItems)
+            folders = try repository?.loadFolders() ?? []
+            items = try repository?.loadItems() ?? []
+            tags = try repository?.loadTags() ?? []
+
+            let retainedIDs = previousSelectedIDs.intersection(Set(filteredItems.map(\.id)))
+            if !retainedIDs.isEmpty {
+                let retainedPrimaryID = previousSelectedID.flatMap { retainedIDs.contains($0) ? $0 : nil }
+                    ?? filteredItems.first(where: { retainedIDs.contains($0.id) })?.id
+                selectItems(ids: retainedIDs, primaryID: retainedPrimaryID)
+            }
+
+            if plan.updatedItems.count > 1 {
+                showToast("已移动 \(plan.updatedItems.count) 个项目到 \(folder.name)")
+            } else {
+                showToast("已移动到 \(folder.name)")
+            }
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+    }
+
+    func moveItem(_ itemID: String, toFolderID folderID: String) {
+        moveItems([itemID], toFolderID: folderID)
     }
 
     func moveItem(_ itemID: String, toFolder folderName: String, acceptedType: PromptType?) {
