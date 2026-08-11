@@ -113,7 +113,9 @@ fi
 
 MARKDOWN_EDITOR_FILE="$ROOT_DIR/Sources/PromptStudio/Views/MarkdownDocumentEditor.swift"
 if ! /usr/bin/grep -q 'static let gutterWidth: CGFloat = 32' "$MARKDOWN_EDITOR_FILE" || \
-   ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 16' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 24' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let lineNumberText = NSColor(hex: 0x7D8187)' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q '\.foregroundColor: lineNumberText' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'static let textToScrollerSpacing: CGFloat = 0' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'static let scrollerRightInset: CGFloat = 0' "$MARKDOWN_EDITOR_FILE" || \
@@ -121,12 +123,14 @@ if ! /usr/bin/grep -q 'static let gutterWidth: CGFloat = 32' "$MARKDOWN_EDITOR_F
    ! /usr/bin/grep -q 'scrollView.contentSize.width - MarkdownDocumentLayout.textLeadingPadding - MarkdownDocumentLayout.textTrailingPadding' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'width: self.bounds.width, height: lineHeight' "$MARKDOWN_EDITOR_FILE" || \
    ! /usr/bin/grep -q 'right: MarkdownDocumentLayout.scrollerRightInset' "$MARKDOWN_EDITOR_FILE"; then
-    echo "Markdown preview must use the compact line-number gutter and shared 16/0/0 spacing contract." >&2
+    echo "Markdown preview must use the dedicated #7D8187 line-number color, 24pt text gap, and compact scrollbar spacing." >&2
     exit 1
 fi
 
 "$ROOT_DIR/Scripts/test_native_marquee_multiselect.sh"
 bash "$ROOT_DIR/Scripts/test_native_drag_cancel.sh"
 bash "$ROOT_DIR/Scripts/test_reorder_interaction.sh"
+bash "$ROOT_DIR/Scripts/test_hover_reveal_scroller_overflow.sh"
+bash "$ROOT_DIR/Scripts/test_markdown_visual_line_numbers.sh"
 
 echo "Release UI copy tests passed"

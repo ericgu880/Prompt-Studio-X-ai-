@@ -4,7 +4,7 @@ import PromptStudioCore
 
 enum MarkdownDocumentLayout {
     static let gutterWidth: CGFloat = 32
-    static let textLeadingPadding: CGFloat = 16
+    static let textLeadingPadding: CGFloat = 24
     static let textToScrollerSpacing: CGFloat = 0
     static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing
     static let textVerticalPadding: CGFloat = 24
@@ -482,20 +482,20 @@ final class MarkdownLineNumberGutterView: NSView {
         bounds.fill()
 
         let visibleRect = textView.visibleRect
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
         let bodyFont = MarkdownEditorPalette.bodyFont(size: contentFontSize)
         let lineHeight = bodyFont.ascender - bodyFont.descender + bodyFont.leading
-        let text = textView.string as NSString
-        var drawnLines = Set<Int>()
+        let textOrigin = textView.textContainerOrigin
+        let visibleTextContainerRect = visibleRect.offsetBy(dx: -textOrigin.x, dy: -textOrigin.y)
+        let fragments = MarkdownVisualLineNumberer.fragments(
+            layoutManager: layoutManager,
+            textContainer: textContainer,
+            intersecting: visibleTextContainerRect
+        )
 
-        layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, glyphRange, _ in
-            let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            let lineNumber = text.markdownLineNumber(at: charRange.location)
-            guard drawnLines.insert(lineNumber).inserted else { return }
-
-            let y = usedRect.minY + textView.textContainerOrigin.y - visibleRect.minY
+        for fragment in fragments {
+            let y = fragment.usedRect.minY + textOrigin.y - visibleRect.minY
             let rect = NSRect(x: 0, y: y, width: self.bounds.width, height: lineHeight)
-            let label = "\(lineNumber)" as NSString
+            let label = "\(fragment.number)" as NSString
             label.draw(in: rect, withAttributes: MarkdownEditorPalette.lineNumberAttributes)
         }
     }
@@ -564,6 +564,7 @@ private enum MarkdownEditorPalette {
     static let strongText = NSColor(hex: 0xFFFFFF)
     static let text = NSColor(hex: 0xFFFFFF)
     static let mutedText = NSColor(hex: 0xBDBEC0)
+    static let lineNumberText = NSColor(hex: 0x7D8187)
     static let red = NSColor(hex: 0xFF5F57)
     static let orange = NSColor(hex: 0xFF9F0A)
     static let green = NSColor(hex: 0x37DD61)
@@ -629,25 +630,13 @@ private enum MarkdownEditorPalette {
 
     static let lineNumberAttributes: [NSAttributedString.Key: Any] = [
         .font: lineNumberFont,
-        .foregroundColor: mutedText,
+        .foregroundColor: lineNumberText,
         .paragraphStyle: {
             let style = NSMutableParagraphStyle()
             style.alignment = .right
             return style
         }()
     ]
-}
-
-private extension NSString {
-    func markdownLineNumber(at characterIndex: Int) -> Int {
-        guard length > 0 else { return 1 }
-        let upperBound = min(max(characterIndex, 0), length)
-        var line = 1
-        for index in 0..<upperBound where character(at: index) == 10 {
-            line += 1
-        }
-        return line
-    }
 }
 
 private extension NSColor {

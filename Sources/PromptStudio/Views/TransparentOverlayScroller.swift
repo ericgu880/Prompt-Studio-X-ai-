@@ -222,6 +222,8 @@ private final class ScrollRevealRegistry {
 }
 
 final class HoverRevealScrollView: NSScrollView {
+    private static let scrollOverflowTolerance: CGFloat = 1
+
     private var revealTrackingArea: NSTrackingArea?
     private var isPointerInside = false
     private var isPointerOverScroller = false
@@ -229,8 +231,15 @@ final class HoverRevealScrollView: NSScrollView {
     private var suppressKnobHoverUntilPointerLeaves = false
     private var revealOnHover = false
 
+    private var hasVerticalOverflow: Bool {
+        guard let documentView else { return false }
+        let viewportHeight = contentView.bounds.height
+        return viewportHeight > 0 &&
+            documentView.bounds.height > viewportHeight + Self.scrollOverflowTolerance
+    }
+
     var canRevealScroller: Bool {
-        revealOnHover && window != nil && !isHiddenOrHasHiddenAncestor
+        revealOnHover && hasVerticalOverflow && window != nil && !isHiddenOrHasHiddenAncestor
     }
 
     var visibleAreaInWindow: NSRect {
@@ -277,6 +286,12 @@ final class HoverRevealScrollView: NSScrollView {
             ScrollRevealRegistry.shared.register(self)
             window?.acceptsMouseMovedEvents = true
         }
+    }
+
+    override func layout() {
+        super.layout()
+        guard revealOnHover else { return }
+        applyScrollerVisibility()
     }
 
     override func updateTrackingAreas() {
@@ -393,6 +408,10 @@ final class HoverRevealScrollView: NSScrollView {
 
     func syncPointerState(windowPoint: NSPoint, isActive: Bool) {
         guard revealOnHover else { return }
+        guard hasVerticalOverflow else {
+            forceHideScroller()
+            return
+        }
         let isPointerInKnob = containsScrollerHitArea(windowPoint: windowPoint)
         if suppressKnobHoverUntilPointerLeaves && !isPointerInKnob {
             suppressKnobHoverUntilPointerLeaves = false
@@ -437,13 +456,22 @@ final class HoverRevealScrollView: NSScrollView {
     }
 
     private func showScroller() {
+        guard hasVerticalOverflow else {
+            forceHideScroller()
+            return
+        }
         verticalScroller?.alphaValue = 1
         verticalScroller?.needsDisplay = true
     }
 
     private func applyScrollerVisibility() {
         if revealOnHover {
-            verticalScroller?.alphaValue = (isPointerInside || isPointerOverScroller || isDraggingScroller) ? 1 : 0
+            let shouldShow = hasVerticalOverflow &&
+                (isPointerInside || isPointerOverScroller || isDraggingScroller)
+            verticalScroller?.alphaValue = shouldShow ? 1 : 0
+            if !shouldShow {
+                (verticalScroller as? TransparentOverlayScroller)?.setKnobHover(false)
+            }
         } else {
             verticalScroller?.alphaValue = 1
         }
