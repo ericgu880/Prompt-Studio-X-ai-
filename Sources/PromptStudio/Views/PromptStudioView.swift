@@ -3502,7 +3502,7 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
 
 private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
-    private var hostingView: NSHostingView<AnyView>?
+    private var hostingView: LazyAssetContextMenuHostingView?
     private var markdownCardView: NativeMarkdownCardView?
     private var imageCardView: NativeImageCardView?
     private let mediaSelectionState = AssetCardSelectionState(isSelected: false)
@@ -3659,6 +3659,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             mediaSelectionState.isSelected = state.selectedIDs.contains(item.id)
             rootView = AnyView(
                 AssetCardView(
+                    state: state,
                     item: item,
                     width: width,
                     isReorderingEnabled: false,
@@ -3667,7 +3668,6 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                     reorderDragChangedAction: { _, _ in },
                     reorderDragEndedAction: { _ in }
                 )
-                .environmentObject(state)
                 .coordinateSpace(name: MasonryGridView.gridCoordinateSpace)
                 .frame(width: width, height: height)
             )
@@ -3676,15 +3676,158 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         if let hostingView {
             hostingView.rootView = rootView
             hostingView.frame = view.bounds
+            hostingView.configureContextMenu(
+                item: entry.promptItem,
+                state: state,
+                selectAction: entry.promptItem.map { item in
+                    { selectItem(item, []) }
+                }
+            )
         } else {
-            let hostingView = NSHostingView(rootView: rootView)
+            let hostingView = LazyAssetContextMenuHostingView(rootView: rootView)
             hostingView.frame = view.bounds
             hostingView.autoresizingMask = [.width, .height]
             hostingView.wantsLayer = true
             hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+            hostingView.configureContextMenu(
+                item: entry.promptItem,
+                state: state,
+                selectAction: entry.promptItem.map { item in
+                    { selectItem(item, []) }
+                }
+            )
             view.addSubview(hostingView)
             self.hostingView = hostingView
         }
+    }
+}
+
+private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
+    private weak var state: AppState?
+    private var item: PromptItem?
+    private var selectAction: (() -> Void)?
+    private var menuTargets: [NativeMarkdownMenuActionTarget] = []
+
+    func configureContextMenu(
+        item: PromptItem?,
+        state: AppState,
+        selectAction: (() -> Void)?
+    ) {
+        self.item = item
+        self.state = state
+        self.selectAction = selectAction
+        menuTargets = []
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let item, let state else { return nil }
+        if !state.selectedIDs.contains(item.id) {
+            selectAction?()
+        }
+
+        let menu = NSMenu()
+        menuTargets = []
+        addMenuItem("预览", symbolName: "eye", to: menu) { state.previewSelected() }
+        addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu) {
+            state.openSelectedInDefaultApplication()
+        }
+        addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu) {
+            state.revealSelectedInFinder()
+        }
+        menu.addItem(.separator())
+
+        if !item.isDeleted {
+            addMoveToFolderMenu(item: item, state: state, to: menu)
+            if item.isPromptPrimaryAsset {
+                addMenuItem("导出...", symbolName: "square.and.arrow.up", to: menu) {
+                    state.modal = .export
+                }
+            }
+            menu.addItem(.separator())
+        }
+
+        if item.isPromptPrimaryAsset {
+            addMenuItem("编辑 Prompt", symbolName: "pencil", to: menu) {
+                state.requestInlineEdit(item)
+            }
+            let copyItem = addMenuItem(
+                item.isTextDocumentLike ? "复制文档信息" : "复制提示词",
+                symbolName: "doc.on.doc",
+                to: menu
+            ) {
+                state.copyItemContent(item)
+            }
+            copyItem?.isEnabled = hasPrompt(item: item, state: state)
+        }
+
+        addMenuItem("复制文件", symbolName: "doc", to: menu) { state.copySelectedFile() }
+        addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu) {
+            state.copySelectedFilePath()
+        }
+
+        if item.isPromptPrimaryAsset {
+            menu.addItem(.separator())
+            addMenuItem("历史版本", symbolName: "clock", to: menu) { state.modal = .versionHistory }
+            addMenuItem("参考资产管理", symbolName: "photo.on.rectangle", to: menu) {
+                state.modal = .references
+            }
+        }
+
+        menu.addItem(.separator())
+        if item.isDeleted {
+            addMenuItem("恢复", symbolName: "arrow.uturn.backward", to: menu) { state.restoreSelected() }
+            menu.addItem(.separator())
+            addMenuItem("彻底删除...", symbolName: "trash.slash", to: menu) {
+                state.beginPermanentDeleteSelectedTrashItems()
+            }
+        } else {
+            addMenuItem("移到回收站", symbolName: "trash", to: menu) { state.moveSelectedToTrash() }
+        }
+        return menu
+    }
+
+    private func addMoveToFolderMenu(item: PromptItem, state: AppState, to menu: NSMenu) {
+        let rootItem = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
+        rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
+        let submenu = NSMenu(title: "移动到文件夹")
+        for destination in state.folderDestinations() {
+            let menuItem = addMenuItem(destination.name, symbolName: "folder", to: submenu) {
+                state.moveItem(item.id, toFolderID: destination.folderID)
+            }
+            menuItem?.state = item.folderId == destination.folderID ? .on : .off
+            menuItem?.isEnabled = item.folderId != destination.folderID
+        }
+        rootItem.submenu = submenu
+        menu.addItem(rootItem)
+    }
+
+    @discardableResult
+    private func addMenuItem(
+        _ title: String,
+        symbolName: String,
+        to menu: NSMenu,
+        action: @escaping () -> Void
+    ) -> NSMenuItem? {
+        let target = NativeMarkdownMenuActionTarget(action: action)
+        menuTargets.append(target)
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(NativeMarkdownMenuActionTarget.run),
+            keyEquivalent: ""
+        )
+        item.target = target
+        item.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        menu.addItem(item)
+        return item
+    }
+
+    private func hasPrompt(item: PromptItem, state: AppState) -> Bool {
+        if item.isTextDocumentLike {
+            return !state.markdownDocumentText(for: item)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+        return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 }
 
@@ -4023,12 +4166,12 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         let rootItem = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
         rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
         let submenu = NSMenu(title: "移动到文件夹")
-        for row in state.folderRows() {
-            let menuItem = addMenuItem(row.folder.name, symbolName: "folder", to: submenu) {
-                state.moveItem(item.id, toFolderID: row.folder.id)
+        for destination in state.folderDestinations() {
+            let menuItem = addMenuItem(destination.name, symbolName: "folder", to: submenu) {
+                state.moveItem(item.id, toFolderID: destination.folderID)
             }
-            menuItem?.state = item.folderId == row.folder.id ? .on : .off
-            menuItem?.isEnabled = item.folderId != row.folder.id
+            menuItem?.state = item.folderId == destination.folderID ? .on : .off
+            menuItem?.isEnabled = item.folderId != destination.folderID
         }
         rootItem.submenu = submenu
         menu.addItem(rootItem)
@@ -4674,9 +4817,11 @@ private struct MasonryGridView: View {
                         case .item(let item):
                             let reorderOffset = reorderPlacementOverrides[item.id]
                             AssetCardView(
+                                state: state,
                                 item: item,
                                 width: width,
                                 isReorderingEnabled: canReorderItems,
+                                isSelected: state.selectedIDs.contains(item.id),
                                 selectionAction: { item, modifiers in
                                     selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
                                 },
@@ -5202,6 +5347,11 @@ private enum MasonryGridEntry {
         }
     }
 
+    var promptItem: PromptItem? {
+        guard case .item(let item) = self else { return nil }
+        return item
+    }
+
     func totalHeight(width: CGFloat) -> CGFloat {
         switch self {
         case .folder:
@@ -5541,7 +5691,7 @@ private final class AssetCardSelectionState: ObservableObject {
 private struct AssetCardExternalDragModifier: ViewModifier {
     let itemID: String
     let isEnabled: Bool
-    @EnvironmentObject private var state: AppState
+    let state: AppState
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -5556,30 +5706,35 @@ private struct AssetCardExternalDragModifier: ViewModifier {
 }
 
 private struct AssetCardView: View {
-    @EnvironmentObject private var state: AppState
+    private let state: AppState
     @ObservedObject private var selectionState: AssetCardSelectionState
     let item: PromptItem
     let width: CGFloat
     let isReorderingEnabled: Bool
     private let usesExplicitSelectionState: Bool
+    private let fallbackIsSelected: Bool
     let selectionAction: (PromptItem, NSEvent.ModifierFlags) -> Void
     let reorderDragChangedAction: (String, CGPoint) -> Void
     let reorderDragEndedAction: (String) -> Void
     @State private var lastClickAt: Date?
 
     init(
+        state: AppState,
         item: PromptItem,
         width: CGFloat,
         isReorderingEnabled: Bool,
         selectionState: AssetCardSelectionState? = nil,
+        isSelected: Bool = false,
         selectionAction: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void,
         reorderDragChangedAction: @escaping (String, CGPoint) -> Void,
         reorderDragEndedAction: @escaping (String) -> Void
     ) {
+        self.state = state
         self.item = item
         self.width = width
         self.isReorderingEnabled = isReorderingEnabled
         self.usesExplicitSelectionState = selectionState != nil
+        self.fallbackIsSelected = isSelected
         self.selectionAction = selectionAction
         self.reorderDragChangedAction = reorderDragChangedAction
         self.reorderDragEndedAction = reorderDragEndedAction
@@ -5589,7 +5744,7 @@ private struct AssetCardView: View {
     }
 
     private var isSelected: Bool {
-        usesExplicitSelectionState ? selectionState.isSelected : state.selectedIDs.contains(item.id)
+        usesExplicitSelectionState ? selectionState.isSelected : fallbackIsSelected
     }
 
     var body: some View {
@@ -5626,13 +5781,11 @@ private struct AssetCardView: View {
                     state.previewSelected()
                 }
         )
-        .contextMenu {
-            assetContextMenu
-        }
         .modifier(
             AssetCardExternalDragModifier(
                 itemID: item.id,
-                isEnabled: !isReorderingEnabled && !item.isDeleted
+                isEnabled: !isReorderingEnabled && !item.isDeleted,
+                state: state
             )
         )
         .simultaneousGesture(reorderGesture)
@@ -5744,171 +5897,6 @@ private struct AssetCardView: View {
         withTransaction(transaction) {
             selectionAction(item, NSEvent.modifierFlags)
         }
-    }
-
-    @ViewBuilder
-    private var assetContextMenu: some View {
-        Button {
-            runContextAction {
-                state.previewSelected()
-            }
-        } label: {
-            Label("预览", systemImage: "eye")
-        }
-
-        Button {
-            runContextAction {
-                state.openSelectedInDefaultApplication()
-            }
-        } label: {
-            Label("用默认应用打开", systemImage: "arrow.up.right.square")
-        }
-
-        Button {
-            runContextAction {
-                state.revealSelectedInFinder()
-            }
-        } label: {
-            Label("在 Finder 中显示", systemImage: "folder")
-        }
-
-        Divider()
-
-        if !item.isDeleted {
-            Menu {
-                ForEach(contextFolderRows) { row in
-                    Button {
-                        runContextAction {
-                            state.moveItem(item.id, toFolderID: row.folder.id)
-                        }
-                    } label: {
-                        if item.folderId == row.folder.id {
-                            Label(row.folder.name, systemImage: "checkmark")
-                        } else {
-                            Text(row.folder.name)
-                        }
-                    }
-                    .disabled(item.folderId == row.folder.id)
-                }
-            } label: {
-                Label("移动到文件夹", systemImage: "folder")
-            }
-        }
-
-        if item.isPromptPrimaryAsset {
-            Button {
-                runContextAction {
-                    state.modal = .export
-                }
-            } label: {
-                Label("导出...", systemImage: "square.and.arrow.up")
-            }
-        }
-
-        Divider()
-
-        if item.isPromptPrimaryAsset {
-            Button {
-                runContextAction {
-                    state.requestInlineEdit(item)
-                }
-            } label: {
-                Label("编辑 Prompt", systemImage: "pencil")
-            }
-
-            Button {
-                runContextAction {
-                    state.copyItemContent(item)
-                }
-            } label: {
-                Label(item.isTextDocumentLike ? "复制文档信息" : "复制提示词", systemImage: "doc.on.doc")
-            }
-            .disabled(!hasPrompt)
-        }
-
-        Button {
-            runContextAction {
-                state.copySelectedFile()
-            }
-        } label: {
-            Label("复制文件", systemImage: "doc")
-        }
-
-        Button {
-            runContextAction {
-                state.copySelectedFilePath()
-            }
-        } label: {
-            Label("复制文件路径", systemImage: "text.badge.checkmark")
-        }
-
-        if item.isPromptPrimaryAsset {
-            Divider()
-
-            Button {
-                runContextAction {
-                    state.modal = .versionHistory
-                }
-            } label: {
-                Label("历史版本", systemImage: "clock")
-            }
-
-            Button {
-                runContextAction {
-                    state.modal = .references
-                }
-            } label: {
-                Label("参考资产管理", systemImage: "photo.on.rectangle")
-            }
-        }
-
-        Divider()
-
-        if item.isDeleted {
-            Button {
-                runContextAction {
-                    state.restoreSelected()
-                }
-            } label: {
-                Label("恢复", systemImage: "arrow.uturn.backward")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                runContextAction {
-                    state.beginPermanentDeleteSelectedTrashItems()
-                }
-            } label: {
-                Label("彻底删除...", systemImage: "trash.slash")
-            }
-        } else {
-            Button {
-                runContextAction {
-                    state.moveSelectedToTrash()
-                }
-            } label: {
-                Label("移到回收站", systemImage: "trash")
-            }
-        }
-    }
-
-    private var hasPrompt: Bool {
-        if item.isTextDocumentLike {
-            return !state.markdownDocumentText(for: item).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
-    private var contextFolderRows: [AppState.FolderRow] {
-        state.folderRows()
-    }
-
-    private func runContextAction(_ action: () -> Void) {
-        if !state.selectedIDs.contains(item.id) {
-            selectImmediately()
-        }
-        action()
     }
 
     private func cardAction(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {

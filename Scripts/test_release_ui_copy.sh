@@ -128,6 +128,7 @@ if ! /usr/bin/grep -q 'static let gutterWidth: CGFloat = 32' "$MARKDOWN_EDITOR_F
 fi
 
 "$ROOT_DIR/Scripts/test_native_marquee_multiselect.sh"
+bash "$ROOT_DIR/Scripts/test_selection_performance.sh"
 bash "$ROOT_DIR/Scripts/test_native_drag_cancel.sh"
 bash "$ROOT_DIR/Scripts/test_reorder_interaction.sh"
 bash "$ROOT_DIR/Scripts/test_hover_reveal_scroller_overflow.sh"

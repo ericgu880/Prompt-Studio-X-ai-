@@ -135,6 +135,23 @@ enum PromptStudioExportFormat: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
+    private struct SelectionState: Equatable {
+        var primaryID: String?
+        var ids: Set<String>
+
+        init(primaryID: String? = nil, ids: Set<String> = []) {
+            self.primaryID = primaryID
+            self.ids = ids
+        }
+    }
+
+    struct FolderDestination: Identifiable, Equatable {
+        let folderID: String
+        let name: String
+
+        var id: String { folderID }
+    }
+
     struct FolderRow: Identifiable, Equatable {
         let folder: LibraryFolder
         let count: Int
@@ -275,13 +292,9 @@ final class AppState: ObservableObject {
             }
         }
     }
-    @Published var selectedID: String? {
-        didSet {
-            guard !isPreservingSelectionSet else { return }
-            selectedIDs = selectedID.map { Set([$0]) } ?? []
-        }
-    }
-    @Published var selectedIDs: Set<String> = []
+    @Published private var selectionState = SelectionState()
+    var selectedID: String? { selectionState.primaryID }
+    var selectedIDs: Set<String> { selectionState.ids }
     @Published private(set) var filteredItems: [PromptItem] = []
     @Published var modal: Modal?
     @Published var toast: String?
@@ -314,7 +327,6 @@ final class AppState: ObservableObject {
     private var activeThumbnailItemIDs: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
     private var isBatchingFilterUpdate = false
-    private var isPreservingSelectionSet = false
     private var navigationBackStack: [NavigationSnapshot] = []
     private var navigationForwardStack: [NavigationSnapshot] = []
     private var lastExternalOpenSignature: String?
@@ -468,8 +480,7 @@ final class AppState: ObservableObject {
         expandedFolderIDs = Set(data.folders.map(\.id))
         items = data.items
         tags = data.tags
-        selectedID = nil
-        selectedIDs = []
+        updateSelection(ids: [], primaryID: nil)
         isBatchingFilterUpdate = true
         filter = PromptFilter()
         isBatchingFilterUpdate = false
@@ -508,8 +519,7 @@ final class AppState: ObservableObject {
         items = []
         folders = []
         tags = []
-        selectedID = nil
-        selectedIDs = []
+        updateSelection(ids: [], primaryID: nil)
         refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
 
         switch error {
@@ -539,27 +549,30 @@ final class AppState: ObservableObject {
     }
 
     func select(_ item: PromptItem) {
-        guard selectedID != item.id || selectedIDs != Set([item.id]) else { return }
-        selectedID = item.id
+        updateSelection(ids: [item.id], primaryID: item.id)
     }
 
     func toggleSelection(_ item: PromptItem) {
-        isPreservingSelectionSet = true
-        if selectedIDs.contains(item.id) {
-            selectedIDs.remove(item.id)
-            selectedID = selectedIDs.first
+        var nextIDs = selectedIDs
+        let nextPrimaryID: String?
+        if nextIDs.remove(item.id) != nil {
+            nextPrimaryID = nextIDs.first
         } else {
-            selectedIDs.insert(item.id)
-            selectedID = item.id
+            nextIDs.insert(item.id)
+            nextPrimaryID = item.id
         }
-        isPreservingSelectionSet = false
+        updateSelection(ids: nextIDs, primaryID: nextPrimaryID)
     }
 
     func selectItems(ids: Set<String>, primaryID: String? = nil) {
-        isPreservingSelectionSet = true
-        selectedIDs = ids
-        selectedID = primaryID ?? ids.first
-        isPreservingSelectionSet = false
+        updateSelection(ids: ids, primaryID: primaryID)
+    }
+
+    private func updateSelection(ids: Set<String>, primaryID: String?) {
+        let normalizedPrimaryID = primaryID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
+        let nextState = SelectionState(primaryID: normalizedPrimaryID, ids: ids)
+        guard nextState != selectionState else { return }
+        selectionState = nextState
     }
 
     func orderedItemIDsForDrag(startingWith itemID: String) -> [String] {
@@ -1628,6 +1641,19 @@ final class AppState: ObservableObject {
         folderRows()
     }
 
+    func folderDestinations() -> [FolderDestination] {
+        folders
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
+            .map { folder in
+                FolderDestination(folderID: folder.id, name: folder.name)
+            }
+    }
+
     func folderRows() -> [FolderRow] {
         folders
             .sorted {
@@ -2559,7 +2585,7 @@ final class AppState: ObservableObject {
 
         if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
             guard requestedID != selectedID else { return }
-            selectedID = requestedID
+            updateSelection(ids: [requestedID], primaryID: requestedID)
         } else {
             let nextSelectedID = PromptSelectionResolver.selectedID(
                 preserving: preserveExistingSelection ? selectedID : nil,
@@ -2567,7 +2593,10 @@ final class AppState: ObservableObject {
                 allowEmptySelection: allowEmptySelection
             )
             guard nextSelectedID != selectedID else { return }
-            selectedID = nextSelectedID
+            updateSelection(
+                ids: nextSelectedID.map { Set([$0]) } ?? [],
+                primaryID: nextSelectedID
+            )
         }
     }
 
@@ -2888,7 +2917,7 @@ final class AppState: ObservableObject {
             refreshFilteredItems(selecting: itemID)
             return
         }
-        selectedID = itemID
+        updateSelection(ids: [itemID], primaryID: itemID)
     }
 }
 
