@@ -4556,12 +4556,15 @@ private extension NSColor {
 
 private struct MasonryGridView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
     let folders: [AppState.FolderRow]
     let items: [PromptItem]
     let isSplitResizing: Bool
     let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
     @State private var draggedItemID: String?
+    @State private var settlingItemID: String?
+    @State private var settlingToken = UUID()
     @State private var reorderBaseItemIDs: [String] = []
     @State private var reorderPreviewItemIDs: [String] = []
     @State private var reorderPreviewTargetID: String?
@@ -4586,8 +4589,10 @@ private struct MasonryGridView: View {
             let layout = layoutCache.layout(folders: folders, items: items, columnCount: columnCount, width: width)
             let visualItemIDs = layout.visualItemIDs
             let previewNavigationSnapshot = previewNavigationSnapshot(for: layout)
-            let isItemReordering = draggedItemID != nil
-            let itemReorderAnimation: Animation? = isItemReordering ? .easeInOut(duration: 0.22) : nil
+            let isItemReordering = draggedItemID != nil || settlingItemID != nil
+            let itemReorderAnimation: Animation? = isItemReordering && !reduceMotion
+                ? .easeInOut(duration: Self.reorderAnimationDuration)
+                : nil
             let reorderPlacementOverrides = itemReorderPlacementOverrides(for: layout.placements)
             let renderRange = renderedYRange(viewportHeight: proxy.size.height)
             let renderedPlacements = layout.placements.filter { $0.intersectsYRange(renderRange) }
@@ -4665,6 +4670,7 @@ private struct MasonryGridView: View {
                                 y: reorderOffset?.y ?? placement.y,
                                 animation: itemReorderAnimation
                             ))
+                            .allowsHitTesting(settlingItemID != item.id)
                             .simultaneousGesture(TapGesture().onEnded {
                                 selectedFolderID = nil
                             })
@@ -4700,6 +4706,7 @@ private struct MasonryGridView: View {
                 isRenderOffsetUpdateScheduled = false
                 scrollResetID = UUID()
                 selectedFolderID = nil
+                cancelReorderSettlement()
                 clearSelectionDrag()
                 clearItemReorder()
             }
@@ -4710,6 +4717,7 @@ private struct MasonryGridView: View {
                 onPreviewNavigationSnapshotChange(snapshot)
             }
             .onChange(of: items.map(\.id)) { _, _ in
+                cancelReorderSettlement()
                 clearItemReorder()
             }
             .task(id: visibleThumbnailCandidateIDs) {
@@ -4734,6 +4742,7 @@ private struct MasonryGridView: View {
     }
 
     fileprivate static let gridCoordinateSpace = "masonry-grid-coordinate-space"
+    private static let reorderAnimationDuration: Double = 0.22
     private static let scrollbarLaneWidth: CGFloat = 18
     private static let contentBottomPadding: CGFloat = 24
     private static let renderOffsetBucket: CGFloat = 12
@@ -4774,6 +4783,7 @@ private struct MasonryGridView: View {
     }
 
     private func beginItemReorder(itemID: String, visualItemIDs: [String], items: [PromptItem]) {
+        cancelReorderSettlement()
         clearItemReorderPreview()
         draggedItemID = itemID
         let itemIDSet = Set(items.map(\.id))
@@ -4855,11 +4865,35 @@ private struct MasonryGridView: View {
     }
 
     private func finishItemReorder(draggedID: String) {
-        guard draggedItemID == draggedID, let targetID = reorderPreviewTargetID else {
-            clearItemReorder()
+        guard draggedItemID == draggedID else {
+            return
+        }
+        guard let targetID = reorderPreviewTargetID else {
+            settleItemReorder(draggedID: draggedID)
             return
         }
         commitItemReorder(draggedID: draggedID, targetID: targetID)
+    }
+
+    private func settleItemReorder(draggedID: String) {
+        guard draggedItemID == draggedID else {
+            return
+        }
+        guard !reduceMotion else {
+            clearItemReorder()
+            return
+        }
+
+        let token = UUID()
+        settlingToken = token
+        settlingItemID = draggedID
+        withAnimation(.easeInOut(duration: Self.reorderAnimationDuration)) {
+            clearItemReorderState()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.reorderAnimationDuration) {
+            guard settlingToken == token else { return }
+            settlingItemID = nil
+        }
     }
 
     private func itemTargetID(at location: CGPoint, in placements: [MasonryPlacement], width: CGFloat) -> String? {
@@ -4885,9 +4919,18 @@ private struct MasonryGridView: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            clearItemReorderPreview()
-            draggedItemID = nil
+            clearItemReorderState()
         }
+    }
+
+    private func clearItemReorderState() {
+        clearItemReorderPreview()
+        draggedItemID = nil
+    }
+
+    private func cancelReorderSettlement() {
+        settlingToken = UUID()
+        settlingItemID = nil
     }
 
     private func clearItemReorderPreview() {

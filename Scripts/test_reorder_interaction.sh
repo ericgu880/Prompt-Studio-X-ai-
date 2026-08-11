@@ -18,7 +18,13 @@ for required in \
     'var transaction = Transaction(animation: nil)' \
     'transaction.disablesAnimations = true' \
     'withTransaction(transaction)' \
-    'private func clearItemReorder()'; do
+    'private func clearItemReorder()' \
+    '@State private var settlingItemID: String?' \
+    '@State private var settlingToken = UUID()' \
+    '.allowsHitTesting(settlingItemID != item.id)' \
+    'private func settleItemReorder(draggedID: String)' \
+    'DispatchQueue.main.asyncAfter(deadline: .now() + Self.reorderAnimationDuration)' \
+    'private func cancelReorderSettlement()'; do
     if ! /usr/bin/grep -q "$required" "$SOURCE_FILE"; then
         echo "Missing immediate reorder cleanup contract: $required" >&2
         exit 1
