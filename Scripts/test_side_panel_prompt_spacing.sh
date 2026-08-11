@@ -13,8 +13,9 @@ if [[ ! -f "$SOURCE_FILE" ]]; then
 fi
 
 for required in \
-    'static let textLeadingPadding: CGFloat = 24' \
-    'static let textTrailingPadding: CGFloat = 24' \
+    'static let textLeadingPadding: CGFloat = 16' \
+    'static let textToScrollerSpacing: CGFloat = 0' \
+    'static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing' \
     'static let scrollerRightInset: CGFloat = 0' \
     'static let scrollContentRightInset: CGFloat = 0' \
     'override var textContainerOrigin: NSPoint' \
@@ -23,7 +24,7 @@ for required in \
     'right: SidePanelPromptBoxLayout.scrollContentRightInset' \
     'right: SidePanelPromptBoxLayout.scrollerRightInset'; do
     if ! /usr/bin/grep -Fq "$required" "$SOURCE_FILE"; then
-        echo "Missing symmetric image Prompt spacing contract: $required" >&2
+        echo "Missing side-panel Prompt spacing contract: $required" >&2
         exit 1
     fi
 done
@@ -33,8 +34,8 @@ if ! /usr/bin/grep -Fq 'static let knobWidth: CGFloat = 6' "$SCROLLER_FILE"; the
     exit 1
 fi
 
-if /usr/bin/grep -Fq 'textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth' "$SOURCE_FILE"; then
-    echo "Image Prompt text padding must not be derived from the overlay scroller width." >&2
+if /usr/bin/grep -Fq 'overlayScrollerClearance' "$SOURCE_FILE"; then
+    echo "The old one-sided Prompt scroller clearance must be removed." >&2
     exit 1
 fi
 
@@ -49,7 +50,7 @@ if [[ "$(/usr/bin/grep -Fc 'SidePanelPromptTextBox(' "$OVERLAYS_FILE")" -ne 2 ]]
 fi
 
 if /usr/bin/grep -Fq 'MidjourneyPromptInfoPanel' "$INSPECTOR_FILE"; then
-    echo "The legacy image Prompt panel bypasses the shared symmetric spacing contract." >&2
+    echo "The legacy image Prompt panel bypasses the shared 16/0/0 spacing contract." >&2
     exit 1
 fi
 
