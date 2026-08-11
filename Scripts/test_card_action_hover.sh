@@ -9,8 +9,8 @@ if [[ ! -f "$SOURCE_FILE" ]]; then
     exit 1
 fi
 
-if [[ "$(/usr/bin/grep -c 'applyIconCirclePalette()' "$SOURCE_FILE")" -ne 5 ]]; then
-    echo "Image and Markdown card action buttons must all use the shared native circle palette." >&2
+if [[ "$(/usr/bin/grep -c 'applyIconCirclePalette()' "$SOURCE_FILE")" -ne 7 ]]; then
+    echo "Image, Markdown, and fallback card action buttons must all use the shared native circle palette." >&2
     exit 1
 fi
 

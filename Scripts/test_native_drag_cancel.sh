@@ -23,11 +23,11 @@ for required in \
     fi
 done
 
-if [[ $(/usr/bin/grep -Fc 'endedAt screenPoint: NSPoint' "$SOURCE_FILE") -ne 2 ]] || \
-   [[ $(/usr/bin/grep -Fc 'let session = beginDraggingSession(' "$SOURCE_FILE") -ne 2 ]] || \
+if [[ $(/usr/bin/grep -Fc 'endedAt screenPoint: NSPoint' "$SOURCE_FILE") -ne 3 ]] || \
+   [[ $(/usr/bin/grep -Fc 'let session = beginDraggingSession(' "$SOURCE_FILE") -ne 3 ]] || \
    [[ $(/usr/bin/grep -A5 -F 'let session = beginDraggingSession(' "$SOURCE_FILE" | \
-        /usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false') -ne 2 ]]; then
-    echo "Image and Markdown native cards must disable failed-drag return animation when each session starts." >&2
+        /usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false') -ne 3 ]]; then
+    echo "Image, Markdown, and fallback native card paths must disable failed-drag return animation when each session starts." >&2
     exit 1
 fi
 

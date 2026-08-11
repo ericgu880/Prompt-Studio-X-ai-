@@ -3237,35 +3237,40 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             previousFolderID: String?,
             nextFolderID: String?
         ) {
-            var indexPaths = Set<IndexPath>()
-            for itemID in previousItemIDs.symmetricDifference(nextItemIDs) {
-                if let indexPath = itemIndexPathsByID[itemID] {
-                    indexPaths.insert(indexPath)
-                }
-            }
+            let deselectedItemIDs = previousItemIDs.subtracting(nextItemIDs)
+            let selectedItemIDs = nextItemIDs.subtracting(previousItemIDs)
+            updateSelectionVisuals(itemIDs: deselectedItemIDs, isSelected: false)
+            updateSelectionVisuals(itemIDs: selectedItemIDs, isSelected: true)
+
+            var folderIndexPaths = Set<IndexPath>()
             if previousFolderID != nextFolderID {
                 if let previousFolderID, let indexPath = folderIndexPathsByID[previousFolderID] {
-                    indexPaths.insert(indexPath)
+                    folderIndexPaths.insert(indexPath)
                 }
                 if let nextFolderID, let indexPath = folderIndexPathsByID[nextFolderID] {
-                    indexPaths.insert(indexPath)
+                    folderIndexPaths.insert(indexPath)
                 }
             }
-            guard !indexPaths.isEmpty else { return }
-            var reloadIndexPaths = Set<IndexPath>()
-            for indexPath in indexPaths {
-                guard entries.indices.contains(indexPath.item) else { continue }
+
+            if !folderIndexPaths.isEmpty {
+                collectionView?.reloadItems(at: folderIndexPaths)
+            }
+        }
+
+        private func updateSelectionVisuals(itemIDs: Set<String>, isSelected: Bool) {
+            for itemID in itemIDs {
+                guard let indexPath = itemIndexPathsByID[itemID],
+                      entries.indices.contains(indexPath.item) else {
+                    continue
+                }
                 switch entries[indexPath.item] {
                 case .item(let item) where item.isTextDocumentLike:
-                    updateVisibleMarkdownSelection(itemID: item.id, isSelected: nextItemIDs.contains(item.id))
+                    updateVisibleMarkdownSelection(itemID: item.id, isSelected: isSelected)
                 case .item(let item):
-                    updateVisibleMediaSelection(itemID: item.id, isSelected: nextItemIDs.contains(item.id))
+                    updateVisibleMediaSelection(itemID: item.id, isSelected: isSelected)
                 case .folder:
-                    reloadIndexPaths.insert(indexPath)
+                    continue
                 }
-            }
-            if !reloadIndexPaths.isEmpty {
-                collectionView?.reloadItems(at: reloadIndexPaths)
             }
         }
 
@@ -3505,7 +3510,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     private var hostingView: LazyAssetContextMenuHostingView?
     private var markdownCardView: NativeMarkdownCardView?
     private var imageCardView: NativeImageCardView?
-    private let mediaSelectionState = AssetCardSelectionState(isSelected: false)
+    private var selectionChromeView: NativeAssetSelectionChromeView?
 
     override func loadView() {
         view = NSView()
@@ -3528,7 +3533,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             imageCardView.setSelected(isSelected)
             return
         }
-        mediaSelectionState.isSelected = isSelected
+        selectionChromeView?.setSelected(isSelected)
     }
 
     func configure(
@@ -3547,6 +3552,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             hostingView = nil
             imageCardView?.removeFromSuperview()
             imageCardView = nil
+            selectionChromeView?.removeFromSuperview()
+            selectionChromeView = nil
             let cardView: NativeMarkdownCardView
             if let markdownCardView {
                 cardView = markdownCardView
@@ -3616,6 +3623,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         if case .item(let item) = entry, item.assetKind == .image {
             hostingView?.removeFromSuperview()
             hostingView = nil
+            selectionChromeView?.removeFromSuperview()
+            selectionChromeView = nil
             let cardView: NativeImageCardView
             if let imageCardView {
                 cardView = imageCardView
@@ -3643,6 +3652,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         let rootView: AnyView
         switch entry {
         case .folder(let row):
+            selectionChromeView?.removeFromSuperview()
+            selectionChromeView = nil
             rootView = AnyView(
                 SubfolderCardView(
                     row: row,
@@ -3656,14 +3667,14 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 .frame(width: width, height: height)
             )
         case .item(let item):
-            mediaSelectionState.isSelected = state.selectedIDs.contains(item.id)
             rootView = AnyView(
                 AssetCardView(
                     state: state,
                     item: item,
                     width: width,
                     isReorderingEnabled: false,
-                    selectionState: mediaSelectionState,
+                    rendersSelectionChrome: false,
+                    usesNativeInput: true,
                     selectionAction: selectItem,
                     reorderDragChangedAction: { _, _ in },
                     reorderDragEndedAction: { _ in }
@@ -3680,7 +3691,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 item: entry.promptItem,
                 state: state,
                 selectAction: entry.promptItem.map { item in
-                    { selectItem(item, []) }
+                    { modifiers in selectItem(item, modifiers) }
                 }
             )
         } else {
@@ -3693,36 +3704,143 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 item: entry.promptItem,
                 state: state,
                 selectAction: entry.promptItem.map { item in
-                    { selectItem(item, []) }
+                    { modifiers in selectItem(item, modifiers) }
                 }
             )
             view.addSubview(hostingView)
             self.hostingView = hostingView
         }
+
+        if let item = entry.promptItem {
+            let selectionChrome: NativeAssetSelectionChromeView
+            if let selectionChromeView {
+                selectionChrome = selectionChromeView
+            } else {
+                selectionChrome = NativeAssetSelectionChromeView(frame: view.bounds)
+                selectionChrome.autoresizingMask = [.width, .height]
+                selectionChromeView = selectionChrome
+            }
+            selectionChrome.frame = view.bounds
+            selectionChrome.configure(
+                item: item,
+                state: state,
+                selectAction: { selectItem(item, []) }
+            )
+            selectionChrome.setSelected(state.selectedIDs.contains(item.id))
+            if selectionChrome.superview == nil {
+                view.addSubview(selectionChrome)
+            } else {
+                view.addSubview(selectionChrome, positioned: .above, relativeTo: hostingView)
+            }
+        }
+    }
+}
+
+private final class NativeFallbackCardDraggingSource: NSObject, NSDraggingSource {
+    var onEnded: (() -> Void)?
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        onEnded?()
     }
 }
 
 private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     private weak var state: AppState?
     private var item: PromptItem?
-    private var selectAction: (() -> Void)?
+    private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var menuTargets: [NativeMarkdownMenuActionTarget] = []
+    private let draggingSource = NativeFallbackCardDraggingSource()
+    private var dragStartLocation: NSPoint?
+    private var hasStartedDragging = false
+    private var collapseSelectionOnMouseUp = false
 
     func configureContextMenu(
         item: PromptItem?,
         state: AppState,
-        selectAction: (() -> Void)?
+        selectAction: ((NSEvent.ModifierFlags) -> Void)?
     ) {
         self.item = item
         self.state = state
         self.selectAction = selectAction
+        draggingSource.onEnded = { [weak self] in
+            self?.clearDragState()
+        }
         menuTargets = []
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartLocation = event.locationInWindow
+        hasStartedDragging = false
+        guard let item, let state else { return }
+        if event.clickCount >= 2 {
+            selectAction?([])
+            state.previewSelected()
+        } else {
+            let modifiers = event.modifierFlags.intersection([.command, .shift])
+            let isSelected = state.selectedIDs.contains(item.id)
+            collapseSelectionOnMouseUp = modifiers.isEmpty && isSelected && state.selectedIDs.count > 1
+            if !collapseSelectionOnMouseUp {
+                selectAction?(event.modifierFlags)
+            }
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !hasStartedDragging,
+              let item,
+              !item.isDeleted,
+              let dragStartLocation else {
+            return
+        }
+        let deltaX = event.locationInWindow.x - dragStartLocation.x
+        let deltaY = event.locationInWindow.y - dragStartLocation.y
+        guard hypot(deltaX, deltaY) >= 6 else { return }
+
+        let itemIDs = state?.orderedItemIDsForDrag(startingWith: item.id) ?? [item.id]
+        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        collapseSelectionOnMouseUp = false
+        hasStartedDragging = true
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: draggingSource)
+        session.animatesToStartingPositionsOnCancelOrFail = false
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if collapseSelectionOnMouseUp && !hasStartedDragging {
+            selectAction?([])
+        }
+        collapseSelectionOnMouseUp = false
+        dragStartLocation = nil
+        hasStartedDragging = false
+        super.mouseUp(with: event)
+    }
+
+    private func clearDragState() {
+        dragStartLocation = nil
+        hasStartedDragging = false
+        collapseSelectionOnMouseUp = false
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let item, let state else { return nil }
         if !state.selectedIDs.contains(item.id) {
-            selectAction?()
+            selectAction?(event.modifierFlags)
         }
 
         let menu = NSMenu()
@@ -3828,6 +3946,200 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
                 .isEmpty
         }
         return item.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func dragPreviewImage() -> NSImage {
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return NSImage(size: bounds.size)
+        }
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
+        return image
+    }
+}
+
+private final class NativeAssetSelectionChromeView: NSView {
+    private enum Metrics {
+        static let selectionOutset = AssetCardMetrics.selectionOutset
+        static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
+        static let selectionCornerRadius = AssetCardMetrics.selectionCornerRadius
+        static let overlayHeight: CGFloat = 82
+        static let horizontalInset: CGFloat = 10
+        static let bottomInset: CGFloat = 10
+        static let actionButtonSize: CGFloat = 28
+        static let actionButtonSpacing: CGFloat = 8
+    }
+
+    private enum Palette {
+        static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
+    }
+
+    private let gradientLayer = CAGradientLayer()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let editButton = NativeMarkdownIconButton(icon: .pencil, toolTip: "编辑")
+    private let copyButton = NativeMarkdownIconButton(icon: .copy, toolTip: "复制")
+    private weak var state: AppState?
+    private var item: PromptItem?
+    private var selectAction: (() -> Void)?
+    private var isCardSelected = true
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override var isFlipped: Bool { true }
+
+    func configure(item: PromptItem, state: AppState, selectAction: @escaping () -> Void) {
+        self.item = item
+        self.state = state
+        self.selectAction = selectAction
+        titleLabel.stringValue = item.title
+        editButton.toolTip = item.isPromptPrimaryAsset ? "编辑" : "用默认应用打开"
+        editButton.setAccessibilityLabel(editButton.toolTip ?? "编辑")
+        copyButton.toolTip = item.isPromptPrimaryAsset
+            ? (item.isTextDocumentLike ? "复制文档信息" : "复制提示词")
+            : "复制文件"
+        copyButton.setAccessibilityLabel(copyButton.toolTip ?? "复制")
+        needsLayout = true
+    }
+
+    func setSelected(_ isSelected: Bool) {
+        guard isCardSelected != isSelected else { return }
+        isCardSelected = isSelected
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.borderWidth = isSelected ? 1.5 : 0
+        layer?.borderColor = isSelected ? Palette.selectedBorder.cgColor : NSColor.clear.cgColor
+        gradientLayer.isHidden = !isSelected
+        titleLabel.isHidden = !isSelected
+        editButton.isHidden = !isSelected
+        copyButton.isHidden = !isSelected
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        let contentFrame = bounds.insetBy(dx: Metrics.selectionOutset, dy: Metrics.selectionOutset)
+        let overlayHeight = min(Metrics.overlayHeight, contentFrame.height)
+        gradientLayer.frame = CGRect(
+            x: contentFrame.minX,
+            y: contentFrame.maxY - overlayHeight,
+            width: contentFrame.width,
+            height: overlayHeight
+        )
+        gradientLayer.cornerRadius = Metrics.contentCornerRadius
+        gradientLayer.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+
+        let buttonY = contentFrame.maxY - Metrics.bottomInset - Metrics.actionButtonSize
+        copyButton.frame = CGRect(
+            x: contentFrame.maxX - Metrics.horizontalInset - Metrics.actionButtonSize,
+            y: buttonY,
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
+        )
+        editButton.frame = CGRect(
+            x: copyButton.frame.minX - Metrics.actionButtonSpacing - Metrics.actionButtonSize,
+            y: buttonY,
+            width: Metrics.actionButtonSize,
+            height: Metrics.actionButtonSize
+        )
+        titleLabel.frame = CGRect(
+            x: contentFrame.minX + Metrics.horizontalInset,
+            y: buttonY + 3,
+            width: max(0, editButton.frame.minX - contentFrame.minX - Metrics.horizontalInset * 2),
+            height: 22
+        )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isCardSelected else { return nil }
+        for button in [editButton, copyButton] where !button.isHidden {
+            let localPoint = convert(point, to: button)
+            if button.bounds.contains(localPoint) {
+                return button.hitTest(localPoint)
+            }
+        }
+        return nil
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = Metrics.selectionCornerRadius
+        layer?.masksToBounds = false
+        layer?.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "transform": NSNull(),
+            "opacity": NSNull(),
+            "borderWidth": NSNull(),
+            "borderColor": NSNull()
+        ]
+
+        gradientLayer.colors = [
+            NSColor.black.withAlphaComponent(0).cgColor,
+            NSColor.black.withAlphaComponent(0.42).cgColor,
+            NSColor.black.withAlphaComponent(0.68).cgColor
+        ]
+        gradientLayer.locations = [0, 0.52, 1]
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        gradientLayer.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "opacity": NSNull(),
+            "hidden": NSNull()
+        ]
+        layer?.addSublayer(gradientLayer)
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.usesSingleLineMode = true
+        titleLabel.drawsBackground = false
+        titleLabel.isBordered = false
+        titleLabel.isEditable = false
+
+        editButton.applyIconCirclePalette()
+        copyButton.applyIconCirclePalette()
+        editButton.actionHandler = { [weak self] in self?.runEditAction() }
+        copyButton.actionHandler = { [weak self] in self?.runCopyAction() }
+        addSubview(titleLabel)
+        addSubview(editButton)
+        addSubview(copyButton)
+        setSelected(false)
+    }
+
+    private func ensureSelected() {
+        guard let item, let state, !state.selectedIDs.contains(item.id) else { return }
+        selectAction?()
+    }
+
+    private func runEditAction() {
+        guard let item, let state else { return }
+        ensureSelected()
+        if item.isPromptPrimaryAsset {
+            state.requestInlineEdit(item)
+        } else {
+            state.openSelectedInDefaultApplication()
+        }
+    }
+
+    private func runCopyAction() {
+        guard let item, let state else { return }
+        ensureSelected()
+        if item.isPromptPrimaryAsset {
+            state.copyItemContent(item)
+        } else {
+            state.copySelectedFile()
+        }
     }
 }
 
@@ -5680,14 +5992,6 @@ private struct MasonryPlacementOffsetModifier: ViewModifier {
     }
 }
 
-private final class AssetCardSelectionState: ObservableObject {
-    @Published var isSelected: Bool
-
-    init(isSelected: Bool) {
-        self.isSelected = isSelected
-    }
-}
-
 private struct AssetCardExternalDragModifier: ViewModifier {
     let itemID: String
     let isEnabled: Bool
@@ -5707,12 +6011,12 @@ private struct AssetCardExternalDragModifier: ViewModifier {
 
 private struct AssetCardView: View {
     private let state: AppState
-    @ObservedObject private var selectionState: AssetCardSelectionState
     let item: PromptItem
     let width: CGFloat
     let isReorderingEnabled: Bool
-    private let usesExplicitSelectionState: Bool
-    private let fallbackIsSelected: Bool
+    private let isSelected: Bool
+    private let rendersSelectionChrome: Bool
+    private let usesNativeInput: Bool
     let selectionAction: (PromptItem, NSEvent.ModifierFlags) -> Void
     let reorderDragChangedAction: (String, CGPoint) -> Void
     let reorderDragEndedAction: (String) -> Void
@@ -5723,8 +6027,9 @@ private struct AssetCardView: View {
         item: PromptItem,
         width: CGFloat,
         isReorderingEnabled: Bool,
-        selectionState: AssetCardSelectionState? = nil,
         isSelected: Bool = false,
+        rendersSelectionChrome: Bool = true,
+        usesNativeInput: Bool = false,
         selectionAction: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void,
         reorderDragChangedAction: @escaping (String, CGPoint) -> Void,
         reorderDragEndedAction: @escaping (String) -> Void
@@ -5733,32 +6038,25 @@ private struct AssetCardView: View {
         self.item = item
         self.width = width
         self.isReorderingEnabled = isReorderingEnabled
-        self.usesExplicitSelectionState = selectionState != nil
-        self.fallbackIsSelected = isSelected
+        self.isSelected = isSelected
+        self.rendersSelectionChrome = rendersSelectionChrome
+        self.usesNativeInput = usesNativeInput
         self.selectionAction = selectionAction
         self.reorderDragChangedAction = reorderDragChangedAction
         self.reorderDragEndedAction = reorderDragEndedAction
-        _selectionState = ObservedObject(
-            wrappedValue: selectionState ?? AssetCardSelectionState(isSelected: false)
-        )
-    }
-
-    private var isSelected: Bool {
-        usesExplicitSelectionState ? selectionState.isSelected : fallbackIsSelected
     }
 
     var body: some View {
         let contentWidth = AssetCardMetrics.contentWidth(for: width)
         let contentHeight = AssetCardMetrics.contentHeight(for: item, width: contentWidth)
-        ZStack(alignment: .topTrailing) {
+        cardInteractions(ZStack(alignment: .topTrailing) {
             cardContent
                 .frame(width: contentWidth, height: contentHeight)
                 .clipped()
 
-            if isSelected {
+            if rendersSelectionChrome && isSelected {
                 selectedCardOverlay
                     .frame(width: contentWidth, height: contentHeight, alignment: .bottom)
-                    .transition(.opacity)
             }
 
         }
@@ -5767,31 +6065,43 @@ private struct AssetCardView: View {
         .padding(AssetCardMetrics.selectionOutset)
         .overlay(
             RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous)
-                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: isSelected ? 1.5 : 0)
+                .strokeBorder(
+                    rendersSelectionChrome && isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear,
+                    lineWidth: rendersSelectionChrome && isSelected ? 1.5 : 0
+                )
         )
         .frame(width: width, height: contentHeight + AssetCardMetrics.selectionOutset * 2)
-        .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous))
-        .onTapGesture {
-            handleCardTap()
-        }
-        .simultaneousGesture(
-            TapGesture(count: 2)
-                .onEnded {
-                    selectImmediately()
-                    state.previewSelected()
-                }
-        )
-        .modifier(
-            AssetCardExternalDragModifier(
-                itemID: item.id,
-                isEnabled: !isReorderingEnabled && !item.isDeleted,
-                state: state
-            )
-        )
-        .simultaneousGesture(reorderGesture)
+        .contentShape(RoundedRectangle(cornerRadius: AssetCardMetrics.selectionCornerRadius, style: .continuous)))
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true
+        }
+    }
+
+    @ViewBuilder
+    private func cardInteractions<Content: View>(_ content: Content) -> some View {
+        if usesNativeInput {
+            content
+        } else {
+            content
+                .onTapGesture {
+                    handleCardTap()
+                }
+                .simultaneousGesture(
+                    TapGesture(count: 2)
+                        .onEnded {
+                            selectImmediately()
+                            state.previewSelected()
+                        }
+                )
+                .modifier(
+                    AssetCardExternalDragModifier(
+                        itemID: item.id,
+                        isEnabled: !isReorderingEnabled && !item.isDeleted,
+                        state: state
+                    )
+                )
+                .simultaneousGesture(reorderGesture)
         }
     }
 
