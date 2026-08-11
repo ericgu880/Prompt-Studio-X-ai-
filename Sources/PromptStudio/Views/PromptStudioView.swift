@@ -3706,9 +3706,6 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
 
     private enum Palette {
         static let placeholder = NSColor(hex: 0x1E1E1E)
-        static let actionBackground = NSColor(hex: 0x1F1F1F)
-        static let actionBorder = NSColor(hex: 0x212327)
-        static let actionHoverBorder = NSColor.white.withAlphaComponent(0.42)
         static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
     }
 
@@ -3980,16 +3977,8 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         titleLabel.isEditable = false
         contentView.addSubview(titleLabel)
 
-        editButton.applyPalette(
-            background: Palette.actionBackground,
-            border: Palette.actionBorder,
-            hoverBorder: Palette.actionHoverBorder
-        )
-        copyButton.applyPalette(
-            background: Palette.actionBackground,
-            border: Palette.actionBorder,
-            hoverBorder: Palette.actionHoverBorder
-        )
+        editButton.applyIconCirclePalette()
+        copyButton.applyIconCirclePalette()
         contentView.addSubview(editButton)
         contentView.addSubview(copyButton)
         setSelected(false)
@@ -4083,19 +4072,6 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         static let orange = NSColor(hex: 0xFF9F0A)
         static let green = NSColor(hex: 0x37DD61)
         static let blue = NSColor(hex: 0x41CBE0)
-        static let actionBackground = NSColor(
-            srgbRed: 31.0 / 255.0,
-            green: 31.0 / 255.0,
-            blue: 31.0 / 255.0,
-            alpha: 1
-        )
-        static let actionBorder = NSColor(
-            srgbRed: 33.0 / 255.0,
-            green: 35.0 / 255.0,
-            blue: 39.0 / 255.0,
-            alpha: 1
-        )
-        static let actionHoverBorder = NSColor.white.withAlphaComponent(0.42)
         static let selectedBorder = NSColor.white.withAlphaComponent(0.72)
     }
 
@@ -4321,16 +4297,8 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
 
         editButton.actionHandler = { [weak self] in self?.editAction?() }
         copyButton.actionHandler = { [weak self] in self?.copyAction?() }
-        editButton.applyPalette(
-            background: Palette.actionBackground,
-            border: Palette.actionBorder,
-            hoverBorder: Palette.actionHoverBorder
-        )
-        copyButton.applyPalette(
-            background: Palette.actionBackground,
-            border: Palette.actionBorder,
-            hoverBorder: Palette.actionHoverBorder
-        )
+        editButton.applyIconCirclePalette()
+        copyButton.applyIconCirclePalette()
         editButton.isHidden = true
         copyButton.isHidden = true
         contentView.addSubview(editButton)
@@ -4446,10 +4414,18 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
 }
 
 private final class NativeMarkdownIconButton: NSButton {
+    private enum Palette {
+        static let control = NSColor(hex: 0x1F1F1F)
+        static let selection = NSColor(hex: 0x1F1F1F)
+        static let hairline = NSColor(hex: 0x212327)
+        static let primaryAction = NSColor.white.withAlphaComponent(0.42)
+    }
+
     var actionHandler: (() -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
     private var normalBackground = NSColor.clear
     private var normalBorder = NSColor.clear
+    private var hoverBackground = NSColor.clear
     private var hoverBorder = NSColor.clear
     private var isHovered = false
     private var isPressed = false
@@ -4517,22 +4493,24 @@ private final class NativeMarkdownIconButton: NSButton {
         updateAppearance(animated: true)
     }
 
-    func applyPalette(background: NSColor, border: NSColor, hoverBorder: NSColor) {
-        normalBackground = background
-        normalBorder = border
-        self.hoverBorder = hoverBorder
+    func applyIconCirclePalette() {
+        normalBackground = Palette.control
+        normalBorder = Palette.hairline
+        hoverBackground = Palette.selection
+        hoverBorder = Palette.primaryAction
         contentTintColor = .white
         updateAppearance(animated: false)
     }
 
     private func updateAppearance(animated: Bool) {
         CATransaction.begin()
-        CATransaction.setAnimationDuration(animated ? StudioMotion.fastDuration : 0)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        CATransaction.setAnimationDuration(animated && !reduceMotion ? StudioMotion.fastDuration : 0)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-        layer?.backgroundColor = normalBackground.cgColor
+        layer?.backgroundColor = (isHovered || isPressed ? hoverBackground : normalBackground).cgColor
         layer?.borderColor = (isHovered ? hoverBorder : normalBorder).cgColor
         layer?.opacity = isPressed ? 0.72 : 1
-        let scale: CGFloat = isPressed ? 0.985 : (isHovered ? 1.04 : 1)
+        let scale: CGFloat = reduceMotion ? 1 : (isPressed ? 0.985 : (isHovered ? 1.04 : 1))
         layer?.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
         CATransaction.commit()
     }
