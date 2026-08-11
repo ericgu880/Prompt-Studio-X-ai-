@@ -3692,6 +3692,77 @@ private final class NativeImageCardContentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+private struct NativeDragReturnContext {
+    let previewImage: NSImage
+    let sourceFrameInWindow: NSRect
+    let pointerOffsetInWindow: NSPoint
+}
+
+private final class NativeDragReturnGhostView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private enum NativeDragReturnAnimator {
+    static let duration: TimeInterval = 0.22
+
+    private static var activeGhosts: [ObjectIdentifier: NativeDragReturnGhostView] = [:]
+
+    static func animate(
+        _ context: NativeDragReturnContext,
+        releasedAt screenPoint: NSPoint,
+        in window: NSWindow
+    ) {
+        cancel(in: window)
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let contentView = window.contentView else {
+            return
+        }
+
+        let releasedPointInWindow = window.convertPoint(fromScreen: screenPoint)
+        let releasedFrameInWindow = NSRect(
+            origin: NSPoint(
+                x: releasedPointInWindow.x - context.pointerOffsetInWindow.x,
+                y: releasedPointInWindow.y - context.pointerOffsetInWindow.y
+            ),
+            size: context.sourceFrameInWindow.size
+        )
+        let startFrame = contentView.convert(releasedFrameInWindow, from: nil)
+        let destinationFrame = contentView.convert(context.sourceFrameInWindow, from: nil)
+        guard isFinite(startFrame), isFinite(destinationFrame) else { return }
+
+        let ghost = NativeDragReturnGhostView(frame: startFrame)
+        ghost.image = context.previewImage
+        ghost.imageScaling = .scaleAxesIndependently
+        ghost.imageAlignment = .alignCenter
+        ghost.wantsLayer = true
+        ghost.layer?.zPosition = 20_000
+        contentView.addSubview(ghost, positioned: .above, relativeTo: nil)
+
+        let windowID = ObjectIdentifier(window)
+        activeGhosts[windowID] = ghost
+        NSAnimationContext.runAnimationGroup { animationContext in
+            animationContext.duration = duration
+            animationContext.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ghost.animator().frame = destinationFrame
+        } completionHandler: {
+            guard activeGhosts[windowID] === ghost else { return }
+            activeGhosts[windowID] = nil
+            ghost.removeFromSuperview()
+        }
+    }
+
+    static func cancel(in window: NSWindow) {
+        let windowID = ObjectIdentifier(window)
+        activeGhosts[windowID]?.removeFromSuperview()
+        activeGhosts[windowID] = nil
+    }
+
+    private static func isFinite(_ rect: NSRect) -> Bool {
+        rect.origin.x.isFinite && rect.origin.y.isFinite &&
+            rect.width.isFinite && rect.height.isFinite
+    }
+}
+
 private final class NativeImageCardView: NSView, NSDraggingSource {
     private enum Metrics {
         static let selectionOutset = AssetCardMetrics.selectionOutset
@@ -3722,6 +3793,7 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var menuTargets: [NativeMarkdownMenuActionTarget] = []
     private var dragStartLocation: NSPoint?
+    private var dragReturnContext: NativeDragReturnContext?
     private var hasStartedDragging = false
     private var isCardSelected = false
     private var collapseSelectionOnMouseUp = false
@@ -3862,10 +3934,23 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
+        if let window {
+            NativeDragReturnAnimator.cancel(in: window)
+        }
         let itemIDs = state?.orderedItemIDsForDrag(startingWith: item.id) ?? [item.id]
         guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
+        let previewImage = dragPreviewImage()
+        let sourceFrameInWindow = convert(bounds, to: nil)
+        dragReturnContext = NativeDragReturnContext(
+            previewImage: previewImage,
+            sourceFrameInWindow: sourceFrameInWindow,
+            pointerOffsetInWindow: NSPoint(
+                x: event.locationInWindow.x - sourceFrameInWindow.origin.x,
+                y: event.locationInWindow.y - sourceFrameInWindow.origin.y
+            )
+        )
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        draggingItem.setDraggingFrame(bounds, contents: previewImage)
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
         beginDraggingSession(with: [draggingItem], event: event, source: self)
@@ -3886,6 +3971,25 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
         context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        defer { dragReturnContext = nil }
+        guard operation == [],
+              let dragReturnContext,
+              let window else {
+            return
+        }
+        session.animatesToStartingPositionsOnCancelOrFail = false
+        NativeDragReturnAnimator.animate(
+            dragReturnContext,
+            releasedAt: screenPoint,
+            in: window
+        )
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -4087,6 +4191,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     private var isCardSelected = false
     private var draggedItemID: String?
     private var dragStartLocation: NSPoint?
+    private var dragReturnContext: NativeDragReturnContext?
     private var hasStartedDragging = false
     private var collapseSelectionOnMouseUp = false
     private var areActionsVisible = false
@@ -4236,10 +4341,23 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
+        if let window {
+            NativeDragReturnAnimator.cancel(in: window)
+        }
         let itemIDs = state?.orderedItemIDsForDrag(startingWith: draggedItemID) ?? [draggedItemID]
         guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
+        let previewImage = dragPreviewImage()
+        let sourceFrameInWindow = convert(bounds, to: nil)
+        dragReturnContext = NativeDragReturnContext(
+            previewImage: previewImage,
+            sourceFrameInWindow: sourceFrameInWindow,
+            pointerOffsetInWindow: NSPoint(
+                x: event.locationInWindow.x - sourceFrameInWindow.origin.x,
+                y: event.locationInWindow.y - sourceFrameInWindow.origin.y
+            )
+        )
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
+        draggingItem.setDraggingFrame(bounds, contents: previewImage)
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
         beginDraggingSession(with: [draggingItem], event: event, source: self)
@@ -4260,6 +4378,25 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
         context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        defer { dragReturnContext = nil }
+        guard operation == [],
+              let dragReturnContext,
+              let window else {
+            return
+        }
+        session.animatesToStartingPositionsOnCancelOrFail = false
+        NativeDragReturnAnimator.animate(
+            dragReturnContext,
+            releasedAt: screenPoint,
+            in: window
+        )
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
