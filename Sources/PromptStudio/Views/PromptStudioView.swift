@@ -4724,15 +4724,6 @@ private struct MasonryGridView: View {
                 }
             }
         }
-        .transaction { transaction in
-            if draggedItemID != nil {
-                transaction.animation = .easeInOut(duration: 0.22)
-                transaction.disablesAnimations = false
-            } else {
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
-        }
     }
 
     private func computedColumnCount(for availableWidth: CGFloat) -> Int {
@@ -4886,13 +4877,17 @@ private struct MasonryGridView: View {
             clearItemReorder()
             return
         }
-        state.swapFilteredItems(draggedID, targetID)
         clearItemReorder()
+        state.swapFilteredItems(draggedID, targetID)
     }
 
     private func clearItemReorder() {
-        clearItemReorderPreview()
-        draggedItemID = nil
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            clearItemReorderPreview()
+            draggedItemID = nil
+        }
     }
 
     private func clearItemReorderPreview() {
