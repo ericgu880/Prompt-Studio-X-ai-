@@ -454,7 +454,7 @@ final class HoverRevealScrollView: NSScrollView {
 }
 
 final class TransparentOverlayScroller: NSScroller {
-    private static let knobWidth: CGFloat = 6
+    static let knobWidth: CGFloat = 6
     private static let knobHorizontalHitOutset: CGFloat = 6
     private static let knobVerticalHitOutset: CGFloat = 2
 

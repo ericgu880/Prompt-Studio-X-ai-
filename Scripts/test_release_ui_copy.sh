@@ -100,9 +100,14 @@ if /usr/bin/grep -q '\.padding(\.top, 58)' "$PREVIEW_OVERLAY_FILE" || \
 fi
 
 SIDE_PANEL_COMPONENT_FILE="$ROOT_DIR/Sources/PromptStudio/Views/AssetSidePanelComponents.swift"
-if ! /usr/bin/grep -q 'static let overlayScrollerClearance: CGFloat = 10' "$SIDE_PANEL_COMPONENT_FILE" || \
-   ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.overlayScrollerClearance' "$SIDE_PANEL_COMPONENT_FILE"; then
-    echo "Scrollable Prompt text must reserve trailing space beside the overlay scroller." >&2
+if ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 16' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'static let textToScrollerSpacing: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'static let scrollerRightInset: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'static let scrollContentRightInset: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.scrollContentRightInset' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.scrollerRightInset' "$SIDE_PANEL_COMPONENT_FILE"; then
+    echo "Scrollable Prompt text must meet the knob with no gap and place the knob on the right edge." >&2
     exit 1
 fi
 

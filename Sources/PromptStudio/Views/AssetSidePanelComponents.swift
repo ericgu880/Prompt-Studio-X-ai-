@@ -3,8 +3,12 @@ import SwiftUI
 import PromptStudioCore
 
 enum SidePanelPromptBoxLayout {
-    static let textPadding: CGFloat = 14
-    static let overlayScrollerClearance: CGFloat = 10
+    static let textLeadingPadding: CGFloat = 16
+    static let textToScrollerSpacing: CGFloat = 0
+    static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing
+    static let textVerticalPadding: CGFloat = 14
+    static let scrollerRightInset: CGFloat = 0
+    static let scrollContentRightInset: CGFloat = 0
     static let bottomReserveAfterLastLine: CGFloat = 32
     static let copyHintHeight: CGFloat = 24
     static let copyHintOuterPadding: CGFloat = 8
@@ -18,7 +22,7 @@ enum SidePanelPromptBoxLayout {
     }
 
     static var extraBottomClearance: CGFloat {
-        max(0, protectedBottomArea - textPadding)
+        max(0, protectedBottomArea - textVerticalPadding)
     }
 }
 
@@ -208,14 +212,17 @@ struct SidePanelPromptTextBox: View {
     }
 
     private func measuredHeight(width: CGFloat) -> CGFloat {
-        let measurementWidth = max(1, width)
+        let measurementWidth = max(
+            1,
+            width - SidePanelPromptBoxLayout.textLeadingPadding - SidePanelPromptBoxLayout.textTrailingPadding
+        )
         return PromptTextMetrics.height(
             for: text,
             width: measurementWidth,
             font: NSFont.systemFont(ofSize: 13, weight: .regular),
             lineSpacing: 4,
-            horizontalPadding: SidePanelPromptBoxLayout.textPadding,
-            verticalPadding: SidePanelPromptBoxLayout.textPadding
+            horizontalPadding: 0,
+            verticalPadding: SidePanelPromptBoxLayout.textVerticalPadding
         ) + SidePanelPromptBoxLayout.extraBottomClearance
     }
 }
@@ -315,9 +322,14 @@ struct SidePanelPromptScrollableTextView: NSViewRepresentable {
             top: 0,
             left: 0,
             bottom: 0,
-            right: SidePanelPromptBoxLayout.overlayScrollerClearance
+            right: SidePanelPromptBoxLayout.scrollContentRightInset
         )
-        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.scrollerInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: SidePanelPromptBoxLayout.scrollerRightInset
+        )
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.backgroundColor = .clear
         scrollView.contentView.wantsLayer = true
@@ -361,10 +373,6 @@ final class SidePanelPromptTextContainer: NSView {
 
     private let textView = SidePanelCopyingPromptTextView()
     private let font = NSFont.systemFont(ofSize: 13, weight: .regular)
-    private let textInset = NSSize(
-        width: SidePanelPromptBoxLayout.textPadding,
-        height: SidePanelPromptBoxLayout.textPadding
-    )
     private var currentText = ""
     private var currentPlaceholderState = false
 
@@ -394,7 +402,10 @@ final class SidePanelPromptTextContainer: NSView {
         super.layout()
         textView.frame = bounds
         textView.textContainer?.containerSize = NSSize(
-            width: max(1, bounds.width - textInset.width * 2),
+            width: max(
+                1,
+                bounds.width - SidePanelPromptBoxLayout.textLeadingPadding - SidePanelPromptBoxLayout.textTrailingPadding
+            ),
             height: CGFloat.greatestFiniteMagnitude
         )
         invalidateIntrinsicContentSize()
@@ -427,9 +438,9 @@ final class SidePanelPromptTextContainer: NSView {
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = false
-        textView.textContainerInset = textInset
+        textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
-        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.heightTracksTextView = false
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
@@ -438,7 +449,10 @@ final class SidePanelPromptTextContainer: NSView {
     }
 
     private func measuredHeight(for width: CGFloat) -> CGFloat {
-        let textWidth = max(1, width - textInset.width * 2)
+        let textWidth = max(
+            1,
+            width - SidePanelPromptBoxLayout.textLeadingPadding - SidePanelPromptBoxLayout.textTrailingPadding
+        )
         let storage = NSTextStorage(attributedString: textView.attributedString())
         let layoutManager = NSLayoutManager()
         let textContainer = NSTextContainer(size: NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude))
@@ -448,7 +462,7 @@ final class SidePanelPromptTextContainer: NSView {
         storage.addLayoutManager(layoutManager)
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
-        return max(44, ceil(usedRect.height) + textInset.height * 2)
+        return max(44, ceil(usedRect.height) + SidePanelPromptBoxLayout.textVerticalPadding * 2)
     }
 
     private func attributedString(for text: String, color: NSColor) -> NSAttributedString {
@@ -473,6 +487,13 @@ private final class SidePanelCopyingPromptTextView: NSTextView {
     private var mouseDownLocation: NSPoint = .zero
 
     override var acceptsFirstResponder: Bool { true }
+
+    override var textContainerOrigin: NSPoint {
+        NSPoint(
+            x: SidePanelPromptBoxLayout.textLeadingPadding,
+            y: SidePanelPromptBoxLayout.textVerticalPadding
+        )
+    }
 
     override func resetCursorRects() {
         guard usesCopyInteraction else {
