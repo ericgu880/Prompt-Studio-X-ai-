@@ -12,7 +12,7 @@ fi
 for required in \
     'func draggingSession(' \
     'endedAt screenPoint: NSPoint' \
-    'operation == []' \
+    'let session = beginDraggingSession(' \
     'session.animatesToStartingPositionsOnCancelOrFail = false' \
     'context == .withinApplication ? .move : []' \
     'dragStartLocation = nil' \
@@ -24,13 +24,15 @@ for required in \
 done
 
 if [[ $(/usr/bin/grep -Fc 'endedAt screenPoint: NSPoint' "$SOURCE_FILE") -ne 2 ]] || \
-   [[ $(/usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false' "$SOURCE_FILE") -ne 2 ]]; then
-    echo "Image and Markdown native cards must both disable failed-drag return animation." >&2
+   [[ $(/usr/bin/grep -Fc 'let session = beginDraggingSession(' "$SOURCE_FILE") -ne 2 ]] || \
+   [[ $(/usr/bin/grep -A5 -F 'let session = beginDraggingSession(' "$SOURCE_FILE" | \
+        /usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false') -ne 2 ]]; then
+    echo "Image and Markdown native cards must disable failed-drag return animation when each session starts." >&2
     exit 1
 fi
 
-if /usr/bin/grep -Eq 'NativeDragReturnAnimator|NativeDragReturnGhostView' "$SOURCE_FILE"; then
-    echo "Native drag cancellation must not add a return ghost." >&2
+if /usr/bin/grep -Eq 'NativeDragReturnAnimator|NativeDragReturnGhostView|if operation == \[\]' "$SOURCE_FILE"; then
+    echo "Native drag cancellation must not add a return ghost or defer the setting until drag completion." >&2
     exit 1
 fi
 

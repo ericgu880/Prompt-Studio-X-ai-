@@ -3868,7 +3868,8 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
-        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = false
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -3893,9 +3894,6 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         endedAt screenPoint: NSPoint,
         operation: NSDragOperation
     ) {
-        if operation == [] {
-            session.animatesToStartingPositionsOnCancelOrFail = false
-        }
         dragStartLocation = nil
         hasStartedDragging = false
         collapseSelectionOnMouseUp = false
@@ -4255,7 +4253,8 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
-        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = false
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -4280,9 +4279,6 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         endedAt screenPoint: NSPoint,
         operation: NSDragOperation
     ) {
-        if operation == [] {
-            session.animatesToStartingPositionsOnCancelOrFail = false
-        }
         dragStartLocation = nil
         hasStartedDragging = false
         collapseSelectionOnMouseUp = false
