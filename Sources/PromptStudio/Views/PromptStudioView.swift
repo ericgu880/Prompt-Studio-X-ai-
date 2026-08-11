@@ -3888,6 +3888,19 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         context == .withinApplication ? .move : []
     }
 
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        if operation == [] {
+            session.animatesToStartingPositionsOnCancelOrFail = false
+        }
+        dragStartLocation = nil
+        hasStartedDragging = false
+        collapseSelectionOnMouseUp = false
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let state, let item else { return nil }
         selectAction?(event.modifierFlags)
@@ -4260,6 +4273,19 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         sourceOperationMaskFor context: NSDraggingContext
     ) -> NSDragOperation {
         context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        if operation == [] {
+            session.animatesToStartingPositionsOnCancelOrFail = false
+        }
+        dragStartLocation = nil
+        hasStartedDragging = false
+        collapseSelectionOnMouseUp = false
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
