@@ -100,22 +100,27 @@ if /usr/bin/grep -q '\.padding(\.top, 58)' "$PREVIEW_OVERLAY_FILE" || \
 fi
 
 SIDE_PANEL_COMPONENT_FILE="$ROOT_DIR/Sources/PromptStudio/Views/AssetSidePanelComponents.swift"
-if ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 16' "$SIDE_PANEL_COMPONENT_FILE" || \
-   ! /usr/bin/grep -q 'static let textToScrollerSpacing: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
-   ! /usr/bin/grep -q 'static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing' "$SIDE_PANEL_COMPONENT_FILE" || \
+if ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 24' "$SIDE_PANEL_COMPONENT_FILE" || \
+   ! /usr/bin/grep -q 'static let textTrailingPadding: CGFloat = 24' "$SIDE_PANEL_COMPONENT_FILE" || \
    ! /usr/bin/grep -q 'static let scrollerRightInset: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
    ! /usr/bin/grep -q 'static let scrollContentRightInset: CGFloat = 0' "$SIDE_PANEL_COMPONENT_FILE" || \
    ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.scrollContentRightInset' "$SIDE_PANEL_COMPONENT_FILE" || \
    ! /usr/bin/grep -q 'right: SidePanelPromptBoxLayout\.scrollerRightInset' "$SIDE_PANEL_COMPONENT_FILE"; then
-    echo "Scrollable Prompt text must meet the knob with no gap and place the knob on the right edge." >&2
+    echo "Image Prompt text must keep symmetric 24pt insets while the scroller stays on the right edge." >&2
     exit 1
 fi
 
 MARKDOWN_EDITOR_FILE="$ROOT_DIR/Sources/PromptStudio/Views/MarkdownDocumentEditor.swift"
-if ! /usr/bin/grep -q 'let availableTextWidth = max(' "$MARKDOWN_EDITOR_FILE" || \
-   ! /usr/bin/grep -q 'scrollView.contentSize.width - textView.textContainerInset.width \* 2' "$MARKDOWN_EDITOR_FILE" || \
-   ! /usr/bin/grep -q 'width: availableTextWidth' "$MARKDOWN_EDITOR_FILE"; then
-    echo "Markdown preview must wrap inside the visible viewport after subtracting both text insets." >&2
+if ! /usr/bin/grep -q 'static let gutterWidth: CGFloat = 32' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let textLeadingPadding: CGFloat = 16' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let textToScrollerSpacing: CGFloat = 0' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'static let scrollerRightInset: CGFloat = 0' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'override var textContainerOrigin: NSPoint' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'scrollView.contentSize.width - MarkdownDocumentLayout.textLeadingPadding - MarkdownDocumentLayout.textTrailingPadding' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'width: self.bounds.width, height: lineHeight' "$MARKDOWN_EDITOR_FILE" || \
+   ! /usr/bin/grep -q 'right: MarkdownDocumentLayout.scrollerRightInset' "$MARKDOWN_EDITOR_FILE"; then
+    echo "Markdown preview must use the compact line-number gutter and shared 16/0/0 spacing contract." >&2
     exit 1
 fi
 

@@ -2,6 +2,20 @@ import AppKit
 import SwiftUI
 import PromptStudioCore
 
+enum MarkdownDocumentLayout {
+    static let gutterWidth: CGFloat = 32
+    static let textLeadingPadding: CGFloat = 16
+    static let textToScrollerSpacing: CGFloat = 0
+    static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing
+    static let textVerticalPadding: CGFloat = 24
+    static let scrollerRightInset: CGFloat = 0
+    static let scrollContentRightInset: CGFloat = 0
+
+    static var placeholderLeadingPadding: CGFloat {
+        gutterWidth + textLeadingPadding
+    }
+}
+
 @MainActor
 struct MarkdownDocumentEditor: NSViewRepresentable {
     @Binding var text: String
@@ -125,7 +139,6 @@ final class MarkdownEditorContainerView: NSView {
     let gutterView: MarkdownLineNumberGutterView
     var onBoundaryScroll: ((PreviewStepDirection) -> Void)?
 
-    private let gutterWidth: CGFloat = 44
     private(set) var contentFontSize: CGFloat
     private var boundaryScrollMonitor: LocalEventMonitor?
     private var boundaryScrollAccumulator: CGFloat = 0
@@ -163,8 +176,18 @@ final class MarkdownEditorContainerView: NSView {
         scrollView.scrollerKnobStyle = .light
         scrollView.verticalScrollElasticity = .allowed
         scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsetsZero
-        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.contentInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: MarkdownDocumentLayout.scrollContentRightInset
+        )
+        scrollView.scrollerInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: MarkdownDocumentLayout.scrollerRightInset
+        )
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.backgroundColor = .clear
         scrollView.contentView.wantsLayer = true
@@ -178,8 +201,9 @@ final class MarkdownEditorContainerView: NSView {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainerInset = NSSize(width: 14, height: 24)
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainerInset = .zero
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.textColor = MarkdownEditorPalette.text
@@ -237,17 +261,17 @@ final class MarkdownEditorContainerView: NSView {
 
     override func layout() {
         super.layout()
-        gutterView.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: bounds.height)
+        gutterView.frame = NSRect(x: 0, y: 0, width: MarkdownDocumentLayout.gutterWidth, height: bounds.height)
         scrollView.frame = NSRect(
-            x: gutterWidth,
+            x: MarkdownDocumentLayout.gutterWidth,
             y: 0,
-            width: max(0, bounds.width - gutterWidth),
+            width: max(0, bounds.width - MarkdownDocumentLayout.gutterWidth),
             height: bounds.height
         )
         textView.frame.size.width = scrollView.contentSize.width
         let availableTextWidth = max(
             0,
-            scrollView.contentSize.width - textView.textContainerInset.width * 2
+            scrollView.contentSize.width - MarkdownDocumentLayout.textLeadingPadding - MarkdownDocumentLayout.textTrailingPadding
         )
         textView.textContainer?.containerSize = NSSize(
             width: availableTextWidth,
@@ -376,6 +400,13 @@ final class CopyingMarkdownTextView: NSTextView {
     var onCopySelection: ((String) -> Void)?
     var usesPointingHandCursor = false
 
+    override var textContainerOrigin: NSPoint {
+        NSPoint(
+            x: MarkdownDocumentLayout.textLeadingPadding,
+            y: MarkdownDocumentLayout.textVerticalPadding
+        )
+    }
+
     override func resetCursorRects() {
         if usesPointingHandCursor {
             addCursorRect(bounds, cursor: .pointingHand)
@@ -462,8 +493,8 @@ final class MarkdownLineNumberGutterView: NSView {
             let lineNumber = text.markdownLineNumber(at: charRange.location)
             guard drawnLines.insert(lineNumber).inserted else { return }
 
-            let y = usedRect.minY + textView.textContainerInset.height - visibleRect.minY
-            let rect = NSRect(x: 0, y: y, width: self.bounds.width - 8, height: lineHeight)
+            let y = usedRect.minY + textView.textContainerOrigin.y - visibleRect.minY
+            let rect = NSRect(x: 0, y: y, width: self.bounds.width, height: lineHeight)
             let label = "\(lineNumber)" as NSString
             label.draw(in: rect, withAttributes: MarkdownEditorPalette.lineNumberAttributes)
         }

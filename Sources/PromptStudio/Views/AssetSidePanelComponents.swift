@@ -3,9 +3,8 @@ import SwiftUI
 import PromptStudioCore
 
 enum SidePanelPromptBoxLayout {
-    static let textLeadingPadding: CGFloat = 16
-    static let textToScrollerSpacing: CGFloat = 0
-    static let textTrailingPadding: CGFloat = TransparentOverlayScroller.knobWidth + textToScrollerSpacing
+    static let textLeadingPadding: CGFloat = 24
+    static let textTrailingPadding: CGFloat = 24
     static let textVerticalPadding: CGFloat = 14
     static let scrollerRightInset: CGFloat = 0
     static let scrollContentRightInset: CGFloat = 0

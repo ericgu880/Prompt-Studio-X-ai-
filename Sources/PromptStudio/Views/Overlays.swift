@@ -544,7 +544,7 @@ private struct MarkdownDocumentPreviewContent: View {
                 Text(isEditing ? "开始编写文档内容" : "暂无文档信息")
                     .font(StudioFont.font(13))
                     .foregroundStyle(StudioColor.tertiaryText)
-                    .padding(.leading, 62)
+                    .padding(.leading, MarkdownDocumentLayout.placeholderLeadingPadding)
                     .padding(.top, 18)
                     .allowsHitTesting(false)
             }
