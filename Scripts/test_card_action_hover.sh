@@ -25,7 +25,11 @@ for required in \
     'private var hoverBackground = NSColor.clear' \
     'isHovered || isPressed ? hoverBackground : normalBackground' \
     'NSWorkspace.shared.accessibilityDisplayShouldReduceMotion' \
-    'let scale: CGFloat = reduceMotion ? 1'; do
+    'let scale: CGFloat = reduceMotion ? 1' \
+    'override func layout()' \
+    'centerLayerGeometry()' \
+    'layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)' \
+    'layer.position = CGPoint(x: frame.midX, y: frame.midY)'; do
     if ! /usr/bin/grep -q "$required" "$SOURCE_FILE"; then
         echo "Missing native circle button hover contract: $required" >&2
         exit 1

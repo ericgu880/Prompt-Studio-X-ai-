@@ -4457,6 +4457,14 @@ private final class NativeMarkdownIconButton: NSButton {
         super.init(coder: coder)
     }
 
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        centerLayerGeometry()
+        CATransaction.commit()
+    }
+
     @objc private func runAction() {
         actionHandler?()
     }
@@ -4507,12 +4515,19 @@ private final class NativeMarkdownIconButton: NSButton {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         CATransaction.setAnimationDuration(animated && !reduceMotion ? StudioMotion.fastDuration : 0)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        centerLayerGeometry()
         layer?.backgroundColor = (isHovered || isPressed ? hoverBackground : normalBackground).cgColor
         layer?.borderColor = (isHovered ? hoverBorder : normalBorder).cgColor
         layer?.opacity = isPressed ? 0.72 : 1
         let scale: CGFloat = reduceMotion ? 1 : (isPressed ? 0.985 : (isHovered ? 1.04 : 1))
         layer?.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
         CATransaction.commit()
+    }
+
+    private func centerLayerGeometry() {
+        guard let layer else { return }
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: frame.midX, y: frame.midY)
     }
 }
 
