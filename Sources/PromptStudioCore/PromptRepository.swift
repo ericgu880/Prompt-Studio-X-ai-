@@ -154,7 +154,9 @@ public final class PromptRepository: @unchecked Sendable {
                 sortOrder INTEGER NOT NULL DEFAULT 0,
                 tagsJSON TEXT NOT NULL,
                 referencesJSON TEXT NOT NULL,
-                description TEXT NOT NULL
+                description TEXT NOT NULL,
+                captureId TEXT,
+                captureSourceJSON TEXT
             );
 
             CREATE TABLE IF NOT EXISTS prompt_versions (
@@ -230,9 +232,25 @@ public final class PromptRepository: @unchecked Sendable {
                 tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
                 referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
                 versions: itemVersions,
-                description: required(row, "description")
+                description: required(row, "description"),
+                captureID: row["captureId"] ?? nil,
+                capturedSource: decodeOptional(CapturedSource.self, from: row["captureSourceJSON"] ?? nil)
             )
         }
+    }
+
+    /// Returns the prompt recorded for a browser capture ID, when one exists.
+    public func findItem(captureID: String) throws -> PromptItem? {
+        let normalized = captureID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        guard let row = try database.query(
+            "SELECT id FROM prompt_items WHERE captureId = ? LIMIT 1;",
+            values: [.text(normalized)]
+        ).first else {
+            return nil
+        }
+        let id = required(row, "id")
+        return try loadItems().first(where: { $0.id == id })
     }
 
     public func seedIfNeeded(items: [PromptItem], models: [ModelProfile], tags: [Tag]) throws {
@@ -498,8 +516,8 @@ public final class PromptRepository: @unchecked Sendable {
             INSERT OR REPLACE INTO prompt_items (
                 id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, pinnedAt, deletedAt, createdAt, updatedAt,
-                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description, captureId, captureSourceJSON
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             values: [
                 .text(item.id),
@@ -527,7 +545,9 @@ public final class PromptRepository: @unchecked Sendable {
                 .int(Int64(item.sortOrder)),
                 .text(encode(item.tags)),
                 .text(encode(item.referenceAssets)),
-                .text(item.description)
+                .text(item.description),
+                item.captureID.map { .text($0) } ?? .null,
+                item.capturedSource.map { .text(encode($0)) } ?? .null
             ]
         )
 
@@ -591,6 +611,15 @@ public final class PromptRepository: @unchecked Sendable {
                 )
             }
         }
+        if !columnNames.contains("captureId") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN captureId TEXT;")
+        }
+        if !columnNames.contains("captureSourceJSON") {
+            try database.execute("ALTER TABLE prompt_items ADD COLUMN captureSourceJSON TEXT;")
+        }
+        try database.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_items_capture_id ON prompt_items(captureId) WHERE captureId IS NOT NULL;"
+        )
     }
 
     private func refreshTags(from items: [PromptItem]) throws {
@@ -627,6 +656,15 @@ public final class PromptRepository: @unchecked Sendable {
     private func decode<T: Decodable>(_ type: T.Type, from string: String, fallback: T) -> T {
         guard let data = string.data(using: .utf8), let value = try? decoder.decode(T.self, from: data) else {
             return fallback
+        }
+        return value
+    }
+
+    private func decodeOptional<T: Decodable>(_ type: T.Type, from string: String?) -> T? {
+        guard let string, !string.isEmpty,
+              let data = string.data(using: .utf8),
+              let value = try? decoder.decode(T.self, from: data) else {
+            return nil
         }
         return value
     }

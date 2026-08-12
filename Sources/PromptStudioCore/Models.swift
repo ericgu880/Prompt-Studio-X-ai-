@@ -400,6 +400,8 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var referenceAssets: [ReferenceAsset]
     public var versions: [PromptVersion]
     public var description: String
+    public var captureID: String?
+    public var capturedSource: CapturedSource?
 
     public init(
         id: String = UUID().uuidString,
@@ -428,7 +430,9 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         tags: [String] = [],
         referenceAssets: [ReferenceAsset] = [],
         versions: [PromptVersion] = [],
-        description: String = ""
+        description: String = "",
+        captureID: String? = nil,
+        capturedSource: CapturedSource? = nil
     ) {
         self.id = id
         self.title = title
@@ -470,6 +474,8 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.referenceAssets = referenceAssets
         self.versions = versions
         self.description = description
+        self.captureID = captureID
+        self.capturedSource = capturedSource
     }
 
     public var currentVersion: PromptVersion? {

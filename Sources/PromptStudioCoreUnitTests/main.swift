@@ -725,6 +725,115 @@ func testPinnedAtPersistsAndMigratesFromOldSchema() throws {
     try expect(try migratedRepository.loadItems().isEmpty, "old empty database should still load after pinnedAt migration")
 }
 
+func testWebCaptureCoreContracts() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let candidate = WebCaptureCandidate(
+        captureID: "capture-contract-1",
+        selectedText: "   🌲   Forest   prompt   \nsecond line",
+        pageTitle: "Example page",
+        pageURL: "https://example.test/articles/forest",
+        siteName: "Example",
+        clickScreenPoint: WebCapturePoint(x: 120.5, y: 88.25),
+        capturedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    let encoded = try JSONEncoder().encode(candidate)
+    let decoded = try JSONDecoder().decode(WebCaptureCandidate.self, from: encoded)
+    try expect(decoded == candidate, "web capture candidates should round-trip through Codable")
+
+    let item = try service.createCapturedPrompt(candidate)
+    try expect(item.type == .text, "captured prompts should always use text type")
+    try expect(item.modelId == "unspecified_text" && item.modelName == "未指定模型", "capture service should ensure the unspecified text model")
+    try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "capture service should use the top-level capture inbox")
+    try expect(item.tags == ["网页采集", "待整理"], "capture service should apply the capture inbox tags")
+    try expect(item.captureID == candidate.captureID, "capture ID should persist on the prompt")
+    try expect(item.capturedSource?.pageURL == candidate.pageURL, "captured source metadata should persist on the prompt")
+    try expect(item.title == "🌲 Forest prompt", "capture titles should use the first non-empty line with compressed whitespace")
+
+    let loaded = try repository.findItem(captureID: candidate.captureID)
+    try expect(loaded?.id == item.id, "repository should find a prompt by capture ID")
+    let retried = try service.createCapturedPrompt(candidate)
+    try expect(retried.id == item.id, "retries with the same capture ID should return the original prompt")
+    try expect(try repository.loadItems().count == 1, "capture retries should not create duplicate prompts")
+}
+
+func testWebCaptureValidationAndTitleLimit() throws {
+    let service = try PromptStudioAutomationService(repository: PromptRepository(libraryURL: temporaryLibraryURL()))
+
+    do {
+        _ = try service.createCapturedPrompt(WebCaptureCandidate(captureID: "empty", selectedText: " \n\t"))
+        throw CoreUnitTestError.failure("empty capture text should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    do {
+        _ = try service.createCapturedPrompt(
+            WebCaptureCandidate(captureID: "oversized", selectedText: String(repeating: "a", count: 50_001))
+        )
+        throw CoreUnitTestError.failure("oversized capture text should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let longTitle = String(repeating: "界", count: 39) + "😀😀"
+    let item = try service.createCapturedPrompt(
+        WebCaptureCandidate(captureID: "title-limit", selectedText: "  \(longTitle)  \nbody")
+    )
+    try expect(item.title.count == 40, "capture title limit should count Swift Characters")
+    try expect(item.title == String(longTitle.prefix(40)), "capture title should truncate by Character, not UTF-16 units")
+}
+
+func testWebCaptureSchemaMigrationAddsColumnsAndIndex() throws {
+    let oldLibraryURL = try temporaryLibraryURL()
+    try PromptRepository.createLibraryDirectories(at: oldLibraryURL)
+    let databaseURL = oldLibraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path)
+    try database.execute(
+        """
+        CREATE TABLE prompt_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            assetKind TEXT NOT NULL DEFAULT 'image',
+            modelId TEXT NOT NULL,
+            modelName TEXT NOT NULL,
+            folderId TEXT NOT NULL DEFAULT '',
+            folderName TEXT NOT NULL,
+            category TEXT NOT NULL,
+            assetPath TEXT NOT NULL,
+            thumbnailPath TEXT NOT NULL,
+            aspectRatio TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            format TEXT NOT NULL,
+            fileSize INTEGER NOT NULL,
+            favorite INTEGER NOT NULL,
+            deletedAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastUsedAt TEXT NOT NULL,
+            sortOrder INTEGER NOT NULL DEFAULT 0,
+            tagsJSON TEXT NOT NULL,
+            referencesJSON TEXT NOT NULL,
+            description TEXT NOT NULL
+        );
+        """
+    )
+
+    _ = try PromptRepository(libraryURL: oldLibraryURL)
+    let migrated = try SQLiteDatabase(path: databaseURL.path)
+    let columns = try migrated.query("PRAGMA table_info(prompt_items);")
+    let names = Set(columns.compactMap { $0["name"] ?? nil })
+    try expect(names.contains("captureId"), "migration should add captureId to old prompt_items tables")
+    try expect(names.contains("captureSourceJSON"), "migration should add captureSourceJSON to old prompt_items tables")
+    let indexes = try migrated.query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_prompt_items_capture_id';"
+    )
+    try expect(indexes.count == 1, "migration should add the partial unique capture ID index")
+}
+
 func testFolderSeedIsIdempotent() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let folders = [
@@ -868,6 +977,9 @@ do {
     try testPinnedAtDoesNotAffectNormalCollectionSorting()
     try testPinnedAtDoesNotAffectRecentOrTrashSorting()
     try testPinnedAtPersistsAndMigratesFromOldSchema()
+    try testWebCaptureCoreContracts()
+    try testWebCaptureValidationAndTitleLimit()
+    try testWebCaptureSchemaMigrationAddsColumnsAndIndex()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
     try testAutomationServiceCreatesAndUpdatesPrompts()
