@@ -1,0 +1,50 @@
+#promptstudio-capture-feed-button {
+  position: fixed;
+  z-index: 2147483647;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #f6f2ff;
+  background: #3c3548;
+  box-shadow: 0 3px 12px rgba(20, 16, 28, 0.28);
+  cursor: pointer;
+  font: 600 16px/28px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  text-align: center;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+#promptstudio-capture-feed-button:hover,
+#promptstudio-capture-feed-button:focus-visible {
+  transform: scale(1.08);
+  outline: 2px solid rgba(164, 137, 199, 0.8);
+  outline-offset: 2px;
+}
+
+#promptstudio-capture-notice {
+  position: fixed;
+  z-index: 2147483647;
+  max-width: 320px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(60, 53, 72, 0.94);
+  box-shadow: 0 4px 16px rgba(20, 16, 28, 0.28);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  pointer-events: none;
+}
+
+.promptstudio-capture-flight {
+  position: fixed;
+  z-index: 2147483646;
+  max-width: 260px;
+  overflow: hidden;
+  color: #3c3548;
+  background: rgba(245, 238, 255, 0.86);
+  border-radius: 5px;
+  padding: 3px 6px;
+  pointer-events: none;
+  white-space: pre-wrap;
+  font: 12px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+}

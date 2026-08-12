@@ -12,7 +12,8 @@ let package = Package(
         .executable(name: "promptstudioctl", targets: ["PromptStudioCLI"]),
         .executable(name: "PromptStudioMCP", targets: ["PromptStudioMCP"]),
         .executable(name: "PromptStudioCoreUnitTests", targets: ["PromptStudioCoreUnitTests"]),
-        .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"])
+        .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"]),
+        .executable(name: "PromptStudioCaptureHost", targets: ["PromptStudioCaptureHost"])
     ],
     targets: [
         .target(
@@ -47,9 +48,17 @@ let package = Package(
             name: "PromptStudioSmokeTests",
             dependencies: ["PromptStudioCore"]
         ),
+        .executableTarget(
+            name: "PromptStudioCaptureHost",
+            path: "Sources/PromptStudioCaptureHost"
+        ),
         .testTarget(
             name: "PromptStudioCoreTests",
             dependencies: ["PromptStudioCore"]
+        ),
+        .testTarget(
+            name: "PromptStudioCaptureHostTests",
+            dependencies: ["PromptStudioCaptureHost"]
         )
     ]
 )

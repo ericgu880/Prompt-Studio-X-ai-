@@ -50,18 +50,22 @@ LOCK_ACQUIRED=true
 SWIFT_BUILD_EXEC="$(find_compatible_swift_tool swift "${SWIFT_BUILD_EXEC:-}")"
 BUILD_DIR="$("$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --show-bin-path)"
 "$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --product PromptStudio >&2
+"$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --product PromptStudioCaptureHost >&2
 
 APP_PATH="$BUILD_DIR/PromptStudio.app"
 STAGING_APP_PATH="$BUILD_DIR/.PromptStudio.app.staging.$$"
 PREVIOUS_APP_PATH="$BUILD_DIR/.PromptStudio.app.previous.$$"
 EXECUTABLE_PATH="$BUILD_DIR/PromptStudio"
 RESOURCE_BUNDLE="$BUILD_DIR/PromptStudio_PromptStudio.bundle"
+CAPTURE_HOST_EXECUTABLE="$BUILD_DIR/PromptStudioCaptureHost"
 
 rm -rf "$STAGING_APP_PATH" "$PREVIOUS_APP_PATH"
-mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources"
+mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources" "$STAGING_APP_PATH/Contents/Helpers"
 
 cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
+cp "$CAPTURE_HOST_EXECUTABLE" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
+cp -R "$ROOT_DIR/BrowserExtension" "$STAGING_APP_PATH/Contents/Resources/BrowserExtension"
 
 BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
@@ -90,6 +94,7 @@ if [[ -d "$RESOURCE_BUNDLE" ]]; then
 fi
 
 chmod +x "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
+chmod +x "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 
 codesign_args=(--force --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
@@ -105,6 +110,17 @@ if [[ -n "$ENTITLEMENTS_PATH" ]]; then
     fi
     codesign_args+=(--entitlements "$ENTITLEMENTS_PATH")
 fi
+
+helper_codesign_args=(--force --sign "$SIGN_IDENTITY")
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    helper_codesign_args+=(--timestamp=none)
+else
+    helper_codesign_args+=(--options runtime --timestamp)
+fi
+
+# Sign the nested stdio helper before signing the containing app. The helper intentionally has
+# no app entitlements or app designated requirement; the containing app is verified below.
+/usr/bin/codesign "${helper_codesign_args[@]}" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 
 /usr/bin/codesign "${codesign_args[@]}" "$STAGING_APP_PATH"
 verify_signed_app "$CONFIGURATION" "$STAGING_APP_PATH" "$EXPECTED_TEAM_ID"

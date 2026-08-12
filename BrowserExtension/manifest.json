@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "PromptStudio Web Capture",
+  "version": "1.0.0",
+  "description": "Local text capture for PromptStudio.",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["selection.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "PromptStudio"
+  }
+}
