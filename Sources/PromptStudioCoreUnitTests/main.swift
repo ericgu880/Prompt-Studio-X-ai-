@@ -1200,6 +1200,143 @@ func testAutomationServiceImportsImageMetadata() throws {
     try expect(imported[0].fileSize > 0, "png import should store file size")
 }
 
+func testPromptClipboardInterpreterPreservesPlainTextAndBuildsTitle() throws {
+    let source = "\r\n  This   is a simple paragraph.\r\nSecond line\twith spacing.  \r\n"
+    let interpretation = PromptClipboardInterpreter.interpret(source)
+    let normalized = "This   is a simple paragraph.\nSecond line\twith spacing."
+
+    try expect(interpretation.originalText == normalized, "plain text should normalize CRLF and outer whitespace")
+    try expect(interpretation.prompt == normalized, "plain text should remain intact in the prompt")
+    try expect(interpretation.title == "This is a simple paragraph.", "title should use the first sentence with compressed whitespace")
+    try expect(interpretation.title.count <= 40, "title should be capped at 40 Characters")
+    try expect(interpretation.negativePrompt.isEmpty, "plain text should not invent a negative prompt")
+    try expect(interpretation.suggestedType == nil, "generic prose should keep the current prompt type")
+}
+
+func testPromptClipboardInterpreterTitleCapDoesNotTruncatePrompt() throws {
+    let source = "A very long first sentence that should be shortened for the title while preserving the source prompt."
+    let interpretation = PromptClipboardInterpreter.interpret(source)
+
+    try expect(interpretation.title.count == 40, "long titles should be truncated to exactly 40 Characters")
+    try expect(interpretation.prompt == source, "title truncation must never truncate the prompt")
+}
+
+func testPromptClipboardInterpreterParsesChineseStructuredFields() throws {
+    let interpretation = PromptClipboardInterpreter.interpret(
+        "提示词：古风人物肖像，柔和光线\n负面提示词：水印，文字\n标签：人物，写实, 人物\n参数：步数=20"
+    )
+
+    try expect(interpretation.prompt == "古风人物肖像，柔和光线", "Chinese prompt heading should be parsed")
+    try expect(interpretation.negativePrompt == "水印，文字", "Chinese negative prompt heading should be parsed")
+    try expect(interpretation.tags == ["人物", "写实"], "Chinese tags should be normalized and deduplicated")
+    try expect(interpretation.parameters["步数"] == "20", "Chinese parameters should be retained")
+}
+
+func testPromptClipboardInterpreterParsesJSON() throws {
+    let interpretation = PromptClipboardInterpreter.interpret(
+        #"{"prompt":"studio portrait","negative_prompt":"watermark","tags":["portrait","portrait"],"parameters":{"ar":"4:5"}}"#
+    )
+
+    try expect(interpretation.prompt == "studio portrait", "JSON prompt should be parsed")
+    try expect(interpretation.negativePrompt == "watermark", "JSON negative prompt should be parsed")
+    try expect(interpretation.tags.first == "portrait" && interpretation.tags.filter { $0 == "portrait" }.count == 1, "JSON tags should be normalized and deduplicated")
+    try expect(interpretation.parameters["ar"] == "4:5", "JSON parameters should be retained")
+}
+
+func testPromptClipboardInterpreterInfersFourPromptTypes() throws {
+    let image = PromptClipboardInterpreter.interpret("生成一张静态人物画面，精心构图，人物穿着红色服装，柔和光线，暖色调，85mm焦段。")
+    let video = PromptClipboardInterpreter.interpret("生成一个5秒人物转身视频，连续动作，镜头缓慢运镜并完成转场。")
+    let audio = PromptClipboardInterpreter.interpret("制作一段女声旁白，音色温暖，语速自然，加入轻柔BGM和环境音效。")
+    let text = PromptClipboardInterpreter.interpret("写一篇文章，整理并总结以下资料，翻译成Markdown结构化内容。")
+
+    try expect(image.suggestedType == .image && image.typeConfidence == .high, "image output intent should suggest image with high confidence")
+    try expect(video.suggestedType == .video && video.typeConfidence == .high, "video output intent should suggest video with high confidence")
+    try expect(audio.suggestedType == .audio && audio.typeConfidence == .high, "audio output intent should suggest audio with high confidence")
+    try expect(text.suggestedType == .text && text.typeConfidence == .high, "text output intent should suggest text with high confidence")
+}
+
+func testPromptClipboardInterpreterDoesNotTreatRealisticAsWriteIntent() throws {
+    let interpretation = PromptClipboardInterpreter.interpret("写实人物肖像，柔和光线，高细节")
+
+    try expect(interpretation.suggestedType == .image, "写实 should contribute image semantics without becoming a writing intent")
+}
+
+func testPromptClipboardInterpreterPrefersVideoOutputOverReferenceImage() throws {
+    let interpretation = PromptClipboardInterpreter.interpret("图1是人物参考，生成一个5秒人物转身视频，镜头连续运镜。")
+
+    try expect(interpretation.suggestedType == .video, "video output should win over a referenced image")
+    try expect(interpretation.typeConfidence == .high, "explicit video output should have high confidence")
+}
+
+func testPromptClipboardInterpreterKeepsModelAndFormatHintsWeak() throws {
+    let labeled = PromptClipboardInterpreter.interpret("Model: Nano Banana 2\nFormat: JSON")
+    try expect(labeled.modelHint == "Nano Banana 2", "English model field should be retained as a hint")
+    try expect(labeled.formatHint == "JSON", "English format field should be retained as a hint")
+    try expect(labeled.suggestedType == nil, "model and format names alone must not force a type")
+
+    let chineseLabeled = PromptClipboardInterpreter.interpret("模型：Seedance 2\n格式：JSON")
+    try expect(chineseLabeled.modelHint == "Seedance 2", "Chinese model field should be retained as a hint")
+    try expect(chineseLabeled.formatHint == "JSON", "Chinese format field should be retained as a hint")
+    try expect(chineseLabeled.suggestedType == nil, "Chinese model and format names alone must not force a type")
+
+    let bareNames = PromptClipboardInterpreter.interpret("Nano Banana Seedance JSON")
+    try expect(bareNames.modelHint == nil && bareNames.formatHint == nil, "bare names should not be mistaken for labeled hints")
+    try expect(bareNames.suggestedType == nil, "bare model and format names must not force a type")
+}
+
+func testPromptClipboardInterpreterPreservesTagsAndMidjourneyParameters() throws {
+    let interpretation = PromptClipboardInterpreter.interpret(
+        "Prompt: cinematic portrait #人物 #人物 --ar 16:9 --stylize 250\nTags: 人物, 写实, 人物"
+    )
+
+    try expect(interpretation.tags == ["人物", "写实"], "tags should be deduplicated while preserving order")
+    try expect(interpretation.parameters["ar"] == "16:9", "aspect ratio parameter should be retained")
+    try expect(interpretation.parameters["stylize"] == "250", "stylize parameter should be retained")
+}
+
+func testPromptClipboardInterpreterLeavesConflictsAndLowConfidenceUnspecified() throws {
+    let conflict = PromptClipboardInterpreter.interpret("生成一张图片并制作一段5秒视频")
+    try expect(conflict.suggestedType == nil, "conflicting explicit output types should not switch the current tab")
+    try expect(conflict.warnings.contains { $0.contains("冲突") }, "conflicting output types should explain the warning")
+}
+
+func testPromptClipboardInterpreterHandlesBlankInput() throws {
+    let interpretation = PromptClipboardInterpreter.interpret(" \r\n\t ")
+
+    try expect(interpretation.originalText.isEmpty, "blank input should normalize to an empty original text")
+    try expect(interpretation.prompt.isEmpty, "blank input should produce an empty prompt")
+    try expect(interpretation.title.isEmpty, "blank input should produce an empty title")
+    try expect(interpretation.suggestedType == nil, "blank input should not suggest a type")
+}
+
+func testPromptPasteRouteResolverHonorsPastePriority() throws {
+    try expect(
+        PromptPasteRouteResolver.resolve(isTextInputActive: true, hasFileURLs: true, plainText: "prompt") == .nativeTextPaste,
+        "active text input should keep native text paste as the highest priority"
+    )
+    try expect(
+        PromptPasteRouteResolver.resolve(isTextInputActive: false, hasFileURLs: true, plainText: "prompt") == .importFiles,
+        "file URLs should route to file import when no text input is active"
+    )
+    try expect(
+        PromptPasteRouteResolver.resolve(isTextInputActive: false, hasFileURLs: false, plainText: " prompt ") == .smartPaste(" prompt "),
+        "plain text should route to smart paste when no files or text input are present"
+    )
+    try expect(
+        PromptPasteRouteResolver.resolve(isTextInputActive: false, hasFileURLs: false, plainText: " \r\n\t ") == .unavailable,
+        "empty pasteboard content should be unavailable"
+    )
+}
+
+func testPromptClipboardInterpreterStripsModelAndFormatMetadataFromPrompt() throws {
+    let interpretation = PromptClipboardInterpreter.interpret(
+        "Model: Nano Banana 2\nFormat: JSON\nPrompt: 生成一张静态人物画面"
+    )
+
+    try expect(interpretation.prompt == "生成一张静态人物画面", "model and format metadata lines should not pollute the prompt")
+    try expect(interpretation.modelHint == "Nano Banana 2" && interpretation.formatHint == "JSON", "metadata lines should still produce hints")
+}
+
 do {
     try testLibraryURLResolution()
     try testExistingLibraryValidationDoesNotCreateDatabase()
@@ -1250,6 +1387,19 @@ do {
     try testDocumentTextExtractorReadsRealDocx()
     try testAutomationServiceImportsRealDocxMetadata()
     try testAutomationServiceImportsImageMetadata()
+    try testPromptClipboardInterpreterPreservesPlainTextAndBuildsTitle()
+    try testPromptClipboardInterpreterTitleCapDoesNotTruncatePrompt()
+    try testPromptClipboardInterpreterParsesChineseStructuredFields()
+    try testPromptClipboardInterpreterParsesJSON()
+    try testPromptClipboardInterpreterInfersFourPromptTypes()
+    try testPromptClipboardInterpreterDoesNotTreatRealisticAsWriteIntent()
+    try testPromptClipboardInterpreterPrefersVideoOutputOverReferenceImage()
+    try testPromptClipboardInterpreterKeepsModelAndFormatHintsWeak()
+    try testPromptClipboardInterpreterPreservesTagsAndMidjourneyParameters()
+    try testPromptClipboardInterpreterLeavesConflictsAndLowConfidenceUnspecified()
+    try testPromptClipboardInterpreterHandlesBlankInput()
+    try testPromptPasteRouteResolverHonorsPastePriority()
+    try testPromptClipboardInterpreterStripsModelAndFormatMetadataFromPrompt()
     try testPromptRepositoryBatchFolderUpdateRollsBack()
     try testPromptRepositoryFolderUpdatePreservesVersions()
     print("PromptStudioCoreUnitTests passed")
