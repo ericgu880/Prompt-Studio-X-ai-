@@ -117,6 +117,91 @@ public enum PromptComposerTypeDecision: Equatable, Sendable {
     }
 }
 
+/// The final, persistence-safe Prompt type selected by Core.
+///
+/// Composer inference remains conservative for the UI and can return an
+/// unresolved decision. Persistence paths need a total four-way value, so an
+/// unresolved, low-confidence, or conflicting interpretation uses image as
+/// the stable fallback.
+public struct PromptTypeClassification: Equatable, Sendable {
+    public let type: PromptType
+    public let decision: PromptComposerTypeDecision
+    public let usedFallback: Bool
+
+    public init(type: PromptType, decision: PromptComposerTypeDecision, usedFallback: Bool) {
+        self.type = type
+        self.decision = decision
+        self.usedFallback = usedFallback
+    }
+}
+
+/// Shared seam for the app composer and automation capture paths.
+public enum PromptTypeClassifier {
+    public static let fallbackType: PromptType = .image
+
+    public static func resolve(
+        interpretation: PromptClipboardInterpretation,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptTypeClassification {
+        let decision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: mode)
+        if let type = decision.type,
+           (decision.isManual || !hasConflict(in: interpretation)) {
+            return PromptTypeClassification(type: type, decision: decision, usedFallback: false)
+        }
+        return PromptTypeClassification(
+            type: fallbackType,
+            decision: decision,
+            usedFallback: true
+        )
+    }
+
+    public static func resolve(
+        text: String,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptTypeClassification {
+        resolve(
+            interpretation: PromptClipboardInterpreter.interpret(text),
+            mode: mode
+        )
+    }
+
+    public static func classify(
+        interpretation: PromptClipboardInterpretation,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptType {
+        resolve(interpretation: interpretation, mode: mode).type
+    }
+
+    public static func classify(
+        _ interpretation: PromptClipboardInterpretation,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptType {
+        classify(interpretation: interpretation, mode: mode)
+    }
+
+    public static func classify(
+        text: String,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptType {
+        resolve(text: text, mode: mode).type
+    }
+
+    public static func classify(
+        _ text: String,
+        mode: PromptComposerTypeMode = .automatic
+    ) -> PromptType {
+        classify(text: text, mode: mode)
+    }
+
+    private static func hasConflict(in interpretation: PromptClipboardInterpretation) -> Bool {
+        let values = ([interpretation.typeReason] + interpretation.warnings)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        return values.contains { value in
+            value.contains("冲突") || value.contains("conflict")
+        }
+    }
+}
+
 /// The metadata selected for a composer draft after type inference.
 public struct PromptComposerMetadataDecision: Equatable, Sendable {
     public let model: ModelProfile

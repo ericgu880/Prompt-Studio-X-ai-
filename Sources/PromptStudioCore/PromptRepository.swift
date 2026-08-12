@@ -18,6 +18,22 @@ public enum PromptRepositoryValidationError: Error, LocalizedError {
     }
 }
 
+/// Result returned by the explicit, opt-in placeholder migration.
+public struct PromptPlaceholderMigrationResult: Equatable, Sendable {
+    public let candidateCount: Int
+    public let migratedCount: Int
+    public let migratedItemIDs: [String]
+
+    public init(candidateCount: Int, migratedCount: Int, migratedItemIDs: [String]) {
+        self.candidateCount = candidateCount
+        self.migratedCount = migratedCount
+        self.migratedItemIDs = migratedItemIDs
+    }
+
+    public var count: Int { migratedCount }
+    public var updatedCount: Int { migratedCount }
+}
+
 public final class PromptRepository: @unchecked Sendable {
     public let libraryURL: URL
     public let databaseURL: URL
@@ -276,6 +292,74 @@ public final class PromptRepository: @unchecked Sendable {
         for folder in folders {
             try saveFolder(folder)
         }
+    }
+
+    /// Canonicalizes legacy prompt-only placeholder rows without touching any
+    /// record that already points at a real asset. This migration is explicit:
+    /// callers decide when to run it after Core initialization.
+    public func migratePromptPlaceholders() throws -> PromptPlaceholderMigrationResult {
+        let candidates = try loadItems().filter { item in
+            item.assetPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && item.thumbnailPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && ["PROMPT", "TEXT"].contains(item.format.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+        }
+        guard !candidates.isEmpty else {
+            return PromptPlaceholderMigrationResult(candidateCount: 0, migratedCount: 0, migratedItemIDs: [])
+        }
+
+        let migratedIDs = try database.transaction {
+            var ids: [String] = []
+            for item in candidates {
+                let text = [item.currentVersion?.prompt, item.currentVersion?.negativePrompt]
+                    .compactMap { $0 }
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .joined(separator: "\n")
+                let type = PromptTypeClassifier.classify(text: text)
+                let assetKind: AssetKind
+                let format: String
+                let category: String
+                switch type {
+                case .image:
+                    assetKind = .image
+                    format = ""
+                    category = AssetKind.image.displayName
+                case .video:
+                    assetKind = .video
+                    format = ""
+                    category = AssetKind.video.displayName
+                case .audio:
+                    assetKind = .audio
+                    format = ""
+                    category = AssetKind.audio.displayName
+                case .text:
+                    assetKind = .markdown
+                    format = "MD"
+                    category = AssetKind.markdown.displayName
+                }
+                try database.run(
+                    """
+                    UPDATE prompt_items
+                    SET type = ?, assetKind = ?, category = ?, format = ?, updatedAt = ?
+                    WHERE id = ?;
+                    """,
+                    values: [
+                        .text(type.rawValue),
+                        .text(assetKind.rawValue),
+                        .text(category),
+                        .text(format),
+                        .text(Self.string(from: Date())),
+                        .text(item.id)
+                    ]
+                )
+                ids.append(item.id)
+            }
+            return ids
+        }
+        return PromptPlaceholderMigrationResult(
+            candidateCount: candidates.count,
+            migratedCount: migratedIDs.count,
+            migratedItemIDs: migratedIDs
+        )
     }
 
     public func repairSeedAssetPaths(from seedItems: [PromptItem]) throws {

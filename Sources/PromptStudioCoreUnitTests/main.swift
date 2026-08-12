@@ -1131,8 +1131,8 @@ func testWebCaptureCoreContracts() throws {
     try expect(String(data: encoded, encoding: .utf8)?.contains("2023-11-14") == true, "capture timestamps should use ISO-8601 on the browser wire")
 
     let item = try service.createCapturedPrompt(candidate)
-    try expect(item.type == .text, "captured prompts should always use text type")
-    try expect(item.modelId == "unspecified_text" && item.modelName == "未指定模型", "capture service should ensure the unspecified text model")
+    try expect(item.type == .image && item.assetKind == .image, "unresolved captured prompts should use the image fallback type")
+    try expect(item.modelId == "unspecified_image" && item.modelName == "未指定模型", "capture service should ensure the unspecified image model")
     try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "capture service should use the top-level capture inbox")
     try expect(item.tags == ["网页采集", "待整理"], "capture service should apply the capture inbox tags")
     try expect(item.captureID == candidate.captureID, "capture ID should persist on the prompt")
@@ -1239,16 +1239,16 @@ func testCapturedInsertSerializesAcrossRepositoryConnections() throws {
 
 func testCaptureDefaultsRepairExistingResources() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
-    try repository.saveModelProfile(ModelProfile(id: "unspecified_text", name: "Wrong", type: .image, parameters: ["bad"]))
+    try repository.saveModelProfile(ModelProfile(id: "unspecified_image", name: "Wrong", type: .text, parameters: ["bad"]))
     try repository.saveFolder(LibraryFolder(id: "folder-capture-inbox", name: "Wrong", parentId: "parent", type: .image, sortOrder: 2))
 
     let item = try PromptStudioAutomationService(repository: repository).createCapturedPrompt(
         WebCaptureCandidate(captureID: "default-repair", selectedText: "captured")
     )
-    let model = try repository.loadModelProfiles().first { $0.id == "unspecified_text" }
+    let model = try repository.loadModelProfiles().first { $0.id == "unspecified_image" }
     let folder = try repository.loadFolders().first { $0.id == "folder-capture-inbox" }
-    try expect(item.modelId == "unspecified_text" && item.modelName == "未指定模型", "capture creation should repair the canonical model")
-    try expect(model?.name == "未指定模型" && model?.type == .text && model?.parameters.isEmpty == true, "capture model repair should canonicalize all model fields")
+    try expect(item.modelId == "unspecified_image" && item.modelName == "未指定模型", "capture creation should repair the canonical model")
+    try expect(model?.name == "未指定模型" && model?.type == .image && model?.parameters.isEmpty == true, "capture model repair should canonicalize all model fields")
     try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "capture creation should repair the canonical folder")
     try expect(folder?.name == "待整理" && folder?.type == .text && folder?.parentId == nil, "capture folder repair should restore a top-level text inbox")
 }
@@ -1820,6 +1820,129 @@ func testPromptClipboardInterpreterInfersExplicitTextOutputFormats() throws {
     }
 }
 
+func testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes() throws {
+    let cases: [(String, PromptType)] = [
+        ("分析数据并输出 JSON", .text),
+        ("生成一张静态图片，人物肖像", .image),
+        ("制作 8 秒视频，镜头向前推进", .video),
+        ("生成旁白和配音，温暖的声线", .audio),
+        ("随便写点什么", .image)
+    ]
+    for (text, expected) in cases {
+        try expect(PromptTypeClassifier.classify(text: text) == expected, "classifier should resolve \(text) to \(expected.rawValue)")
+    }
+
+    try expect(
+        PromptTypeClassifier.classify(
+            interpretation: PromptClipboardInterpretation(suggestedType: .text, typeConfidence: .low),
+            mode: .manual(.audio)
+        ) == .audio,
+        "manual type should always win over automatic inference"
+    )
+    try expect(
+        PromptTypeClassifier.classify(
+            interpretation: PromptClipboardInterpretation(
+                suggestedType: .video,
+                typeConfidence: .medium,
+                warnings: ["输出类型冲突"]
+            )
+        ) == .image,
+        "conflicting interpretation should use the image fallback"
+    )
+    try expect(
+        PromptTypeClassifier.classify(
+            interpretation: PromptClipboardInterpretation(warnings: ["输出类型冲突"]),
+            mode: .manual(.audio)
+        ) == .audio,
+        "manual type should survive a conflicting automatic interpretation"
+    )
+}
+
+func testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments() throws {
+    let imagePlaceholder = sampleItem(title: "image placeholder", assetKind: .image, prompt: "image", assetPath: "", format: "")
+    let videoPlaceholder = sampleItem(title: "video placeholder", assetKind: .video, prompt: "video", assetPath: "", format: "PROMPT")
+    let audioPlaceholder = sampleItem(title: "audio placeholder", assetKind: .audio, prompt: "audio", assetPath: "", format: "TEXT")
+    let markdown = sampleItem(title: "markdown", assetKind: .markdown, prompt: "# markdown", assetPath: "/tmp/real.md", format: "MD")
+    let json = sampleItem(title: "json", assetKind: .json, prompt: "{}", assetPath: "/tmp/real.json", format: "JSON")
+    let txt = sampleItem(title: "txt", assetKind: .text, prompt: "txt", assetPath: "/tmp/real.txt", format: "TXT")
+    let docx = sampleItem(title: "docx", assetKind: .document, prompt: "docx", assetPath: "/tmp/real.docx", format: "DOCX")
+
+    for placeholder in [imagePlaceholder, videoPlaceholder, audioPlaceholder] {
+        try expect(placeholder.isMediaPromptPlaceholder, "empty media prompt should be a media placeholder")
+        try expect(!placeholder.hasPrimaryAsset, "media placeholder should not claim a primary asset")
+    }
+    for document in [markdown, json, txt, docx] {
+        try expect(!document.isMediaPromptPlaceholder, "real text document should not be treated as a media placeholder")
+        try expect(document.primaryAssetState == .textDocument, "text document should retain text-document state")
+        try expect(document.hasPrimaryAsset, "real text document should report a primary asset path")
+    }
+}
+
+func testCapturedPromptUsesUnifiedClassificationAndIsIdempotent() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let candidates: [(String, String, PromptType, AssetKind)] = [
+        ("capture-image", "生成一张照片，柔和光线", .image, .image),
+        ("capture-video", "生成 6 秒视频，连续动作和运镜", .video, .video),
+        ("capture-audio", "生成旁白和配音，温暖声线", .audio, .audio),
+        ("capture-text", "分析数据并输出 JSON", .text, .markdown),
+        ("capture-fallback", "随便写点什么", .image, .image)
+    ]
+    for (captureID, selectedText, expectedType, expectedKind) in candidates {
+        let item = try service.createCapturedPrompt(WebCaptureCandidate(captureID: captureID, selectedText: selectedText))
+        try expect(item.type == expectedType && item.assetKind == expectedKind, "capture \(captureID) should use unified type and asset kind")
+        try expect(item.assetPath.isEmpty && item.thumbnailPath.isEmpty, "capture \(captureID) should not invent an asset path")
+        if expectedType == .text {
+            try expect(item.format.uppercased() == "MD", "text capture should retain markdown document semantics")
+            try expect(item.isTextDocumentLike && !item.isMediaPromptPlaceholder, "text capture should be a text document, not media placeholder")
+        } else {
+            try expect(item.format.isEmpty, "media capture should not pretend to be a real media file")
+            try expect(item.isMediaPromptPlaceholder, "media capture should be represented as a placeholder")
+        }
+        try expect(try service.createCapturedPrompt(WebCaptureCandidate(captureID: captureID, selectedText: selectedText)).id == item.id, "capture should be idempotent")
+    }
+    try expect(try repository.loadItems().count == candidates.count, "capture retries should not duplicate rows")
+}
+
+func testPromptPlaceholderMigrationIsSafeIdempotentAndTransactional() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let image = sampleItem(title: "legacy image", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "prompt")
+    let video = sampleItem(title: "legacy video", assetKind: .text, prompt: "制作 5 秒视频", assetPath: "", format: "TEXT")
+    let text = sampleItem(title: "legacy text", assetKind: .text, prompt: "分析数据并输出 JSON", assetPath: "", format: "TEXT")
+    let realMarkdown = sampleItem(title: "real markdown", assetKind: .markdown, prompt: "生成一张图片", assetPath: "/tmp/real.md", format: "MD")
+    let realImage = sampleItem(title: "real image", assetKind: .image, prompt: "生成一张图片", assetPath: "/tmp/real.png", format: "PNG")
+    try repository.saveItems([image, video, text, realMarkdown, realImage])
+
+    let first = try repository.migratePromptPlaceholders()
+    try expect(first.migratedCount == 3, "migration should only touch empty PROMPT/TEXT placeholder candidates")
+    let migrated = try repository.loadItems()
+    try expect(migrated.first(where: { $0.id == image.id })?.assetKind == .image, "image placeholder should migrate to image asset kind")
+    try expect(migrated.first(where: { $0.id == video.id })?.type == .video, "video placeholder should migrate to video type")
+    try expect(migrated.first(where: { $0.id == text.id })?.assetKind == .markdown, "text placeholder should migrate to markdown asset kind")
+    try expect(migrated.first(where: { $0.id == text.id })?.format.uppercased() == "MD", "text placeholder should canonicalize to MD")
+    try expect(migrated.first(where: { $0.id == realMarkdown.id })?.assetKind == .markdown, "real markdown row must not be touched")
+    try expect(migrated.first(where: { $0.id == realImage.id })?.assetKind == .image, "real media row must not be touched")
+    try expect(try repository.migratePromptPlaceholders().migratedCount == 0, "migration should be idempotent")
+
+    let rollbackURL = try temporaryLibraryURL()
+    let rollbackRepository = try PromptRepository(libraryURL: rollbackURL)
+    let firstRollbackItem = sampleItem(title: "rollback one", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "PROMPT")
+    let secondRollbackItem = sampleItem(title: "rollback two", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "PROMPT")
+    try rollbackRepository.saveItems([firstRollbackItem, secondRollbackItem])
+    let rollbackDatabaseURL = rollbackURL.appendingPathComponent("database/promptstudio.sqlite")
+    let rollbackDatabase = try SQLiteDatabase(path: rollbackDatabaseURL.path)
+    try rollbackDatabase.execute("CREATE TRIGGER fail_placeholder_migration BEFORE UPDATE OF type ON prompt_items BEGIN SELECT RAISE(ABORT, 'migration failure'); END;")
+    do {
+        _ = try rollbackRepository.migratePromptPlaceholders()
+        throw CoreUnitTestError.failure("migration should surface trigger failures")
+    } catch SQLiteError.stepFailed {
+        // Expected: the whole transaction must roll back.
+    }
+    let rolledBack = try rollbackRepository.loadItems()
+    try expect(rolledBack.allSatisfy { $0.assetKind == .text && $0.type == .text }, "failed migration should roll back every row")
+}
+
 do {
     try testLibraryURLResolution()
     try testExistingLibraryValidationDoesNotCreateDatabase()
@@ -1899,6 +2022,10 @@ do {
     try testPromptComposerMetadataPolicyUsesExactSameTypeModels()
     try testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown()
     try testPromptClipboardInterpreterInfersExplicitTextOutputFormats()
+    try testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes()
+    try testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments()
+    try testCapturedPromptUsesUnifiedClassificationAndIsIdempotent()
+    try testPromptPlaceholderMigrationIsSafeIdempotentAndTransactional()
     try await runReferenceThumbnailServiceTests()
     try testPromptRepositoryBatchFolderUpdateRollsBack()
     try testPromptRepositoryFolderUpdatePreservesVersions()

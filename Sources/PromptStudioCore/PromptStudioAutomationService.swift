@@ -205,25 +205,37 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             return existing
         }
 
-        let model = try ensureCaptureModel()
+        let type = PromptTypeClassifier.classify(text: selectedText)
+        let assetKind: AssetKind
+        switch type {
+        case .image:
+            assetKind = .image
+        case .video:
+            assetKind = .video
+        case .audio:
+            assetKind = .audio
+        case .text:
+            assetKind = .markdown
+        }
+        let model = try ensureCaptureModel(for: type)
         let folder = try ensureCaptureFolder()
         let id = UUID().uuidString
         let item = PromptItem(
             id: id,
             title: captureTitle(from: selectedText),
-            type: .text,
-            assetKind: .text,
+            type: type,
+            assetKind: assetKind,
             modelId: model.id,
             modelName: model.name,
             folderId: folder.id,
             folderName: folder.name,
-            category: "文本",
+            category: type == .text ? "Markdown" : assetKind.displayName,
             assetPath: "",
             thumbnailPath: "",
             aspectRatio: "",
             width: 0,
             height: 0,
-            format: "TEXT",
+            format: type == .text ? "MD" : "",
             fileSize: 0,
             sortOrder: try nextTopSortOrder(),
             tags: ["网页采集", "待整理"],
@@ -393,9 +405,9 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         return models.first ?? ModelProfile(id: "default", name: "未指定", type: .text, parameters: [])
     }
 
-    private func ensureCaptureModel() throws -> ModelProfile {
-        let id = "unspecified_text"
-        let canonical = ModelProfile(id: id, name: "未指定模型", type: .text, parameters: [])
+    private func ensureCaptureModel(for type: PromptType = .text) throws -> ModelProfile {
+        let id = "unspecified_\(type.rawValue)"
+        let canonical = ModelProfile(id: id, name: "未指定模型", type: type, parameters: [])
         if let existing = try repository.loadModelProfiles().first(where: { $0.id == id }) {
             if existing != canonical {
                 try repository.saveModelProfile(canonical)

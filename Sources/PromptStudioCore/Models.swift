@@ -327,6 +327,19 @@ public enum PromptType: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// The Core-level state of the primary asset recorded by a prompt item.
+///
+/// A media placeholder deliberately has no file path yet, while a text
+/// document remains a document even when its path is temporarily unavailable.
+public enum PromptPrimaryAssetState: String, Codable, CaseIterable, Identifiable, Sendable {
+    case mediaPlaceholder
+    case available
+    case missing
+    case textDocument
+
+    public var id: String { rawValue }
+}
+
 public struct PromptVersion: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var promptItemId: String
@@ -484,6 +497,52 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
 
     public var isTextDocumentLike: Bool {
         assetKind.isTextDocumentLike || isWordDocument || formatSupport.previewMode == .textDocument
+    }
+
+    /// True when the item describes a generated media prompt that has not yet
+    /// received its primary file. Text documents and real media files are not
+    /// placeholders, even if their metadata is incomplete.
+    public var isMediaPromptPlaceholder: Bool {
+        guard assetPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !isTextDocumentLike else {
+            return false
+        }
+        switch type {
+        case .image, .video, .audio:
+            return true
+        case .text:
+            return false
+        }
+    }
+
+    /// Indicates that a primary path is recorded. Callers that need to know
+    /// whether the file still exists should resolve the path in their own
+    /// library context; Core intentionally does not require that I/O here.
+    public var hasPrimaryAsset: Bool {
+        !assetPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isPromptPrimaryAsset
+    }
+
+    /// Resolves the primary asset state using the local filesystem.
+    public var primaryAssetState: PromptPrimaryAssetState {
+        primaryAssetState(using: { path in
+            FileManager.default.fileExists(atPath: path)
+        })
+    }
+
+    /// Allows UI/library callers to provide a resolver for relative or
+    /// otherwise library-rooted paths without changing the Codable model.
+    public func primaryAssetState(using fileExists: (String) -> Bool) -> PromptPrimaryAssetState {
+        if isMediaPromptPlaceholder {
+            return .mediaPlaceholder
+        }
+        if isTextDocumentLike {
+            return .textDocument
+        }
+        let path = assetPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            return .missing
+        }
+        return fileExists(path) ? .available : .missing
     }
 
     public var isPromptPrimaryAsset: Bool {
