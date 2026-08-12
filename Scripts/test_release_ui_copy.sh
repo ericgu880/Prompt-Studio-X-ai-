@@ -143,5 +143,6 @@ bash "$ROOT_DIR/Scripts/test_markdown_visual_line_numbers.sh"
 bash "$ROOT_DIR/Scripts/test_prompt_smart_paste.sh"
 bash "$ROOT_DIR/Scripts/test_reference_asset_preview_hover.sh"
 bash "$ROOT_DIR/Scripts/test_reference_thumbnail_integration.sh"
+bash "$ROOT_DIR/Scripts/test_split_resize_stability.sh"
 
 echo "Release UI copy tests passed"

@@ -476,7 +476,7 @@ private struct SplitResizeHotZone: View {
                 notifyActiveChanged(hovering || isDragging)
             }
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
                         isDragging = true
                         notifyActiveChanged(true)
@@ -2841,6 +2841,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             items: items,
             state: state,
             thumbnailScale: thumbnailScale,
+            isSplitResizing: isSplitResizing,
             scrollView: scrollView,
             onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
         )
@@ -2871,6 +2872,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var currentThumbnailScale = 1.0
         private var lastVisibleThumbnailCandidateIDs: [String] = []
         private var lastPrefetchedImageRequests: [ThumbnailImageRequest] = []
+        private var isSplitResizing = false
         private var pendingDatasetUpdate: PendingDatasetUpdate?
         private var isDatasetUpdateScheduled = false
         private var isInvalidated = false
@@ -2943,6 +2945,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             items: [PromptItem],
             state: AppState,
             thumbnailScale: Double,
+            isSplitResizing: Bool,
             scrollView: NSScrollView,
             onPreviewNavigationSnapshotChange: @escaping (PreviewNavigationSnapshot) -> Void
         ) {
@@ -2950,7 +2953,15 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             self.state = state
             self.onPreviewNavigationSnapshotChange = onPreviewNavigationSnapshotChange
             currentThumbnailScale = thumbnailScale
+            self.isSplitResizing = isSplitResizing
             observeBounds(of: scrollView)
+
+            guard !isSplitResizing else {
+                pendingDatasetUpdate = nil
+                syncExternalSelectionChange(state.selectedIDs)
+                syncExternalFolderSelection(state.selectedFolderID)
+                return
+            }
 
             let availableWidth = max(1, scrollView.contentView.bounds.width)
             let widthBucket = Self.widthBucket(for: availableWidth)
@@ -3048,7 +3059,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                   let scrollView = collectionView.enclosingScrollView else {
                 return
             }
-            guard pendingDatasetUpdate == nil else { return }
+            guard !isSplitResizing, pendingDatasetUpdate == nil else { return }
             let availableWidth = max(1, scrollView.contentView.bounds.width)
             let widthBucket = Self.widthBucket(for: availableWidth)
             guard widthBucket != lastAvailableWidthBucket else { return }
