@@ -25,6 +25,7 @@ struct PromptStudioPetTests {
         check(PetPreferences.defaults.captureEnabled, "capture default is enabled", failures: &failures)
         check(!PetPreferences.defaults.soundEnabled, "sound default is off", failures: &failures)
         check(PetPreferences.defaults.defaultFolderID == "folder-capture-inbox", "capture folder default", failures: &failures)
+        check(!PetPreferences.defaults.hostRegistrationEnabled, "browser registration requires explicit opt-in", failures: &failures)
 
         check(!PetCaptureAdmission.isBusy(state: .idle, hasPendingRequest: false, hidden: false), "first visible capture is admitted", failures: &failures)
         check(PetCaptureAdmission.isBusy(state: .asking, hasPendingRequest: true, hidden: false), "second visible capture is busy", failures: &failures)
@@ -78,6 +79,41 @@ struct PromptStudioPetTests {
         }
         check(hostInstallRejected && hostRemoveRejected, "nil host actions fail closed", failures: &failures)
 
+        let registrationRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pspet-registration-\(UUID().uuidString)", isDirectory: true)
+        let homeURL = registrationRoot.appendingPathComponent("home", isDirectory: true)
+        let applicationsURL = registrationRoot.appendingPathComponent("Applications", isDirectory: true)
+        let appURL = registrationRoot.appendingPathComponent("PromptStudio.app", isDirectory: true)
+        let helperURL = appURL.appendingPathComponent("Contents/Helpers/PromptStudioCaptureHost")
+        try? FileManager.default.createDirectory(
+            at: applicationsURL.appendingPathComponent("Google Chrome.app"),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.createDirectory(at: helperURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: helperURL.path, contents: Data("host".utf8))
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+        let installer = PetBrowserHostInstaller(
+            homeURL: homeURL,
+            applicationRoots: [applicationsURL],
+            appBundleURL: appURL
+        )
+        do {
+            let installed = try installer.install()
+            let manifestURL = homeURL.appendingPathComponent(
+                "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.creatigo.promptstudio.capture.json"
+            )
+            let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+            let origins = manifest?["allowed_origins"] as? [String]
+            check(installed.isInstalled && installed.configuredBrowserCount == 1, "registration detects installed browsers", failures: &failures)
+            check(manifest?["path"] as? String == helperURL.path, "registration stores the bundled helper path", failures: &failures)
+            check(origins == [PetBrowserHostInstaller.developmentOrigin], "registration uses one exact development origin", failures: &failures)
+            _ = try installer.remove()
+            check(!FileManager.default.fileExists(atPath: manifestURL.path), "registration removal deletes only the owned manifest", failures: &failures)
+        } catch {
+            failures.append("browser registration failed: \(error.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: registrationRoot)
+
         let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
         let clamped = PetGeometry.clampedOrigin(
             proposed: CGPoint(x: 990, y: 790),
@@ -94,6 +130,16 @@ struct PromptStudioPetTests {
             snapDistance: 48
         )
         check(snapped.x == 8 && snapped.y == 420, "panel origin snaps to nearest edge", failures: &failures)
+        let appKitPoint = PetGeometry.appKitPoint(
+            fromBrowserScreenPoint: .init(x: 160, y: 220),
+            primaryScreenMaxY: 900
+        )
+        check(appKitPoint == CGPoint(x: 160, y: 680), "browser point converts to AppKit screen coordinates", failures: &failures)
+        let browserPoint = PetGeometry.browserScreenPoint(
+            fromAppKitPoint: appKitPoint,
+            primaryScreenMaxY: 900
+        )
+        check(browserPoint == .init(x: 160, y: 220), "screen coordinate conversion round trips", failures: &failures)
 
         let temporaryDirectory = URL(fileURLWithPath: "/tmp/pspet-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let socketURL = temporaryDirectory.appendingPathComponent("web-capture.sock")

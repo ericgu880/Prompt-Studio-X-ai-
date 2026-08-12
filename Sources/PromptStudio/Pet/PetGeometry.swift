@@ -8,6 +8,24 @@ enum PetScreenEdge: String, Codable, Equatable, Sendable {
 }
 
 enum PetGeometry {
+    /// Chromium exposes global screen coordinates from the primary display's
+    /// top-left, while AppKit uses the primary display's bottom-left. Keeping
+    /// the conversion in one place also makes displays above/below the primary
+    /// screen work because their coordinates may be negative in either space.
+    static func appKitPoint(
+        fromBrowserScreenPoint point: PetCaptureRequest.ScreenPoint,
+        primaryScreenMaxY: CGFloat
+    ) -> CGPoint {
+        CGPoint(x: point.x, y: primaryScreenMaxY - point.y)
+    }
+
+    static func browserScreenPoint(
+        fromAppKitPoint point: CGPoint,
+        primaryScreenMaxY: CGFloat
+    ) -> PetCaptureRequest.ScreenPoint {
+        .init(x: point.x, y: primaryScreenMaxY - point.y)
+    }
+
     static func clampedOrigin(
         proposed: CGPoint,
         panelSize: CGSize,

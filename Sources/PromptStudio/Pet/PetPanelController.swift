@@ -79,6 +79,58 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
     }
 
+    func moveNearBrowserPoint(_ browserPoint: PetCaptureRequest.ScreenPoint?) {
+        guard let browserPoint,
+              let primaryScreen = NSScreen.screens.first else { return }
+        let appKitPoint = PetGeometry.appKitPoint(
+            fromBrowserScreenPoint: browserPoint,
+            primaryScreenMaxY: primaryScreen.frame.maxY
+        )
+        let screens = NSScreen.screens
+        let target = screens.first(where: { $0.frame.contains(appKitPoint) })
+            ?? targetScreen()
+        guard let visibleFrame = target?.visibleFrame else { return }
+        let proposed = CGPoint(
+            x: appKitPoint.x + 14,
+            y: appKitPoint.y - panel.frame.height / 2
+        )
+        let origin = PetGeometry.clampedOrigin(
+            proposed: proposed,
+            panelSize: panel.frame.size,
+            visibleFrame: visibleFrame,
+            inset: 8
+        )
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.setFrameOrigin(origin)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrameOrigin(origin)
+        }
+    }
+
+    var mouthBrowserScreenPoint: PetCaptureRequest.ScreenPoint? {
+        guard let primaryScreen = NSScreen.screens.first else { return nil }
+        // The pet occupies the leading 102 points in both layouts. SwiftUI's
+        // mouth is 11 points below its center; convert that flipped local
+        // coordinate into AppKit window coordinates before going back to the
+        // browser's global top-left coordinate space.
+        let localMouth = CGPoint(
+            x: 51,
+            y: panel.frame.height - (panel.frame.height / 2 + 11)
+        )
+        let appKitPoint = CGPoint(
+            x: panel.frame.minX + localMouth.x,
+            y: panel.frame.minY + localMouth.y
+        )
+        return PetGeometry.browserScreenPoint(
+            fromAppKitPoint: appKitPoint,
+            primaryScreenMaxY: primaryScreen.frame.maxY
+        )
+    }
+
     func snapNow() {
         guard let screen = targetScreen() else { return }
         let origin = PetGeometry.snappedOrigin(
