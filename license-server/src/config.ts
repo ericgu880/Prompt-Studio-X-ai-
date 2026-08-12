@@ -225,6 +225,7 @@ export function validateSigningKeyPair(input: {
 export function loadConfig(): AppConfig {
   const nodeEnv = process.env.NODE_ENV ?? "development";
   const production = nodeEnv === "production";
+  const commerceEnabled = (process.env.COMMERCE_ENABLED ?? "true") === "true";
   const dataEncryptionKeyB64 = required("DATA_ENCRYPTION_KEY_B64");
   if (Buffer.from(dataEncryptionKeyB64, "base64").length !== 32) {
     throw new Error("DATA_ENCRYPTION_KEY_B64 must decode to 32 bytes");
@@ -232,7 +233,7 @@ export function loadConfig(): AppConfig {
   const lemonSqueezyWebhookSecret = optionalSecret("LEMON_SQUEEZY_WEBHOOK_SECRET");
   const resendApiKey = optionalSecret("RESEND_API_KEY");
   const resendWebhookSecret = optionalSecret("RESEND_WEBHOOK_SECRET");
-  if (production && !lemonSqueezyWebhookSecret) throw new Error("Missing required environment variable: LEMON_SQUEEZY_WEBHOOK_SECRET");
+  if (production && commerceEnabled && !lemonSqueezyWebhookSecret) throw new Error("Missing required environment variable: LEMON_SQUEEZY_WEBHOOK_SECRET");
   if (production && !resendApiKey) throw new Error("Missing required environment variable: RESEND_API_KEY");
   if (production && !resendWebhookSecret) throw new Error("Missing required environment variable: RESEND_WEBHOOK_SECRET");
   const signingPrivateKeyPKCS8DerB64 = required("LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64");
@@ -319,7 +320,7 @@ export function loadConfig(): AppConfig {
       resendApiKey,
       resendWebhookSecret,
       resendFromEmail: process.env.RESEND_FROM_EMAIL ?? "PromptStudio <license@promptstudio.app>",
-      productMappings: parseProductMappings(process.env.COMMERCE_PRODUCT_MAPPINGS_JSON, production),
+      productMappings: parseProductMappings(process.env.COMMERCE_PRODUCT_MAPPINGS_JSON, production && commerceEnabled),
       workerEnabled,
       workerPollIntervalMs,
       workerLeaseMs,

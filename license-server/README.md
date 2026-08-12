@@ -81,7 +81,7 @@ The plaintext license code is printed only once. Store it in the purchase email.
 
 ## Production Deployment
 
-The recommended first deployment is one application service plus PostgreSQL. Set the service root to `license-server`, build with the included `Dockerfile`, run `npm run prisma:deploy` as the pre-deploy command, use `/health` for liveness, and use `/ready` for traffic readiness.
+The recommended first deployment is one application service plus PostgreSQL. Set the service root to `license-server`, build with the included `Dockerfile`, and use `/ready` for the HTTP health check. The container applies pending Prisma migrations before starting the server.
 
 Required production settings:
 
@@ -92,9 +92,10 @@ ADMIN_WEB_ORIGIN=https://license.promptstudio.app
 LEGACY_ADMIN_ENABLED=false
 WORKER_ENABLED=true
 TRUST_PROXY_HOPS=1
+COMMERCE_ENABLED=false
 ```
 
-Also set every secret and mapping from `.env.example`. `TRUST_PROXY_HOPS` must match the verified reverse-proxy topology; production refuses `0` so rate limits do not silently collapse all customers onto one proxy IP. The current all-in-one deployment requires `WORKER_ENABLED=true`. `COMMERCE_PRODUCT_MAPPINGS_JSON` must contain at least one entry and is the allowlist that maps a Lemon Squeezy variant to `pro_lifetime`, seat count, major version, and update entitlement. Unknown and duplicate variants fail closed and appear in the commercial operations page.
+Also set every required secret from `.env.example`. `TRUST_PROXY_HOPS` must match the verified reverse-proxy topology; production refuses `0` so rate limits do not silently collapse all customers onto one proxy IP. The current all-in-one deployment requires `WORKER_ENABLED=true`. For manual marketplace sales, set `COMMERCE_ENABLED=false`; Lemon Squeezy secrets and product mappings are then optional. When automated Lemon Squeezy sales are enabled, `COMMERCE_PRODUCT_MAPPINGS_JSON` must contain at least one entry and acts as the allowlist that maps a variant to `pro_lifetime`, seat count, major version, and update entitlement.
 
 `/ready` checks both PostgreSQL connectivity and the latest critical commerce reconciliation migration. It returns 503 until `prisma migrate deploy` has completed, preventing signed purchase webhooks from being accepted by an instance with a stale schema.
 
