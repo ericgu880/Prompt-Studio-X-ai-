@@ -90,12 +90,23 @@ final class PetCaptureSocketServer {
         let captureID: String
         let mouthScreenPoint: PetCaptureRequest.ScreenPoint?
         let message: String?
+        let code: String?
+        let retryable: Bool?
 
-        init(type: String, captureID: String, mouthScreenPoint: PetCaptureRequest.ScreenPoint? = nil, message: String? = nil) {
+        init(
+            type: String,
+            captureID: String,
+            mouthScreenPoint: PetCaptureRequest.ScreenPoint? = nil,
+            message: String? = nil,
+            code: String? = nil,
+            retryable: Bool? = nil
+        ) {
             self.type = type
             self.captureID = captureID
             self.mouthScreenPoint = mouthScreenPoint
             self.message = message
+            self.code = code
+            self.retryable = retryable
         }
     }
 
@@ -322,8 +333,14 @@ final class PetCaptureSocketServer {
             return WireResponse(type: "animate", captureID: captureID, mouthScreenPoint: mouthPoint)
         case .cancelled(let captureID):
             return WireResponse(type: "cancelled", captureID: captureID)
-        case .failed(let captureID, let message):
-            return WireResponse(type: "failed", captureID: captureID, message: message)
+        case .failed(let captureID, let message, let code, let retryable):
+            return WireResponse(
+                type: "failed",
+                captureID: captureID,
+                message: message,
+                code: code,
+                retryable: retryable ? true : nil
+            )
         }
     }
 
@@ -427,22 +444,23 @@ final class PetCaptureSocketServer {
     private nonisolated func serve(clientDescriptor: Int32) async {
         let handle = FileHandle(fileDescriptor: clientDescriptor, closeOnDealloc: true)
         var pendingCaptureID: String?
-        defer {
-            if let pendingCaptureID {
-                Task { @MainActor [weak self] in
-                    self?.disconnect(captureID: pendingCaptureID)
-                }
-            }
-        }
         do {
             while let payload = try Self.readFrame(from: handle) {
                 let response = await handleMessage(payload)
-                try Self.writeFrame(response, to: handle)
                 let decoder = JSONDecoder()
-                guard let envelope = try? decoder.decode(WireResponse.self, from: response),
-                      envelope.type == "presented" else { continue }
-                pendingCaptureID = envelope.captureID
-                guard let terminal = await awaitTerminalOutcome(for: envelope.captureID, descriptor: clientDescriptor) else { continue }
+                let envelope = try? decoder.decode(WireResponse.self, from: response)
+                if envelope?.type == "presented" {
+                    // Mark this before the first write. If the peer closes or
+                    // the write fails, the catch path can release the pending
+                    // ID and its terminal waiter deterministically.
+                    pendingCaptureID = envelope?.captureID
+                }
+                try Self.writeFrame(response, to: handle)
+                guard let envelope, envelope.type == "presented" else { continue }
+                guard let terminal = await awaitTerminalOutcome(for: envelope.captureID, descriptor: clientDescriptor) else {
+                    pendingCaptureID = nil
+                    continue
+                }
                 pendingCaptureID = nil
                 for followUp in await followUpResponses(for: terminal) {
                     try Self.writeFrame(followUp, to: handle)
@@ -450,6 +468,9 @@ final class PetCaptureSocketServer {
             }
         } catch {
             // The host may disconnect while the app is hidden or shutting down.
+            if let pendingCaptureID {
+                await disconnect(captureID: pendingCaptureID)
+            }
         }
     }
 

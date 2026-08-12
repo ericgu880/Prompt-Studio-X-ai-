@@ -26,6 +26,58 @@ struct PromptStudioPetTests {
         check(!PetPreferences.defaults.soundEnabled, "sound default is off", failures: &failures)
         check(PetPreferences.defaults.defaultFolderID == "folder-capture-inbox", "capture folder default", failures: &failures)
 
+        check(!PetCaptureAdmission.isBusy(state: .idle, hasPendingRequest: false, hidden: false), "first visible capture is admitted", failures: &failures)
+        check(PetCaptureAdmission.isBusy(state: .asking, hasPendingRequest: true, hidden: false), "second visible capture is busy", failures: &failures)
+        var admittedCaptureID = "first"
+        let secondAdmissionIsBusy = PetCaptureAdmission.isBusy(state: .asking, hasPendingRequest: true, hidden: false)
+        if secondAdmissionIsBusy {
+            let secondOutcome = PetCaptureAdmission.busyOutcome(captureID: "second")
+            check(secondOutcome.captureID == "second", "concurrent second request receives its own terminal ID", failures: &failures)
+        } else {
+            admittedCaptureID = "second"
+        }
+        check(admittedCaptureID == "first", "concurrent request cannot overwrite first pending ID", failures: &failures)
+        let busy = PetCaptureAdmission.busyOutcome(captureID: "second")
+        check(busy.failureCode == "pet-busy" && busy.isRetryable, "busy failure is retryable and coded", failures: &failures)
+        check(!PetCaptureAdmission.isBusy(state: .hidden, hasPendingRequest: false, hidden: true), "hidden capture remains admitted", failures: &failures)
+        let encodedBusy = try? JSONEncoder().encode(busy)
+        let decodedBusy = encodedBusy.flatMap { try? JSONDecoder().decode(PetCaptureOutcome.self, from: $0) }
+        check(decodedBusy == busy, "busy failure preserves wire metadata", failures: &failures)
+
+        var hiddenCompletion: PetCaptureOutcome?
+        let hiddenObserver = NotificationCenter.default.addObserver(
+            forName: .petHiddenCaptureCompleted,
+            object: nil,
+            queue: nil
+        ) { notification in
+            hiddenCompletion = notification.object as? PetCaptureOutcome
+        }
+        let hiddenFailure = PetCaptureOutcome.failed(
+            captureID: "hidden-failure",
+            message: "保存失败",
+            code: "save-failed"
+        )
+        PetCaptureNotifications.postHiddenCompletion(hiddenFailure)
+        NotificationCenter.default.removeObserver(hiddenObserver)
+        check(hiddenCompletion == hiddenFailure, "hidden failure posts completion event", failures: &failures)
+        let hostInstallRejected = await MainActor.run { () -> Bool in
+            do {
+                _ = try PetHostRegistrationService().installHost()
+                return false
+            } catch {
+                return (error as? PetHostRegistrationError) == .unavailable
+            }
+        }
+        let hostRemoveRejected = await MainActor.run { () -> Bool in
+            do {
+                _ = try PetHostRegistrationService().removeHost()
+                return false
+            } catch {
+                return (error as? PetHostRegistrationError) == .unavailable
+            }
+        }
+        check(hostInstallRejected && hostRemoveRejected, "nil host actions fail closed", failures: &failures)
+
         let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
         let clamped = PetGeometry.clampedOrigin(
             proposed: CGPoint(x: 990, y: 790),
@@ -68,6 +120,39 @@ struct PromptStudioPetTests {
         server.stop()
         check(server.pendingCaptureIDs.isEmpty, "stop clears pending clients", failures: &failures)
 
+        var consecutiveRequestCount = 0
+        let consecutiveDirectory = URL(fileURLWithPath: "/tmp/pspet-consecutive-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let consecutiveServer = PetCaptureSocketServer(socketURL: consecutiveDirectory.appendingPathComponent("web-capture.sock")) { request in
+            consecutiveRequestCount += 1
+            if consecutiveRequestCount == 1 {
+                return .presented(captureID: request.id)
+            }
+            return PetCaptureAdmission.busyOutcome(captureID: request.id)
+        }
+        consecutiveServer.start()
+        let firstConsecutive = await consecutiveServer.handleMessage(
+            Data(candidate.replacingOccurrences(of: "red-1", with: "first-consecutive").utf8)
+        )
+        let secondConsecutive = await consecutiveServer.handleMessage(
+            Data(candidate.replacingOccurrences(of: "red-1", with: "second-consecutive").utf8)
+        )
+        let firstObject = (try? JSONSerialization.jsonObject(with: firstConsecutive)) as? [String: Any]
+        let secondObject = (try? JSONSerialization.jsonObject(with: secondConsecutive)) as? [String: Any]
+        check(
+            firstObject?["type"] as? String == "presented",
+            "first consecutive socket request remains presented",
+            failures: &failures
+        )
+        check(
+            secondObject?["type"] as? String == "failed"
+                && secondObject?["code"] as? String == "pet-busy"
+                && secondObject?["retryable"] as? Bool == true,
+            "second consecutive socket request gets terminal pet-busy",
+            failures: &failures
+        )
+        check(consecutiveServer.pendingCaptureIDs.contains("first-consecutive"), "busy request does not overwrite first pending ID", failures: &failures)
+        consecutiveServer.stop()
+
         let wireDirectory = URL(fileURLWithPath: "/tmp/pspet-wire-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let wireSocketURL = wireDirectory.appendingPathComponent("web-capture.sock")
         let wireServer = PetCaptureSocketServer(socketURL: wireSocketURL) { request in
@@ -102,6 +187,30 @@ struct PromptStudioPetTests {
             failures.append("same socket protocol failed: \(error.localizedDescription)")
         }
         wireServer.stop()
+
+        let disconnectDirectory = URL(fileURLWithPath: "/tmp/pspet-disconnect-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let disconnectURL = disconnectDirectory.appendingPathComponent("web-capture.sock")
+        let disconnectServer = PetCaptureSocketServer(socketURL: disconnectURL) { request in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            return .presented(captureID: request.id)
+        }
+        disconnectServer.start()
+        check(disconnectServer.isRunning, "disconnect socket starts: \(disconnectServer.lastStartError ?? "unknown")", failures: &failures)
+        let disconnectClientTask = Task.detached {
+            let descriptor = try connect(to: disconnectURL.path)
+            let frame = try makeFrame(Data(candidate.replacingOccurrences(of: "red-1", with: "drop-1").utf8))
+            _ = frame.withUnsafeBytes { bytes in
+                Darwin.send(descriptor, bytes.baseAddress, frame.count, 0)
+            }
+            Darwin.shutdown(descriptor, SHUT_RDWR)
+            Darwin.close(descriptor)
+        }
+        _ = try? await disconnectClientTask.value
+        for _ in 0..<100 where !disconnectServer.pendingCaptureIDs.isEmpty {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        check(!disconnectServer.pendingCaptureIDs.contains("drop-1"), "failed initial write releases pending capture", failures: &failures)
+        disconnectServer.stop()
 
         if failures.isEmpty {
             print("PromptStudioPetTests passed")

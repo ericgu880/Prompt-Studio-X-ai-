@@ -23,6 +23,17 @@ struct PetHostRegistration: Codable, Equatable, Sendable {
     }
 }
 
+enum PetHostRegistrationError: LocalizedError, Equatable {
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "浏览器主机安装服务暂不可用"
+        }
+    }
+}
+
 /// Integration hook for host installation.  The default callbacks are no-ops
 /// so the native pet can run without pretending to own browser registration.
 @MainActor
@@ -48,7 +59,8 @@ final class PetHostRegistrationService: ObservableObject {
     /// installed only after it succeeds.
     @discardableResult
     func installHost() throws -> PetHostRegistration {
-        try installAction?()
+        guard let installAction else { throw PetHostRegistrationError.unavailable }
+        try installAction()
         state.isInstalled = true
         return state
     }
@@ -57,7 +69,8 @@ final class PetHostRegistrationService: ObservableObject {
     /// removed only after it succeeds.
     @discardableResult
     func removeHost() throws -> PetHostRegistration {
-        try removeAction?()
+        guard let removeAction else { throw PetHostRegistrationError.unavailable }
+        try removeAction()
         state.isInstalled = false
         return state
     }
