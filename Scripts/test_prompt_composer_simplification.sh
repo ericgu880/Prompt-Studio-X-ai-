@@ -63,6 +63,11 @@ require_pattern "$OVERLAY_FILE" \
 require_pattern "$OVERLAY_FILE" \
     'private func moveUnsavedPreviewImageToReferencesIfNeeded()' \
     "Text type selection must not retain an incompatible unsaved preview image."
+move_count="$(/usr/bin/grep -Fc 'moveUnsavedPreviewImageToReferencesIfNeeded()' "$OVERLAY_FILE")"
+if [[ "$move_count" -lt 4 ]]; then
+    echo "Manual, automatic, and smart-paste text resolution must all migrate an unsaved preview image." >&2
+    exit 1
+fi
 require_pattern "$OVERLAY_FILE" \
     'parameters: changingExistingType ? [:] : parsedParameters' \
     "Changing Prompt type must clear parameters from the old type."

@@ -2198,6 +2198,9 @@ struct PromptComposerOverlay: View {
         }
         let interpretation = PromptClipboardInterpreter.interpret(prompt)
         typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if resolvedType == .text {
+            moveUnsavedPreviewImageToReferencesIfNeeded()
+        }
         if let nextModelHint = interpretation.modelHint {
             modelHint = nextModelHint
         } else if smartPasteInterpretation == nil {
