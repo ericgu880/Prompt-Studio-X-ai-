@@ -9,6 +9,9 @@
   const pendingImageStarts = new Set();
   const MAX_STORE_TTL_MS = 300_000;
   const MAX_REPLAY_ATTEMPTS = 3;
+  const FINAL_HIT_TIMEOUT_MS = 800;
+  // Task4/Host contract: response fields are forwarded unchanged when present.
+  const IMAGE_DRAG_WIRE_FIELDS = ['sequence', 'insidePet', 'mouthScreenPoint'];
   const IMAGE_MENU_ID = 'promptstudio-save-image';
   const PAGE_IMAGE_MENU_ID = 'promptstudio-recognize-page-image';
   let nativePort = null;
@@ -163,14 +166,15 @@
     const dragSession = dragSessions.get(captureID);
     if (dragSession) {
       if (response.type === 'ack' || response.type === 'imageDragPreviewAck') {
+        const sequence = Number(response.sequence);
+        const pending = Number.isInteger(sequence) ? dragSession.pendingPreviews.get(sequence) : null;
+        if (!pending) return;
+        dragSession.pendingPreviews.delete(sequence);
         dragSession.previewPending = false;
-        const previewResponse = {
-          ...response,
-          sequence: Number.isInteger(Number(response.sequence))
-            ? Number(response.sequence) : dragSession.latestSequence,
-        };
+        if (pending.final && sequence === dragSession.finalSequence) dragSession.finalPending = false;
+        const previewResponse = { ...response, sequence };
         sendToFrame(dragSession.tabID, dragSession.frameID, { type: 'imageCaptureResult', result: previewResponse });
-        pumpDragPreview(dragSession);
+        if (!pending.final) pumpDragPreview(dragSession);
       } else {
         sendToFrame(dragSession.tabID, dragSession.frameID, { type: 'imageCaptureResult', result: response });
       }
@@ -398,8 +402,7 @@
   }
 
   async function captureVisibleTabCrop(tab, frameID, descriptor) {
-    if (!tab || !descriptor || !descriptor.crop || descriptor.crop.width <= 0 || descriptor.crop.height <= 0
-        || typeof chrome.tabs.captureVisibleTab !== 'function') return null;
+    if (!tab || !descriptor || !descriptor.screenRect || typeof chrome.tabs.captureVisibleTab !== 'function') return null;
     const screenshot = await new Promise((resolve) => {
       try {
         chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }, (dataURL) => resolve(dataURL || null));
@@ -412,7 +415,13 @@
       try {
         const response = await fetch(screenshot);
         const bitmap = await createImageBitmap(await response.blob());
-        const crop = descriptor.crop;
+        const crop = image.cropRectFromScreenRect(
+          descriptor.screenRect,
+          descriptor.topMetrics || {},
+          (descriptor.topMetrics && descriptor.topMetrics.devicePixelRatio) || descriptor.devicePixelRatio || 1,
+          { width: bitmap.width, height: bitmap.height },
+        );
+        if (!crop.width || !crop.height) { bitmap.close(); return null; }
         const canvas = new OffscreenCanvas(crop.width, crop.height);
         const context = canvas.getContext('2d');
         context.drawImage(bitmap, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
@@ -422,12 +431,21 @@
       } catch { /* fall through to bounded chunk bridge */ }
     }
     const captureID = descriptor.captureID || `screenshot-${Date.now()}`;
+    const crop = image.cropRectFromScreenRect(
+      descriptor.screenRect,
+      descriptor.topMetrics || {},
+      (descriptor.topMetrics && descriptor.topMetrics.devicePixelRatio) || descriptor.devicePixelRatio || 1,
+      descriptor.screenshotSize || null,
+    );
+    if (!crop.width || !crop.height) return null;
     const chunkSize = 512 * 1024;
     const chunks = [];
     for (let offset = 0; offset < screenshot.length; offset += chunkSize) chunks.push(screenshot.slice(offset, offset + chunkSize));
     if (chunks.some((chunk) => JSON.stringify({ data: chunk }).length >= image.IMAGE_FRAME_MAX_BYTES)) return null;
     const started = await sendToFrameAwait(tab.id, frameID, {
-      type: 'cropImageScreenshotStart', captureID, totalChunks: chunks.length, crop: descriptor.crop,
+      type: 'cropImageScreenshotStart', captureID, totalChunks: chunks.length, crop,
+      screenRect: descriptor.screenRect, topMetrics: descriptor.topMetrics,
+      devicePixelRatio: descriptor.devicePixelRatio,
     });
     if (!started || !started.ok) return null;
     for (let index = 0; index < chunks.length; index += 1) {
@@ -440,31 +458,36 @@
   }
 
   async function acquireDescriptorBytes(tab, frameID, descriptor) {
+    let captureDescriptor = descriptor;
+    if (!captureDescriptor.topMetrics) {
+      const topMetrics = await sendToFrameAwait(tab.id, 0, { type: 'getTopViewportMetrics' });
+      if (topMetrics && topMetrics.ok) captureDescriptor = { ...captureDescriptor, topMetrics };
+    }
     let acquired = null;
-    const pageStore = await executeMainStoreStart(tab.id, frameID, descriptor, 'pageContext');
+    const pageStore = await executeMainStoreStart(tab.id, frameID, captureDescriptor, 'pageContext');
     if (pageStore) acquired = await readFrameStore(tab.id, frameID, pageStore);
     let acquisitionMethod = 'pageContext';
-    if (!acquired && descriptor.url && !/^(?:data|blob):/i.test(descriptor.url)) {
+    if (!acquired && captureDescriptor.url && !/^(?:data|blob):/i.test(captureDescriptor.url)) {
       try {
-        const response = await fetch(descriptor.url, { credentials: 'include', referrer: descriptor.pageURL || undefined });
-        if (response.ok) acquired = { bytes: new Uint8Array(await response.arrayBuffer()), mimeType: response.headers.get('content-type') || descriptor.mimeType || null };
+        const response = await fetch(captureDescriptor.url, { credentials: 'include', referrer: captureDescriptor.pageURL || undefined });
+        if (response.ok) acquired = { bytes: new Uint8Array(await response.arrayBuffer()), mimeType: response.headers.get('content-type') || captureDescriptor.mimeType || null };
       } catch { acquired = null; }
       acquisitionMethod = 'extensionFetch';
     }
     if (!acquired) {
-      const loadedStore = await executeMainStoreStart(tab.id, frameID, descriptor, 'loadedBytes');
+      const loadedStore = await executeMainStoreStart(tab.id, frameID, captureDescriptor, 'loadedBytes');
       if (loadedStore) acquired = await readFrameStore(tab.id, frameID, loadedStore);
       acquisitionMethod = 'loadedBytes';
     }
     if (!acquired) {
-      acquired = await captureVisibleTabCrop(tab, frameID, descriptor);
+      acquired = await captureVisibleTabCrop(tab, frameID, captureDescriptor);
       acquisitionMethod = 'screenshot';
     }
     if (!acquired || !acquired.bytes) throw new Error('image-acquisition-failed');
     image.assertImageSize(acquired.bytes);
     const sha256 = await image.sha256Hex(acquired.bytes);
     return {
-      candidate: image.makeImageCandidate({ ...descriptor, acquisitionMethod, isScreenshot: acquisitionMethod === 'screenshot', mimeType: acquired.mimeType || descriptor.mimeType, byteCount: acquired.bytes.byteLength, sha256 }),
+      candidate: image.makeImageCandidate({ ...captureDescriptor, acquisitionMethod, isScreenshot: acquisitionMethod === 'screenshot', mimeType: acquired.mimeType || captureDescriptor.mimeType, byteCount: acquired.bytes.byteLength, sha256 }),
       bytes: acquired.bytes,
     };
   }
@@ -503,24 +526,32 @@
     }
   }
 
-  function postDragPreview(session) {
+  function postDragPreview(session, { drop = false, sequence = session.latestSequence } = {}) {
     if (!nativePort || session.previewPending || !session.latestPoint) return;
+    if (!Number.isInteger(Number(sequence)) || Number(sequence) <= 0) return;
     session.previewPending = true;
+    session.pendingPreviews.set(Number(sequence), { final: Boolean(drop), createdAt: Date.now() });
     try {
       nativePort.postMessage({
         type: 'imageDragPreview', origin: originForRuntime(), captureID: session.captureID,
-        screenPoint: session.latestPoint, insidePet: session.insidePet, drop: false,
-        sequence: session.latestSequence,
+        screenPoint: session.latestPoint, insidePet: session.insidePet, drop: Boolean(drop),
+        sequence: Number(sequence),
       });
     } catch {
       session.previewPending = false;
+      session.pendingPreviews.delete(Number(sequence));
       sendToFrame(session.tabID, session.frameID, { type: 'imageCaptureResult', result: { type: 'failed', captureID: session.captureID, code: 'native-host-unavailable' } });
       scheduleReconnect();
     }
   }
 
   function pumpDragPreview(session) {
-    if (session.latestPoint && !session.previewPending) postDragPreview(session);
+    if (!session.latestPoint || session.previewPending) return;
+    if (session.finalPending && Number.isInteger(session.finalSequence)) {
+      postDragPreview(session, { drop: true, sequence: session.finalSequence });
+    } else {
+      postDragPreview(session);
+    }
   }
 
   async function startDrag(tabID, frameID, descriptor) {
@@ -535,6 +566,9 @@
       latestSequence: 0,
       insidePet: false,
       previewPending: false,
+      pendingPreviews: new Map(),
+      finalSequence: null,
+      finalPending: false,
     };
     dragSessions.set(session.captureID, session);
     const tabPromise = chrome.tabs && typeof chrome.tabs.get === 'function'
@@ -572,6 +606,28 @@
     }
   }
 
+  function finalizeDrag(captureID, sequence, screenPoint) {
+    const session = dragSessions.get(captureID);
+    const finalSequence = Number(sequence);
+    if (!session || !Number.isInteger(finalSequence) || finalSequence <= session.latestSequence || session.finalPending) return false;
+    session.latestPoint = screenPoint || session.latestPoint;
+    session.latestSequence = finalSequence;
+    session.finalSequence = finalSequence;
+    session.finalPending = true;
+    postDragPreview(session, { drop: true, sequence: finalSequence });
+    setTimeout(() => {
+      const current = dragSessions.get(captureID);
+      if (!current || !current.finalPending || current.finalSequence !== finalSequence) return;
+      current.finalPending = false;
+      current.pendingPreviews.delete(finalSequence);
+      sendToFrame(current.tabID, current.frameID, {
+        type: 'imageCaptureResult',
+        result: { type: 'imageDragPreviewAck', captureID, sequence: finalSequence, insidePet: false, code: 'final-hit-timeout' },
+      });
+    }, FINAL_HIT_TIMEOUT_MS);
+    return true;
+  }
+
   function createContextMenus() {
     if (!chrome.contextMenus || typeof chrome.contextMenus.create !== 'function') return;
     const create = () => {
@@ -601,10 +657,19 @@
       const session = dragSessions.get(message.captureID);
       if (!session) { sendResponse({ ok: false, code: 'image-session-not-found' }); return false; }
       session.latestPoint = message.screenPoint || message.point || null;
-      if (Number.isInteger(Number(message.sequence))) session.latestSequence = Number(message.sequence);
+      const sequence = Number(message.sequence);
+      if (!Number.isInteger(sequence) || sequence <= session.latestSequence) {
+        sendResponse({ ok: false, code: 'stale-preview-sequence' });
+        return false;
+      }
+      session.latestSequence = sequence;
       session.insidePet = Boolean(message.insidePet);
       pumpDragPreview(session);
       sendResponse({ ok: true });
+      return false;
+    }
+    if (message && message.type === 'finalizeImageDrag') {
+      sendResponse({ ok: finalizeDrag(message.captureID, message.sequence, message.screenPoint) });
       return false;
     }
     if (message && message.type === 'dropImageDrag') {

@@ -7,6 +7,7 @@
   const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
   const IMAGE_CHUNK_BYTES = 512 * 1024;
   const IMAGE_FRAME_MAX_BYTES = 1024 * 1024;
+  const FINAL_HIT_TIMEOUT_MS = 800;
   const VALID_DOM_SOURCE_KINDS = new Set([
     'image', 'picture', 'srcset', 'dataURL', 'blob', 'canvas', 'inlineSVG', 'cssBackground',
   ]);
@@ -119,34 +120,60 @@
   function parseSrcset(srcset) {
     const source = String(srcset || '').trim();
     const candidates = [];
-    // A data URL contains a comma before its payload.  Descriptor-boundary scanning avoids
-    // treating that comma as a candidate separator while retaining normal srcset parsing.
-    const descriptorPattern = /\s+(\d+(?:\.\d+)?[wx])\s*(?=,|$)/gi;
-    let cursor = 0;
-    let match;
-    let sawDescriptor = false;
-    while ((match = descriptorPattern.exec(source))) {
-      sawDescriptor = true;
-      const url = source.slice(cursor, match.index).replace(/^\s*,\s*/, '').trim();
-      const descriptor = match[1].toLowerCase();
-      const widthMatch = /^(\d+)w$/.exec(descriptor);
-      const densityMatch = /^(\d+(?:\.\d+)?)x$/.exec(descriptor);
-      if (url && ((widthMatch && Number(widthMatch[1]) > 0) || (densityMatch && Number(densityMatch[1]) > 0))) {
-        candidates.push({
-          url,
-          width: widthMatch ? Number(widthMatch[1]) : null,
-          density: densityMatch ? Number(densityMatch[1]) : null,
-          descriptor,
-        });
+    // Commas in data URL payloads are not candidate separators.  A payload comma is followed
+    // by its encoded/base64 bytes, while a normal candidate separator is followed by whitespace
+    // and the next URL.  Descriptor parsing below still validates the final token.
+    const parts = [];
+    let start = 0;
+    let depth = 0;
+    let quote = '';
+    const startsDataURL = () => /^\s*data:/i.test(source.slice(start));
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+      if (quote) {
+        if (character === quote && source[index - 1] !== '\\') quote = '';
+        continue;
       }
-      cursor = match.index + match[0].length;
-      if (source[cursor] === ',') cursor += 1;
+      if (character === '"' || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character === '(') { depth += 1; continue; }
+      if (character === ')') { if (depth > 0) depth -= 1; continue; }
+      if (character !== ',' || depth !== 0) continue;
+      if (startsDataURL()) {
+        const before = source.slice(start, index);
+        const after = source.slice(index + 1).trimStart();
+        const descriptorBefore = /\s+\d+(?:\.\d+)?[wx]\s*$/i.test(before);
+        const nextURL = /^(?:https?:|blob:|data:|\/|\.\.?\/|[a-z0-9_-]+\.[a-z]{2,}(?:[?#]|\s|$))/i.test(after);
+        if (!descriptorBefore && !nextURL) continue;
+      }
+      parts.push(source.slice(start, index).trim());
+      start = index + 1;
     }
-    if (sawDescriptor) return candidates;
-    for (const part of splitCommaList(source)) {
+    parts.push(source.slice(start).trim());
+    for (const part of parts.filter(Boolean)) {
       const tokens = part.trim().split(/\s+/);
-      const url = tokens.shift();
-      if (url && !tokens.length) candidates.push({ url, width: null, density: 1, descriptor: '' });
+      if (!tokens.length) continue;
+      let descriptor = '';
+      const last = tokens[tokens.length - 1].toLowerCase();
+      if (/^(?:\d+(?:\.\d+)?[wx])$/.test(last)) {
+        descriptor = tokens.pop();
+      } else if (tokens.length > 1) {
+        // Invalid descriptors are rejected rather than merging this candidate with a later URL.
+        continue;
+      }
+      const url = tokens.join(' ');
+      if (!url) continue;
+      const widthMatch = /^(\d+)w$/i.exec(descriptor);
+      const densityMatch = /^(\d+(?:\.\d+)?)x$/i.exec(descriptor);
+      if (!descriptor) {
+        candidates.push({ url, width: null, density: 1, descriptor: '' });
+      } else if (widthMatch && Number(widthMatch[1]) > 0) {
+        candidates.push({ url, width: Number(widthMatch[1]), density: null, descriptor: descriptor.toLowerCase() });
+      } else if (densityMatch && Number(densityMatch[1]) > 0) {
+        candidates.push({ url, width: null, density: Number(densityMatch[1]), descriptor: descriptor.toLowerCase() });
+      }
     }
     return candidates;
   }
@@ -420,20 +447,44 @@
     return result;
   }
 
-  function cropRectFromScreenRect(rect, metrics = {}, devicePixelRatio = 1) {
+  function cropRectFromScreenRect(rect, metrics = {}, devicePixelRatio = 1, screenshotSize = null) {
     const dpr = positiveNumber(devicePixelRatio, 1);
     const screenX = finiteNumber(metrics.screenX);
     const screenY = finiteNumber(metrics.screenY);
     const chromeHeight = Math.max(0, finiteNumber(metrics.browserChromeHeight));
+    const viewportWidth = positiveNumber(metrics.viewportWidth, 0);
+    const viewportHeight = positiveNumber(metrics.viewportHeight, 0);
+    const pixelWidth = Math.max(0, finiteNumber(screenshotSize && screenshotSize.width));
+    const pixelHeight = Math.max(0, finiteNumber(screenshotSize && screenshotSize.height));
+    const scaleX = pixelWidth && viewportWidth ? pixelWidth / viewportWidth : dpr;
+    const scaleY = pixelHeight && viewportHeight ? pixelHeight / viewportHeight : dpr;
     const left = finiteNumber(rect && rect.left) - screenX;
     const top = finiteNumber(rect && rect.top) - screenY - chromeHeight;
     const right = finiteNumber(rect && rect.right) - screenX;
     const bottom = finiteNumber(rect && rect.bottom) - screenY - chromeHeight;
+    const rawLeft = Math.round(left * scaleX);
+    const rawTop = Math.round(top * scaleY);
+    const rawRight = Math.round(right * scaleX);
+    const rawBottom = Math.round(bottom * scaleY);
+    if (!pixelWidth || !pixelHeight) {
+      return {
+        left: rawLeft,
+        top: rawTop,
+        width: Math.max(0, rawRight - rawLeft),
+        height: Math.max(0, rawBottom - rawTop),
+      };
+    }
+    const maxWidth = pixelWidth;
+    const maxHeight = pixelHeight;
+    const clippedLeft = Math.max(0, Math.min(maxWidth, rawLeft));
+    const clippedTop = Math.max(0, Math.min(maxHeight, rawTop));
+    const clippedRight = Math.max(clippedLeft, Math.min(maxWidth, rawRight));
+    const clippedBottom = Math.max(clippedTop, Math.min(maxHeight, rawBottom));
     return {
-      left: Math.round(left * dpr),
-      top: Math.round(top * dpr),
-      width: Math.max(0, Math.round((right - left) * dpr)),
-      height: Math.max(0, Math.round((bottom - top) * dpr)),
+      left: clippedLeft,
+      top: clippedTop,
+      width: Math.max(0, clippedRight - clippedLeft),
+      height: Math.max(0, clippedBottom - clippedTop),
     };
   }
 
@@ -575,6 +626,8 @@
       this.pendingPreviewSequences = new Set();
       this.nativeInsidePet = false;
       this.nativeMouthScreenPoint = null;
+      this.lastNativeSequence = 0;
+      this.finalPending = null;
     }
 
     start() {
@@ -595,13 +648,54 @@
       if (!response || response.captureID !== this.captureID) return false;
       if (response.type !== 'imageDragPreviewAck' && response.type !== 'ack') return false;
       const sequence = Number(response.sequence);
-      if (Number.isInteger(sequence) && sequence > this.previewSequence) return false;
-      if (Number.isInteger(sequence)) this.pendingPreviewSequences.delete(sequence);
+      if (!Number.isInteger(sequence) || sequence > this.previewSequence
+          || sequence <= this.lastNativeSequence || !this.pendingPreviewSequences.has(sequence)) return false;
+      this.pendingPreviewSequences.delete(sequence);
+      this.lastNativeSequence = sequence;
       this.nativeInsidePet = Boolean(response.insidePet);
       this.nativeMouthScreenPoint = response.mouthScreenPoint || response.mouthPoint || null;
       this.insidePet = this.nativeInsidePet;
       this.mouthScreenPoint = this.nativeMouthScreenPoint;
       return true;
+    }
+
+    requestFinalize(point, now = Date.now()) {
+      if (this.phase !== 'active' || this.finalPending) return null;
+      this.previewSequence += 1;
+      const sequence = this.previewSequence;
+      const finalPoint = point && { x: finiteNumber(point.x), y: finiteNumber(point.y) };
+      this.finalPending = { sequence, point: finalPoint, expiresAt: Number(now) + FINAL_HIT_TIMEOUT_MS };
+      this.pendingPreviewSequences.add(sequence);
+      this.lastPoint = finalPoint && { ...finalPoint, sequence };
+      return { sequence, point: finalPoint, expiresAt: this.finalPending.expiresAt };
+    }
+
+    consumeFinalAck(response = {}, now = Date.now()) {
+      if (!this.finalPending || !response || response.captureID !== this.captureID) return null;
+      const sequence = Number(response.sequence);
+      if (sequence !== this.finalPending.sequence) return null;
+      if (Number(now) >= this.finalPending.expiresAt) return this.finalizeTimeout(now);
+      this.pendingPreviewSequences.delete(sequence);
+      this.lastNativeSequence = sequence;
+      this.nativeInsidePet = Boolean(response.insidePet);
+      this.nativeMouthScreenPoint = response.mouthScreenPoint || response.mouthPoint || null;
+      this.insidePet = this.nativeInsidePet;
+      this.mouthScreenPoint = this.nativeMouthScreenPoint;
+      this.finalPending = null;
+      if (this.nativeInsidePet) {
+        this.phase = 'dropped';
+        return 'drop';
+      }
+      this.phase = 'cancelled';
+      return 'cancel';
+    }
+
+    finalizeTimeout(now = Date.now()) {
+      if (!this.finalPending || Number(now) < this.finalPending.expiresAt) return null;
+      this.pendingPreviewSequences.delete(this.finalPending.sequence);
+      this.finalPending = null;
+      this.phase = 'cancelled';
+      return 'cancel';
     }
 
     feedback(response = {}) {
@@ -686,6 +780,7 @@
     MAX_IMAGE_BYTES,
     IMAGE_CHUNK_BYTES,
     IMAGE_FRAME_MAX_BYTES,
+    FINAL_HIT_TIMEOUT_MS,
     parseSrcset,
     selectSrcsetCandidate,
     selectImageURL,

@@ -56,11 +56,6 @@
       screenX: clickScreenPoint.x,
       screenY: clickScreenPoint.y,
     }) : null;
-    const screenMetrics = {
-      screenX: Number.isFinite(window.screenX) ? window.screenX : 0,
-      screenY: Number.isFinite(window.screenY) ? window.screenY : 0,
-      browserChromeHeight: Math.max(0, Number(window.outerHeight || 0) - Number(window.innerHeight || 0)),
-    };
     return {
       captureID: request.captureID,
       sourcePoint: { x, y },
@@ -80,22 +75,31 @@
       clickScreenPoint,
       capturedAt: new Date().toISOString(),
       screenRect,
-      screenMetrics,
-      crop: screenRect ? I.cropRectFromScreenRect(screenRect, screenMetrics, window.devicePixelRatio) : null,
+      devicePixelRatio: window.devicePixelRatio,
+      crop: null,
     };
   }
 
-  async function cropScreenshot(dataURL, crop) {
+  async function cropScreenshot(dataURL, crop, screenRect = null, topMetrics = null, devicePixelRatio = 1) {
     if (!dataURL || !crop || !crop.width || !crop.height) return null;
     return new Promise((resolve) => {
       const imageElement = new Image();
       imageElement.onload = async () => {
+        const effectiveCrop = screenRect
+          ? I.cropRectFromScreenRect(screenRect, topMetrics || {}, devicePixelRatio,
+            { width: imageElement.naturalWidth || imageElement.width, height: imageElement.naturalHeight || imageElement.height })
+          : crop;
+        const left = Math.max(0, Math.min(imageElement.naturalWidth || imageElement.width, Number(effectiveCrop.left) || 0));
+        const top = Math.max(0, Math.min(imageElement.naturalHeight || imageElement.height, Number(effectiveCrop.top) || 0));
+        const right = Math.max(left, Math.min(imageElement.naturalWidth || imageElement.width, (Number(effectiveCrop.left) || 0) + (Number(effectiveCrop.width) || 0)));
+        const bottom = Math.max(top, Math.min(imageElement.naturalHeight || imageElement.height, (Number(effectiveCrop.top) || 0) + (Number(effectiveCrop.height) || 0)));
+        if (right <= left || bottom <= top) { resolve(null); return; }
         const canvas = document.createElement('canvas');
-        canvas.width = crop.width;
-        canvas.height = crop.height;
+        canvas.width = right - left;
+        canvas.height = bottom - top;
         const context = canvas.getContext('2d');
         if (!context) { resolve(null); return; }
-        context.drawImage(imageElement, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+        context.drawImage(imageElement, left, top, right - left, bottom - top, 0, 0, right - left, bottom - top);
         try {
           canvas.toBlob(async (blob) => resolve(blob ? await I.responseBytes(blob) : null), 'image/png');
         } catch { resolve(null); }
@@ -142,6 +146,7 @@
   function sendDragPreview(event) {
     if (!dragSession || !dragSession.captureID) return;
     dragSession.previewSequence = (dragSession.previewSequence || 0) + 1;
+    dragSession.lastScreenPoint = { x: event.screenX, y: event.screenY };
     chrome.runtime.sendMessage({
       type: 'previewImageDrag', captureID: dragSession.captureID,
       screenPoint: { x: event.screenX, y: event.screenY },
@@ -162,6 +167,11 @@
       previewSequence: 0,
       nativeInsidePet: false,
       nativeMouthScreenPoint: null,
+      nativeSequence: 0,
+      lastScreenPoint: { x: event.screenX, y: event.screenY },
+      finalSequence: null,
+      finalPending: false,
+      finalTimer: null,
     };
     descriptorForCapture({ captureID, context: 'image', x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, srcUrl: element.currentSrc || element.src || '' })
       .then((descriptor) => {
@@ -332,6 +342,21 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.type === 'getTopViewportMetrics') {
+      let isTop = true;
+      try { isTop = window.top === window; } catch { isTop = false; }
+      if (!isTop) { sendResponse({ ok: false, code: 'not-top-frame' }); return false; }
+      sendResponse({
+        ok: true,
+        screenX: Number(window.screenX) || 0,
+        screenY: Number(window.screenY) || 0,
+        browserChromeHeight: Math.max(0, Number(window.outerHeight || 0) - Number(window.innerHeight || 0)),
+        viewportWidth: Number(window.innerWidth) || 0,
+        viewportHeight: Number(window.innerHeight) || 0,
+        devicePixelRatio: Number(window.devicePixelRatio) || 1,
+      });
+      return false;
+    }
     if (message && message.type === 'resolveImageCapture') {
       descriptorForCapture(message).then((descriptor) => {
         sendResponse(descriptor ? { ok: true, descriptor } : { ok: false, code: 'image-not-found' });
@@ -339,7 +364,10 @@
       return true;
     }
     if (message && message.type === 'cropImageScreenshotStart') {
-      screenshotAssemblies.set(message.captureID, { chunks: [], total: Number(message.totalChunks) || 0, crop: message.crop });
+      screenshotAssemblies.set(message.captureID, {
+        chunks: [], total: Number(message.totalChunks) || 0, crop: message.crop,
+        screenRect: message.screenRect, topMetrics: message.topMetrics, devicePixelRatio: message.devicePixelRatio,
+      });
       sendResponse({ ok: true });
       return false;
     }
@@ -358,7 +386,7 @@
         return false;
       }
       screenshotAssemblies.delete(message.captureID);
-      cropScreenshot(assembly.chunks.join(''), assembly.crop).then((bytes) => {
+      cropScreenshot(assembly.chunks.join(''), assembly.crop, assembly.screenRect, assembly.topMetrics, assembly.devicePixelRatio).then((bytes) => {
         if (!bytes) { sendResponse({ ok: false, code: 'screenshot-crop-failed' }); return; }
         const stored = localByteStore.start(bytes, { mimeType: 'image/png' });
         sendResponse({ ok: true, storeID: stored.storeID, byteCount: stored.byteCount, mimeType: stored.mimeType });
@@ -377,8 +405,35 @@
       const result = message.result || {};
       if (dragSession && result.captureID === dragSession.captureID) {
         const isPreviewAck = result.type === 'imageDragPreviewAck'
-          || (result.type === 'ack' && /drag[-_]?preview/i.test(String(result.code || '')));
+          || (result.type === 'ack' && (Number.isInteger(Number(result.sequence))
+            || /drag[-_]?preview/i.test(String(result.code || ''))));
         if (isPreviewAck) {
+          const sequence = Number(result.sequence);
+          if (!Number.isInteger(sequence)) return false;
+          if (dragSession.finalPending) {
+            if (sequence !== dragSession.finalSequence) return false;
+            dragSession.finalPending = false;
+            if (dragSession.finalTimer) clearTimeout(dragSession.finalTimer);
+            dragSession.finalTimer = null;
+            dragSession.nativeInsidePet = Boolean(result.insidePet);
+            dragSession.nativeMouthScreenPoint = result.mouthScreenPoint || result.mouthPoint || null;
+            renderMouthDuplicate({
+              insidePet: dragSession.nativeInsidePet,
+              mouthScreenPoint: dragSession.nativeMouthScreenPoint,
+            });
+            if (dragSession.nativeInsidePet) {
+              dragSession.dropped = true;
+              chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
+                if (chrome.runtime.lastError || !response || !response.ok) clearDragSession();
+              });
+            } else {
+              chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+              clearDragSession();
+            }
+            return false;
+          }
+          if (sequence <= (dragSession.nativeSequence || 0)) return false;
+          dragSession.nativeSequence = sequence;
           // Only native feedback controls the mouth duplicate.  Page-local hit testing is
           // intentionally not used because a native window may be outside this tab.
           dragSession.nativeInsidePet = Boolean(result.insidePet);
@@ -438,29 +493,32 @@
   document.addEventListener('drop', (event) => {
     if (!dragSession) return;
     event.preventDefault();
-    dragSession.dropped = true;
-    chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
-      if (chrome.runtime.lastError || !response || !response.ok) {
-        showNotice('图片采集失败，请重试。', { left: event.clientX, top: event.clientY });
-        clearDragSession();
-      }
-    });
+    dragSession.pageDropped = true;
+    dragSession.lastScreenPoint = { x: event.screenX, y: event.screenY };
   }, true);
   document.addEventListener('dragend', () => {
     if (!dragSession) return;
     if (dragSession.dropped) return;
-    if (dragSession.nativeInsidePet) {
-      dragSession.dropped = true;
-      chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
-        if (chrome.runtime.lastError || !response || !response.ok) {
-          showNotice('图片采集失败，请重试。', { left: 12, top: 12 });
+    if (dragSession.finalPending) return;
+    dragSession.previewSequence = Math.max(dragSession.previewSequence || 0, dragSession.nativeSequence || 0) + 1;
+    dragSession.finalSequence = dragSession.previewSequence;
+    dragSession.finalPending = true;
+    const finalSequence = dragSession.finalSequence;
+    const point = dragSession.lastScreenPoint || { x: window.screenX, y: window.screenY };
+    dragSession.finalTimer = setTimeout(() => {
+      if (!dragSession || !dragSession.finalPending || dragSession.finalSequence !== finalSequence) return;
+      chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+      clearDragSession();
+    }, I.FINAL_HIT_TIMEOUT_MS);
+    chrome.runtime.sendMessage({ type: 'finalizeImageDrag', captureID: dragSession.captureID, sequence: finalSequence, screenPoint: point }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.ok) {
+        if (dragSession && dragSession.finalSequence === finalSequence) {
+          clearTimeout(dragSession.finalTimer);
+          chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
           clearDragSession();
         }
-      });
-      return;
-    }
-    chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
-    clearDragSession();
+      }
+    });
   }, true);
   window.addEventListener('scroll', clearSelectionUI, true);
   window.addEventListener('resize', clearSelectionUI, true);

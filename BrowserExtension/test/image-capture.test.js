@@ -51,6 +51,13 @@ test('srcset data URLs with commas remain one candidate', () => {
   assert.equal(candidates[0].url, 'data:image/svg+xml,%3Csvg%3E%3C/svg%3E');
 });
 
+test('srcset keeps a descriptorless candidate before a density candidate and data payload commas', () => {
+  const mixed = Capture.parseSrcset('a.jpg, b.jpg 2x');
+  assert.deepEqual(mixed.map((candidate) => candidate.url), ['a.jpg', 'b.jpg']);
+  const data = Capture.parseSrcset('data:image/svg+xml,<svg>a,b</svg> 1x, https://example.test/high.png 2x');
+  assert.deepEqual(data.map((candidate) => candidate.url), ['data:image/svg+xml,<svg>a,b</svg>', 'https://example.test/high.png']);
+});
+
 test('image metadata preserves candidate fields and marks screenshot fallback', () => {
   const candidate = Capture.makeImageCandidate({
     captureID: 'image-1', pageTitle: 'Page', pageURL: 'https://example.test/page', siteName: 'example.test',
@@ -153,15 +160,39 @@ test('dragend chooses native inside-pet drop and consumes late preview acknowled
   const hit = new Capture.DragSessionState('drag-hit');
   hit.start();
   const sequence = hit.preview({ x: 10, y: 20 });
-  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence, insidePet: true, mouthScreenPoint: { x: 4, y: 5 } }), true);
+  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence: sequence.sequence, insidePet: true, mouthScreenPoint: { x: 4, y: 5 } }), true);
   assert.equal(hit.dragEnd(), 'drop');
-  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence: sequence + 1, insidePet: true }), true);
+  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence: sequence.sequence + 1, insidePet: true }), false);
 
   const miss = new Capture.DragSessionState('drag-miss');
   miss.start();
   const missSequence = miss.preview({ x: 1, y: 2 });
-  assert.equal(miss.consumePreviewAck({ captureID: 'drag-miss', type: 'imageDragPreviewAck', sequence: missSequence, insidePet: false }), true);
+  assert.equal(miss.consumePreviewAck({ captureID: 'drag-miss', type: 'imageDragPreviewAck', sequence: missSequence.sequence, insidePet: false }), true);
   assert.equal(miss.dragEnd(), 'cancel');
+});
+
+test('native final-hit decisions require the exact final sequence and reject out-of-order ACKs', () => {
+  const state = new Capture.DragSessionState('drag-final');
+  state.start();
+  const first = state.preview({ x: 10, y: 20 });
+  const second = state.preview({ x: 20, y: 30 });
+  assert.equal(state.consumePreviewAck({ captureID: 'drag-final', type: 'imageDragPreviewAck', sequence: second.sequence, insidePet: true }), true);
+  assert.equal(state.consumePreviewAck({ captureID: 'drag-final', type: 'imageDragPreviewAck', sequence: first.sequence, insidePet: false }), false);
+  assert.equal(state.nativeInsidePet, true);
+  const final = state.requestFinalize({ x: 40, y: 50 }, 100);
+  assert.equal(final.sequence, second.sequence + 1);
+  assert.equal(state.consumeFinalAck({ captureID: 'drag-final', type: 'imageDragPreviewAck', sequence: second.sequence, insidePet: false }, 120), null);
+  assert.equal(state.consumeFinalAck({ captureID: 'drag-final', type: 'imageDragPreviewAck', sequence: final.sequence, insidePet: true, mouthScreenPoint: { x: 5, y: 6 } }, 130), 'drop');
+
+  const miss = new Capture.DragSessionState('drag-final-miss');
+  miss.start();
+  const missFinal = miss.requestFinalize({ x: 1, y: 2 }, 200);
+  assert.equal(miss.consumeFinalAck({ captureID: 'drag-final-miss', type: 'imageDragPreviewAck', sequence: missFinal.sequence, insidePet: false }, 210), 'cancel');
+
+  const timeout = new Capture.DragSessionState('drag-final-timeout');
+  timeout.start();
+  timeout.requestFinalize({ x: 1, y: 2 }, 300);
+  assert.equal(timeout.finalizeTimeout(1_101), 'cancel');
 });
 
 test('image transfer replay is capped at three attempts and expires after five minutes', () => {
@@ -189,4 +220,10 @@ test('screen rect mapping handles negative displays and nested frame offsets wit
     { left: 12, top: 18, right: 112, bottom: 218 },
     { clientX: 2, clientY: 8, screenX: -48, screenY: 108 },
   ), { left: -38, top: 118, right: 62, bottom: 318 });
+  assert.deepEqual(Capture.cropRectFromScreenRect(
+    { left: -300, top: 80, right: 200, bottom: 600 },
+    { screenX: -200, screenY: 20, browserChromeHeight: 40, viewportWidth: 400, viewportHeight: 300 },
+    2,
+    { width: 800, height: 600 },
+  ), { left: 0, top: 40, width: 800, height: 560 });
 });

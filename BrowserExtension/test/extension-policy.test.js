@@ -67,6 +67,31 @@ test('image transport keeps MAIN bytes behind bounded stores and maps frame crop
   assert.doesNotMatch(contentSource, /sendResponse\([^\n]*\bbytes\s*:/);
 });
 
+test('native drag finalization keeps sequence and wire fields as a Task4 contract', () => {
+  const backgroundSource = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+  const contentSource = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
+  assert.match(backgroundSource, /IMAGE_DRAG_WIRE_FIELDS/);
+  assert.match(backgroundSource, /pendingPreviews/);
+  assert.match(backgroundSource, /finalizeImageDrag/);
+  assert.match(backgroundSource, /sequence: Number\(sequence\)/);
+  assert.doesNotMatch(backgroundSource, /sequence:\s*Number\.isInteger\(Number\(response\.sequence\)\)[\s\S]*latestSequence/);
+  assert.match(contentSource, /finalizeImageDrag/);
+  assert.match(contentSource, /finalSequence/);
+  assert.match(contentSource, /insidePet/);
+  assert.match(contentSource, /mouthScreenPoint/);
+});
+
+test('screenshot crop asks top frame for metrics and clamps against actual screenshot pixels', () => {
+  const backgroundSource = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+  const contentSource = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
+  assert.match(backgroundSource, /getTopViewportMetrics/);
+  assert.match(backgroundSource, /bitmap\.width[\s\S]*bitmap\.height/);
+  assert.match(backgroundSource, /cropRectFromScreenRect/);
+  assert.match(contentSource, /getTopViewportMetrics/);
+  assert.match(contentSource, /naturalWidth[\s\S]*naturalHeight/);
+  assert.doesNotMatch(contentSource, /window\.top\.innerWidth/);
+});
+
 test('content script does not read selection text during selectionchange', () => {
   const source = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
   assert.doesNotMatch(source, /selection\.(toString|textContent)\s*\(/);
