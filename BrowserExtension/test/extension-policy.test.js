@@ -44,6 +44,27 @@ test('extension scripts contain no network client calls outside the dedicated im
   }
   const imageSource = fs.readFileSync(path.join(extensionRoot, 'image-capture.js'), 'utf8');
   assert.match(imageSource, /fetch\s*\(/);
+  const backgroundSource = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+  assert.match(backgroundSource, /executeMainStoreStart[\s\S]*fetch\s*\(/);
+  assert.match(backgroundSource, /acquireDescriptorBytes[\s\S]*fetch\s*\(/);
+});
+
+test('image transport keeps MAIN bytes behind bounded stores and maps frame crops by screen coordinates', () => {
+  const backgroundSource = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+  const storeStart = backgroundSource.indexOf('function executeMainStoreStart');
+  const screenshotStart = backgroundSource.indexOf('async function captureVisibleTabCrop');
+  assert.ok(storeStart >= 0 && screenshotStart > storeStart);
+  const storeSource = backgroundSource.slice(storeStart, screenshotStart);
+  assert.match(storeSource, /return \{ storeID, byteCount: bytes\.byteLength, mimeType \}/);
+  assert.doesNotMatch(storeSource, /return \{[^}]*\bbytes\s*:/);
+  assert.match(backgroundSource, /finally[\s\S]*executeScriptAwait[\s\S]*stores\.delete/);
+  assert.match(backgroundSource, /replayImageSessions/);
+  assert.match(backgroundSource, /MAX_REPLAY_ATTEMPTS/);
+  const contentSource = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
+  assert.doesNotMatch(contentSource, /window\.frameElement|\.frameElement/);
+  assert.match(contentSource, /screenRectFromPointerRect/);
+  assert.match(contentSource, /readImageByteChunk/);
+  assert.doesNotMatch(contentSource, /sendResponse\([^\n]*\bbytes\s*:/);
 });
 
 test('content script does not read selection text during selectionchange', () => {

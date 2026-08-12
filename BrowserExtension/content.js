@@ -13,9 +13,11 @@
   let selectionRect = null;
   const captureOrigins = new Map();
   const animatedCaptureIDs = new Set();
+  const localByteStore = new I.FrameByteStore({ ttlMs: 300_000 });
+  const screenshotAssemblies = new Map();
   let dragSession = null;
   let mouthDuplicate = null;
-  let lastPointerPoint = { x: 0, y: 0, screenX: 0, screenY: 0 };
+  let lastPointerPoint = { x: 0, y: 0, screenX: null, screenY: null };
 
   function elementAtPoint(x, y, srcUrl) {
     let element = Number.isFinite(x) && Number.isFinite(y) && document.elementFromPoint(x, y);
@@ -26,39 +28,6 @@
       return Array.from(document.images).find((candidate) => candidate.currentSrc === srcUrl || candidate.src === srcUrl) || null;
     }
     return element || null;
-  }
-
-  function bytesFromDataURL(value) {
-    if (typeof value !== 'string' || !/^data:/i.test(value)) return null;
-    const comma = value.indexOf(',');
-    if (comma < 0) return null;
-    const metadata = value.slice(0, comma);
-    const payload = value.slice(comma + 1);
-    if (/;base64/i.test(metadata)) {
-      try { return I.decodeBase64(payload); } catch { return null; }
-    }
-    try {
-      return new TextEncoder().encode(decodeURIComponent(payload));
-    } catch {
-      return null;
-    }
-  }
-
-  async function loadedBytesForElement(element, descriptor) {
-    const source = descriptor && descriptor.url;
-    const direct = bytesFromDataURL(source);
-    if (direct) return direct;
-    if (element && typeof element.toBlob === 'function') {
-      return new Promise((resolve) => {
-        try {
-          element.toBlob(async (blob) => resolve(blob ? await I.responseBytes(blob) : null), 'image/png');
-        } catch { resolve(null); }
-      });
-    }
-    if (element && String(element.tagName || '').toLowerCase() === 'svg' && element.outerHTML) {
-      return new TextEncoder().encode(element.outerHTML);
-    }
-    return null;
   }
 
   async function descriptorForCapture(request) {
@@ -74,20 +43,27 @@
     if (!descriptor && request.srcUrl) descriptor = I.classifyImageSource(request.srcUrl);
     if (!descriptor) return null;
     const rect = element && typeof element.getBoundingClientRect === 'function'
-      ? rectInTopViewport(element) : null;
-    const loadedBytes = await loadedBytesForElement(element, descriptor);
+      ? element.getBoundingClientRect() : null;
     const clickScreenPoint = {
-      x: Number.isFinite(request.screenX) ? request.screenX : (lastPointerPoint.screenX || window.screenX + x),
-      y: Number.isFinite(request.screenY) ? request.screenY : (lastPointerPoint.screenY || window.screenY + y),
+      x: Number.isFinite(request.screenX) ? request.screenX
+        : (Number.isFinite(lastPointerPoint.screenX) ? lastPointerPoint.screenX : window.screenX + x),
+      y: Number.isFinite(request.screenY) ? request.screenY
+        : (Number.isFinite(lastPointerPoint.screenY) ? lastPointerPoint.screenY : window.screenY + y),
     };
-    let viewportWidth = window.innerWidth;
-    let viewportHeight = window.innerHeight;
-    try {
-      viewportWidth = window.top.innerWidth;
-      viewportHeight = window.top.innerHeight;
-    } catch { /* cross-origin top frames retain their local viewport */ }
+    const screenRect = rect ? I.screenRectFromPointerRect(rect, {
+      clientX: x,
+      clientY: y,
+      screenX: clickScreenPoint.x,
+      screenY: clickScreenPoint.y,
+    }) : null;
+    const screenMetrics = {
+      screenX: Number.isFinite(window.screenX) ? window.screenX : 0,
+      screenY: Number.isFinite(window.screenY) ? window.screenY : 0,
+      browserChromeHeight: Math.max(0, Number(window.outerHeight || 0) - Number(window.innerHeight || 0)),
+    };
     return {
       captureID: request.captureID,
+      sourcePoint: { x, y },
       pageTitle: document.title || '',
       pageURL: location.href,
       siteName: S.siteNameFromURL(location.href),
@@ -103,28 +79,10 @@
       pixelHeight: element && Number.isFinite(element.naturalHeight) && element.naturalHeight ? element.naturalHeight : null,
       clickScreenPoint,
       capturedAt: new Date().toISOString(),
-      loadedBytes,
-      crop: rect ? I.cropRectForVisibleElement(rect, { width: viewportWidth, height: viewportHeight }, window.devicePixelRatio) : null,
+      screenRect,
+      screenMetrics,
+      crop: screenRect ? I.cropRectFromScreenRect(screenRect, screenMetrics, window.devicePixelRatio) : null,
     };
-  }
-
-  function rectInTopViewport(element) {
-    const local = element.getBoundingClientRect();
-    const rect = {
-      left: local.left, top: local.top, right: local.right, bottom: local.bottom,
-    };
-    // Same-origin frames expose frameElement.  Add each frame's viewport offset so a
-    // top-level captureVisibleTab crop remains correct for nested content scripts.
-    let frame = window.frameElement;
-    while (frame && frame.getBoundingClientRect) {
-      const frameRect = frame.getBoundingClientRect();
-      rect.left += frameRect.left;
-      rect.right += frameRect.left;
-      rect.top += frameRect.top;
-      rect.bottom += frameRect.top;
-      try { frame = frame.ownerDocument && frame.ownerDocument.defaultView && frame.ownerDocument.defaultView.frameElement; } catch { frame = null; }
-    }
-    return rect;
   }
 
   async function cropScreenshot(dataURL, crop) {
@@ -183,9 +141,11 @@
 
   function sendDragPreview(event) {
     if (!dragSession || !dragSession.captureID) return;
+    dragSession.previewSequence = (dragSession.previewSequence || 0) + 1;
     chrome.runtime.sendMessage({
       type: 'previewImageDrag', captureID: dragSession.captureID,
       screenPoint: { x: event.screenX, y: event.screenY },
+      sequence: dragSession.previewSequence,
     });
   }
 
@@ -194,7 +154,15 @@
     if (!element || dragSession) return;
     const captureID = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
       ? globalThis.crypto.randomUUID() : `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    dragSession = { captureID, element, dropped: false, started: true };
+    dragSession = {
+      captureID,
+      element,
+      dropped: false,
+      started: true,
+      previewSequence: 0,
+      nativeInsidePet: false,
+      nativeMouthScreenPoint: null,
+    };
     descriptorForCapture({ captureID, context: 'image', x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, srcUrl: element.currentSrc || element.src || '' })
       .then((descriptor) => {
         if (!dragSession || dragSession.captureID !== captureID || !descriptor) return;
@@ -204,9 +172,11 @@
             clearDragSession();
             showNotice(response && response.code === 'image-busy' ? 'PromptStudio 正在处理另一张图片。' : '图片预取失败，请重试。', { left: event.clientX, top: event.clientY });
           } else {
+            dragSession.previewSequence = Math.max(1, dragSession.previewSequence || 0);
             chrome.runtime.sendMessage({
               type: 'previewImageDrag', captureID,
               screenPoint: { x: event.screenX, y: event.screenY },
+              sequence: dragSession.previewSequence,
             });
           }
         });
@@ -368,17 +338,56 @@
       }).catch(() => sendResponse({ ok: false, code: 'image-not-found' }));
       return true;
     }
-    if (message && message.type === 'cropImageScreenshot') {
-      cropScreenshot(message.dataURL, message.crop).then((bytes) => {
-        sendResponse(bytes ? { ok: true, bytes } : { ok: false, code: 'screenshot-crop-failed' });
+    if (message && message.type === 'cropImageScreenshotStart') {
+      screenshotAssemblies.set(message.captureID, { chunks: [], total: Number(message.totalChunks) || 0, crop: message.crop });
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message && message.type === 'cropImageScreenshotChunk') {
+      const assembly = screenshotAssemblies.get(message.captureID);
+      if (!assembly || !Number.isInteger(message.index) || message.index < 0) { sendResponse({ ok: false }); return false; }
+      assembly.chunks[message.index] = String(message.data || '');
+      sendResponse({ ok: true });
+      return false;
+    }
+    if (message && message.type === 'cropImageScreenshotEnd') {
+      const assembly = screenshotAssemblies.get(message.captureID);
+      if (!assembly || assembly.chunks.length < assembly.total
+          || assembly.chunks.some((chunk) => typeof chunk !== 'string')) {
+        sendResponse({ ok: false, code: 'screenshot-crop-failed' });
+        return false;
+      }
+      screenshotAssemblies.delete(message.captureID);
+      cropScreenshot(assembly.chunks.join(''), assembly.crop).then((bytes) => {
+        if (!bytes) { sendResponse({ ok: false, code: 'screenshot-crop-failed' }); return; }
+        const stored = localByteStore.start(bytes, { mimeType: 'image/png' });
+        sendResponse({ ok: true, storeID: stored.storeID, byteCount: stored.byteCount, mimeType: stored.mimeType });
       }).catch(() => sendResponse({ ok: false, code: 'screenshot-crop-failed' }));
       return true;
+    }
+    if (message && message.type === 'readImageByteChunk') {
+      sendResponse(localByteStore.read(message.storeID, message.index) || { ok: false });
+      return false;
+    }
+    if (message && message.type === 'releaseImageByteStore') {
+      sendResponse({ ok: localByteStore.release(message.storeID) });
+      return false;
     }
     if (message && message.type === 'imageCaptureResult') {
       const result = message.result || {};
       if (dragSession && result.captureID === dragSession.captureID) {
-        renderMouthDuplicate(result);
-        if (result.type === 'failed') {
+        const isPreviewAck = result.type === 'imageDragPreviewAck'
+          || (result.type === 'ack' && /drag[-_]?preview/i.test(String(result.code || '')));
+        if (isPreviewAck) {
+          // Only native feedback controls the mouth duplicate.  Page-local hit testing is
+          // intentionally not used because a native window may be outside this tab.
+          dragSession.nativeInsidePet = Boolean(result.insidePet);
+          dragSession.nativeMouthScreenPoint = result.mouthScreenPoint || result.mouthPoint || null;
+          renderMouthDuplicate({
+            insidePet: dragSession.nativeInsidePet,
+            mouthScreenPoint: dragSession.nativeMouthScreenPoint,
+          });
+        } else if (result.type === 'failed') {
           showNotice(result.code === 'image-busy' ? 'PromptStudio 正在处理另一张图片。' : '图片采集失败，请重试。', { left: 12, top: 12 });
           clearDragSession();
         } else if (result.type === 'saved' || result.type === 'cancelled') {
@@ -439,8 +448,19 @@
   }, true);
   document.addEventListener('dragend', () => {
     if (!dragSession) return;
-    if (!dragSession.dropped) chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
-    if (!dragSession.dropped) clearDragSession();
+    if (dragSession.dropped) return;
+    if (dragSession.nativeInsidePet) {
+      dragSession.dropped = true;
+      chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
+        if (chrome.runtime.lastError || !response || !response.ok) {
+          showNotice('图片采集失败，请重试。', { left: 12, top: 12 });
+          clearDragSession();
+        }
+      });
+      return;
+    }
+    chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+    clearDragSession();
   }, true);
   window.addEventListener('scroll', clearSelectionUI, true);
   window.addEventListener('resize', clearSelectionUI, true);

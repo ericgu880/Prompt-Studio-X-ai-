@@ -3,6 +3,26 @@ const assert = require('node:assert/strict');
 
 const Capture = require('../image-capture.js');
 
+test('frame byte store round-trips a multi-megabyte fixture through JSON-safe base64 chunks', () => {
+  const source = Uint8Array.from({ length: (2 * 1024 * 1024) + 17 }, (_, index) => index % 251);
+  const store = new Capture.FrameByteStore({ ttlMs: 300_000 });
+  const started = store.start(source, { mimeType: 'image/png' });
+  assert.deepEqual(Object.keys(started).sort(), ['byteCount', 'mimeType', 'storeID'].sort());
+  const output = new Uint8Array(source.byteLength);
+  let outputOffset = 0;
+  for (let index = 0; index < Math.ceil(started.byteCount / Capture.IMAGE_CHUNK_BYTES); index += 1) {
+    const response = JSON.parse(JSON.stringify(store.read(started.storeID, index)));
+    assert.equal(response.bytes, undefined);
+    assert.ok(JSON.stringify(response).length < Capture.IMAGE_FRAME_MAX_BYTES);
+    const chunk = Capture.decodeBase64(response.base64Data);
+    output.set(chunk, outputOffset);
+    outputOffset += chunk.byteLength;
+  }
+  assert.deepEqual(output, source);
+  assert.equal(store.release(started.storeID), true);
+  assert.equal(store.read(started.storeID, 0), null);
+});
+
 test('srcset parser chooses the highest usable width/density and currentSrc wins', () => {
   const candidates = Capture.parseSrcset('small.jpg 320w, medium.jpg 2x, large.jpg 1280w, invalid.jpg nope');
   assert.deepEqual(candidates.map((candidate) => candidate.url), ['small.jpg', 'medium.jpg', 'large.jpg']);
@@ -23,6 +43,12 @@ test('DOM metadata resolves data, blob, canvas, inline SVG, and only valid CSS b
     computedStyle: { backgroundImage: 'url("/top.png"), url("/under.png")' },
   };
   assert.deepEqual(Capture.selectDOMImageMetadata(backgroundElement, { allowCSSBackground: true }).backgroundLayers, ['/top.png', '/under.png']);
+});
+
+test('srcset data URLs with commas remain one candidate', () => {
+  const candidates = Capture.parseSrcset('data:image/svg+xml,%3Csvg%3E%3C/svg%3E 1x, https://example.test/high.png 2x');
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates[0].url, 'data:image/svg+xml,%3Csvg%3E%3C/svg%3E');
 });
 
 test('image metadata preserves candidate fields and marks screenshot fallback', () => {
@@ -91,15 +117,21 @@ test('wire builder emits origin on every image message and keeps terminal imageE
   assert.equal(messages.at(-1).byteCount, 3);
 });
 
-test('image message ledger requires an ack for each message and routes by capture ID', () => {
+test('image message ledger requires the exact per-message ack and keeps end interim events pending', () => {
   const ledger = new Capture.ImageMessageLedger();
   ledger.begin({ captureID: 'one', messages: [{ type: 'imageBegin' }, { type: 'imageChunk' }, { type: 'imageEnd' }] });
   assert.deepEqual(ledger.next().message, { type: 'imageBegin' });
   assert.equal(ledger.receive({ captureID: 'other', type: 'ack' }), false);
-  assert.equal(ledger.receive({ captureID: 'one', type: 'ack' }), true);
+  assert.equal(ledger.receive({ captureID: 'one', type: 'ack', code: 'image-chunk-accepted' }), false);
+  assert.equal(ledger.receive({ captureID: 'one', type: 'ack', code: 'image-begin-accepted' }), true);
   assert.deepEqual(ledger.next().message, { type: 'imageChunk' });
-  assert.equal(ledger.receive({ captureID: 'one', type: 'ack' }), true);
+  assert.equal(ledger.receive({ captureID: 'one', type: 'ack', code: 'image-begin-accepted' }), false);
+  assert.equal(ledger.receive({ captureID: 'one', type: 'ack', code: 'image-chunk-accepted' }), true);
   assert.deepEqual(ledger.next().message, { type: 'imageEnd' });
+  assert.equal(ledger.receive({ captureID: 'one', type: 'presented' }), true);
+  assert.equal(ledger.pending.type, 'imageEnd');
+  assert.equal(ledger.receive({ captureID: 'one', type: 'animate' }), true);
+  assert.equal(ledger.pending.type, 'imageEnd');
   assert.equal(ledger.receive({ captureID: 'one', type: 'saved' }), true);
   assert.equal(ledger.done, true);
 });
@@ -115,4 +147,46 @@ test('drag state cancels unfinished sessions, honors reduced motion, and renders
   cancelled.start();
   assert.equal(cancelled.end(), 'cancel');
   assert.equal(Capture.shouldReduceMotion(() => true), true);
+});
+
+test('dragend chooses native inside-pet drop and consumes late preview acknowledgements', () => {
+  const hit = new Capture.DragSessionState('drag-hit');
+  hit.start();
+  const sequence = hit.preview({ x: 10, y: 20 });
+  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence, insidePet: true, mouthScreenPoint: { x: 4, y: 5 } }), true);
+  assert.equal(hit.dragEnd(), 'drop');
+  assert.equal(hit.consumePreviewAck({ captureID: 'drag-hit', type: 'imageDragPreviewAck', sequence: sequence + 1, insidePet: true }), true);
+
+  const miss = new Capture.DragSessionState('drag-miss');
+  miss.start();
+  const missSequence = miss.preview({ x: 1, y: 2 });
+  assert.equal(miss.consumePreviewAck({ captureID: 'drag-miss', type: 'imageDragPreviewAck', sequence: missSequence, insidePet: false }), true);
+  assert.equal(miss.dragEnd(), 'cancel');
+});
+
+test('image transfer replay is capped at three attempts and expires after five minutes', () => {
+  const replay = new Capture.ImageReplayController({ now: () => 1_000, maxAttempts: 3, ttlMs: 300_000 });
+  replay.begin('one', [{ type: 'imageBegin' }, { type: 'imageChunk' }]);
+  assert.equal(replay.replay(2).length, 2);
+  assert.equal(replay.replay(3).length, 2);
+  assert.equal(replay.replay(4).length, 2);
+  assert.equal(replay.replay(5), null);
+  assert.equal(replay.replay(301_001), null);
+});
+
+test('screen rect mapping handles negative displays and nested frame offsets without frameElement', () => {
+  const rect = Capture.accumulateFrameCoordinates(
+    { left: 4, top: 6, right: 104, bottom: 206 },
+    [{ left: 20, top: 30 }, { left: -50, top: 10 }],
+  );
+  assert.deepEqual(rect, { left: -26, top: 46, right: 74, bottom: 246 });
+  assert.deepEqual(Capture.cropRectFromScreenRect(
+    { left: -100, top: 250, right: 100, bottom: 450 },
+    { screenX: -200, screenY: 100, browserChromeHeight: 50 },
+    2,
+  ), { left: 200, top: 200, width: 400, height: 400 });
+  assert.deepEqual(Capture.screenRectFromPointerRect(
+    { left: 12, top: 18, right: 112, bottom: 218 },
+    { clientX: 2, clientY: 8, screenX: -48, screenY: 108 },
+  ), { left: -38, top: 118, right: 62, bottom: 318 });
 });

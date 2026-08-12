@@ -117,25 +117,36 @@
   }
 
   function parseSrcset(srcset) {
+    const source = String(srcset || '').trim();
     const candidates = [];
-    for (const part of splitCommaList(srcset)) {
-      const tokens = part.trim().split(/\s+/);
-      const url = tokens.shift();
-      if (!url) continue;
-      const descriptors = tokens.filter(Boolean);
-      if (descriptors.length > 1) continue;
-      if (!descriptors.length) {
-        candidates.push({ url, width: null, density: 1, descriptor: '' });
-        continue;
-      }
-      const descriptor = descriptors[0];
+    // A data URL contains a comma before its payload.  Descriptor-boundary scanning avoids
+    // treating that comma as a candidate separator while retaining normal srcset parsing.
+    const descriptorPattern = /\s+(\d+(?:\.\d+)?[wx])\s*(?=,|$)/gi;
+    let cursor = 0;
+    let match;
+    let sawDescriptor = false;
+    while ((match = descriptorPattern.exec(source))) {
+      sawDescriptor = true;
+      const url = source.slice(cursor, match.index).replace(/^\s*,\s*/, '').trim();
+      const descriptor = match[1].toLowerCase();
       const widthMatch = /^(\d+)w$/.exec(descriptor);
       const densityMatch = /^(\d+(?:\.\d+)?)x$/.exec(descriptor);
-      if (widthMatch && Number(widthMatch[1]) > 0) {
-        candidates.push({ url, width: Number(widthMatch[1]), density: null, descriptor });
-      } else if (densityMatch && Number(densityMatch[1]) > 0) {
-        candidates.push({ url, width: null, density: Number(densityMatch[1]), descriptor });
+      if (url && ((widthMatch && Number(widthMatch[1]) > 0) || (densityMatch && Number(densityMatch[1]) > 0))) {
+        candidates.push({
+          url,
+          width: widthMatch ? Number(widthMatch[1]) : null,
+          density: densityMatch ? Number(densityMatch[1]) : null,
+          descriptor,
+        });
       }
+      cursor = match.index + match[0].length;
+      if (source[cursor] === ',') cursor += 1;
+    }
+    if (sawDescriptor) return candidates;
+    for (const part of splitCommaList(source)) {
+      const tokens = part.trim().split(/\s+/);
+      const url = tokens.shift();
+      if (url && !tokens.length) candidates.push({ url, width: null, density: 1, descriptor: '' });
     }
     return candidates;
   }
@@ -351,6 +362,99 @@
     return chunks;
   }
 
+  class FrameByteStore {
+    constructor({ chunkBytes = IMAGE_CHUNK_BYTES, ttlMs = 300_000, now = Date.now } = {}) {
+      this.chunkBytes = Math.max(1, Math.floor(Number(chunkBytes) || IMAGE_CHUNK_BYTES));
+      this.ttlMs = Math.max(1, Math.floor(Number(ttlMs) || 300_000));
+      this.now = typeof now === 'function' ? now : () => Date.now();
+      this.entries = new Map();
+    }
+
+    start(bytes, { storeID, mimeType = null, now = this.now() } = {}) {
+      const normalized = assertImageSize(bytes);
+      this.prune(now);
+      if (this.entries.size) throw new Error('image store is busy');
+      const id = String(storeID || `store-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      this.entries.set(id, { bytes: normalized, mimeType, createdAt: now, expiresAt: now + this.ttlMs });
+      return { storeID: id, byteCount: normalized.byteLength, mimeType };
+    }
+
+    read(storeID, index, now = this.now()) {
+      const entry = this.entries.get(String(storeID || ''));
+      if (!entry || now >= entry.expiresAt) {
+        if (entry) this.entries.delete(String(storeID));
+        return null;
+      }
+      const chunkIndex = Number(index);
+      if (!Number.isInteger(chunkIndex) || chunkIndex < 0) return null;
+      const start = chunkIndex * this.chunkBytes;
+      if (start >= entry.bytes.byteLength) return null;
+      const raw = entry.bytes.subarray(start, Math.min(entry.bytes.byteLength, start + this.chunkBytes));
+      const base64Data = encodeBase64(raw);
+      if (base64Data.length >= IMAGE_FRAME_MAX_BYTES) throw new Error('image chunk frame exceeds 1 MiB');
+      return { storeID: String(storeID), index: chunkIndex, byteCount: raw.byteLength, base64Data, mimeType: entry.mimeType };
+    }
+
+    release(storeID) {
+      return this.entries.delete(String(storeID || ''));
+    }
+
+    prune(now = this.now()) {
+      for (const [id, entry] of this.entries) if (now >= entry.expiresAt) this.entries.delete(id);
+    }
+  }
+
+  function accumulateFrameCoordinates(rect, offsets = []) {
+    const result = {
+      left: finiteNumber(rect && rect.left),
+      top: finiteNumber(rect && rect.top),
+      right: finiteNumber(rect && rect.right),
+      bottom: finiteNumber(rect && rect.bottom),
+    };
+    for (const offset of offsets || []) {
+      result.left += finiteNumber(offset && offset.left);
+      result.top += finiteNumber(offset && offset.top);
+      result.right += finiteNumber(offset && offset.left);
+      result.bottom += finiteNumber(offset && offset.top);
+    }
+    return result;
+  }
+
+  function cropRectFromScreenRect(rect, metrics = {}, devicePixelRatio = 1) {
+    const dpr = positiveNumber(devicePixelRatio, 1);
+    const screenX = finiteNumber(metrics.screenX);
+    const screenY = finiteNumber(metrics.screenY);
+    const chromeHeight = Math.max(0, finiteNumber(metrics.browserChromeHeight));
+    const left = finiteNumber(rect && rect.left) - screenX;
+    const top = finiteNumber(rect && rect.top) - screenY - chromeHeight;
+    const right = finiteNumber(rect && rect.right) - screenX;
+    const bottom = finiteNumber(rect && rect.bottom) - screenY - chromeHeight;
+    return {
+      left: Math.round(left * dpr),
+      top: Math.round(top * dpr),
+      width: Math.max(0, Math.round((right - left) * dpr)),
+      height: Math.max(0, Math.round((bottom - top) * dpr)),
+    };
+  }
+
+  // A pointer event carries both viewport-local and screen coordinates.  The delta is the
+  // frame's screen origin, so applying it to the element rect maps nested/cross-origin frames
+  // without reading frameElement or asking for privileged tab geometry.
+  function screenRectFromPointerRect(rect, pointer = {}) {
+    const localX = finiteNumber(pointer.clientX);
+    const localY = finiteNumber(pointer.clientY);
+    const screenX = finiteNumber(pointer.screenX, localX);
+    const screenY = finiteNumber(pointer.screenY, localY);
+    const offsetX = screenX - localX;
+    const offsetY = screenY - localY;
+    return {
+      left: finiteNumber(rect && rect.left) + offsetX,
+      top: finiteNumber(rect && rect.top) + offsetY,
+      right: finiteNumber(rect && rect.right) + offsetX,
+      bottom: finiteNumber(rect && rect.bottom) + offsetY,
+    };
+  }
+
   function makeImageCandidate(values = {}) {
     const domSourceKind = VALID_DOM_SOURCE_KINDS.has(values.domSourceKind) ? values.domSourceKind : 'image';
     const acquisitionMethod = VALID_ACQUISITION_METHODS.has(values.acquisitionMethod) ? values.acquisitionMethod : 'pageContext';
@@ -425,18 +529,31 @@
     receive(response) {
       if (!response || response.captureID !== this.captureID || !this.pending) return false;
       const type = String(response.type || '');
-      const isAck = type === 'ack' || type === 'presented' || type === 'animate' || type === 'saved'
-        || type === 'cancelled' || type === 'failed' || /Ack$/.test(type);
-      if (!isAck) return false;
-      const terminal = type === 'saved' || type === 'cancelled' || type === 'failed';
-      this.pending = null;
-      this.position += 1;
-      if (terminal) {
+      const messageType = String(this.pending.type || '');
+      if (type === 'saved' || type === 'cancelled' || type === 'failed') {
+        this.pending = null;
         this.done = true;
-      } else if (this.position >= this.messages.length) {
-        this.done = true;
+        this.failed = type === 'failed' || type === 'cancelled';
+        return true;
       }
-      if (type === 'failed' || type === 'cancelled') this.failed = true;
+      if (messageType === 'imageBegin' || messageType === 'imageChunk') {
+        const expectedCode = messageType === 'imageBegin' ? 'image-begin-accepted' : 'image-chunk-accepted';
+        if (type !== 'ack' || response.code !== expectedCode) return false;
+        this.pending = null;
+        this.position += 1;
+        return true;
+      }
+      if (messageType !== 'imageEnd') return false;
+      if (type === 'presented' || type === 'animate') return true;
+      return false;
+    }
+
+    replay() {
+      if (!this.captureID) return false;
+      this.position = 0;
+      this.pending = null;
+      this.done = false;
+      this.failed = false;
       return true;
     }
 
@@ -454,6 +571,10 @@
       this.lastPoint = null;
       this.insidePet = false;
       this.mouthScreenPoint = null;
+      this.previewSequence = 0;
+      this.pendingPreviewSequences = new Set();
+      this.nativeInsidePet = false;
+      this.nativeMouthScreenPoint = null;
     }
 
     start() {
@@ -464,8 +585,23 @@
 
     preview(point) {
       if (this.phase !== 'active') return null;
-      this.lastPoint = point && { x: finiteNumber(point.x), y: finiteNumber(point.y) };
+      this.previewSequence += 1;
+      this.pendingPreviewSequences.add(this.previewSequence);
+      this.lastPoint = point && { x: finiteNumber(point.x), y: finiteNumber(point.y), sequence: this.previewSequence };
       return this.lastPoint;
+    }
+
+    consumePreviewAck(response = {}) {
+      if (!response || response.captureID !== this.captureID) return false;
+      if (response.type !== 'imageDragPreviewAck' && response.type !== 'ack') return false;
+      const sequence = Number(response.sequence);
+      if (Number.isInteger(sequence) && sequence > this.previewSequence) return false;
+      if (Number.isInteger(sequence)) this.pendingPreviewSequences.delete(sequence);
+      this.nativeInsidePet = Boolean(response.insidePet);
+      this.nativeMouthScreenPoint = response.mouthScreenPoint || response.mouthPoint || null;
+      this.insidePet = this.nativeInsidePet;
+      this.mouthScreenPoint = this.nativeMouthScreenPoint;
+      return true;
     }
 
     feedback(response = {}) {
@@ -491,6 +627,48 @@
         return false;
       }
       return false;
+    }
+
+    dragEnd() {
+      if (this.phase !== 'active') return false;
+      if (this.nativeInsidePet) {
+        this.phase = 'dropped';
+        return 'drop';
+      }
+      this.phase = 'cancelled';
+      return 'cancel';
+    }
+  }
+
+  class ImageReplayController {
+    constructor({ now = Date.now, maxAttempts = 3, ttlMs = 300_000 } = {}) {
+      this.now = typeof now === 'function' ? now : () => Date.now();
+      this.maxAttempts = Math.max(1, Math.floor(Number(maxAttempts) || 3));
+      this.ttlMs = Math.max(1, Math.floor(Number(ttlMs) || 300_000));
+      this.captureID = null;
+      this.messages = [];
+      this.createdAt = 0;
+      this.attempts = 0;
+    }
+
+    begin(captureID, messages, now = this.now()) {
+      this.captureID = String(captureID || '');
+      this.messages = Array.isArray(messages) ? messages.slice() : [];
+      this.createdAt = now;
+      this.attempts = 0;
+    }
+
+    replay(now = this.now()) {
+      if (!this.captureID || now - this.createdAt >= this.ttlMs || this.attempts >= this.maxAttempts) return null;
+      this.attempts += 1;
+      return this.messages.slice();
+    }
+
+    clear() {
+      this.captureID = null;
+      this.messages = [];
+      this.createdAt = 0;
+      this.attempts = 0;
     }
   }
 
@@ -521,10 +699,16 @@
     encodeBase64,
     decodeBase64,
     imageChunks,
+    assertImageSize,
+    FrameByteStore,
+    accumulateFrameCoordinates,
+    cropRectFromScreenRect,
+    screenRectFromPointerRect,
     makeImageCandidate,
     buildImageMessages,
     ImageMessageLedger,
     DragSessionState,
+    ImageReplayController,
     shouldReduceMotion,
     sanitizeResourceURL,
     responseBytes,
