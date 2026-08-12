@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "PromptStudio Web Capture",
+  "version": "1.0.0",
+  "description": "Local text capture for PromptStudio.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmmGicvyxnVTcBGVnSnkzWRmYPIQTVouaFe+yPL1LvPHbZjIMOwZrrkMLr5TZa7qooxHeUZQ4/MJEHjz/KTLXrtZ3fxE3kfvWSvx0KkV2+Lqf8xGLJNjqIJhEcBnVg0rT5ok9gtuL0oU922aExFjjEkXctM1Ounw/3qBPJcu6gasnT5WFgn61WRmZAWTiVflr3l67qrsylC6KR+90yjdtvNSW5EsEtPtlLz3Qwczbr92ICIupqTbbD6LT5m1EzUXhVqcoKhY5OIslYsDF5QCdSh2oIb9CkTb47rAqgiRNd+tdFv7ALvUsEy8M29lA1GHqCP5CKhfE5nNTbboz4mbD8wIDAQAB",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["selection.js", "content-core.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "PromptStudio"
+  }
+}

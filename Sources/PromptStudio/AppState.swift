@@ -299,6 +299,11 @@ final class AppState: ObservableObject {
     @Published private(set) var canNavigateForward = false
     @Published private(set) var libraryAccessState: LibraryAccessState = .loading
 
+    /// The app-side adapter is intentionally a closure. PromptStudioCore owns
+    /// the production capture model; this keeps the Pet target buildable while
+    /// allowing the integration branch to connect `createCapturedPrompt`.
+    private var petCaptureHandler: PetCaptureHandler?
+
     private let configuredLibraryURL: URL
     private let libraryAccessCoordinator: LibraryAccessCoordinator
     private var authorizedLibraryContext: AuthorizedLibraryContext?
@@ -362,6 +367,61 @@ final class AppState: ObservableObject {
         startLibraryLoad { [libraryAccessCoordinator] in
             try libraryAccessCoordinator.loadInitialContext()
         }
+    }
+
+    func configurePetCaptureHandler(_ handler: @escaping PetCaptureHandler) {
+        petCaptureHandler = handler
+    }
+
+    /// Connects the desktop pet to Core's capture-only persistence API.
+    ///
+    /// Browser captures deliberately cannot override their folder, model, or
+    /// tags here. Core owns those fixed defaults and the capture-ID based
+    /// idempotency guarantee.
+    func configureDefaultPetCaptureHandler() {
+        petCaptureHandler = { [weak self] request in
+            do {
+                guard let self else { throw PetCaptureError.unavailable }
+                // Resolve the authorized library for every request. Users can
+                // reconnect a different library while the app remains open;
+                // capturing must follow that live context instead of the URL
+                // that happened to be active when the handler was installed.
+                let targetLibraryURL = self.libraryURL
+                let service = try PromptStudioAutomationService(libraryURL: targetLibraryURL)
+                let clickPoint = request.clickPoint.map {
+                    WebCapturePoint(x: $0.x, y: $0.y)
+                } ?? .zero
+                let candidate = WebCaptureCandidate(
+                    captureID: request.captureID,
+                    selectedText: request.selectedText,
+                    pageTitle: request.pageTitle,
+                    pageURL: request.pageURL,
+                    siteName: request.siteName,
+                    clickScreenPoint: clickPoint,
+                    capturedAt: request.capturedAt
+                )
+                let item = try service.createCapturedPrompt(candidate)
+                self.reload(selecting: self.selectedID)
+                return .saved(
+                    captureID: item.captureID ?? request.captureID,
+                    mouthPoint: nil
+                )
+            } catch {
+                return .failed(
+                    captureID: request.captureID,
+                    message: error.localizedDescription,
+                    code: "capture-save-failed",
+                    retryable: true
+                )
+            }
+        }
+    }
+
+    func handlePetCapture(_ request: PetCaptureRequest) async throws -> PetCaptureOutcome {
+        guard let petCaptureHandler else {
+            throw PetCaptureError.unavailable
+        }
+        return try await petCaptureHandler(request)
     }
 
     func retryLoadLibrary() {

@@ -5,18 +5,21 @@ import SwiftUI
 @main
 struct PromptStudioApp: App {
     @StateObject private var appState: AppState
+    @StateObject private var petCoordinator: PetCoordinator
     @StateObject private var shortcutStore = AppShortcutStore()
     @NSApplicationDelegateAdaptor(PromptStudioAppDelegate.self) private var appDelegate
 
     init() {
         let libraryURL = PromptRepository.resolvedLibraryURL()
         _appState = StateObject(wrappedValue: AppState(libraryURL: libraryURL))
+        _petCoordinator = StateObject(wrappedValue: PetCoordinator())
     }
 
     var body: some Scene {
         Window("PromptStudio", id: "main") {
             PromptStudioView()
                 .environmentObject(appState)
+                .environmentObject(petCoordinator)
                 .environmentObject(shortcutStore)
                 .environment(\.font, StudioFont.body())
                 .preferredColorScheme(.dark)
@@ -24,6 +27,13 @@ struct PromptStudioApp: App {
                 .background(WindowStartupConfigurator())
                 .onAppear {
                     appDelegate.appState = appState
+                    appDelegate.petCoordinator = petCoordinator
+                    appState.configureDefaultPetCaptureHandler()
+                    petCoordinator.captureHandler = { [weak appState] request in
+                        guard let appState else { throw PetCaptureError.unavailable }
+                        return try await appState.handlePetCapture(request)
+                    }
+                    petCoordinator.start()
                 }
                 .task {
                     if appState.items.isEmpty {
@@ -130,6 +140,8 @@ private final class PromptStudioAppDelegate: NSObject, NSApplicationDelegate {
             flushPendingURLs()
         }
     }
+
+    weak var petCoordinator: PetCoordinator?
 
     private var pendingURLs: [URL] = []
 

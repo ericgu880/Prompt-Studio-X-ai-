@@ -11,6 +11,10 @@ cd "$ROOT_DIR"
 
 source "$ROOT_DIR/Scripts/codesign_policy.sh"
 source "$ROOT_DIR/Scripts/swift_toolchain.sh"
+source "$ROOT_DIR/Scripts/extension_policy.sh"
+if [[ "$CONFIGURATION" == release ]]; then
+    validate_production_extension_id "${PROMPTSTUDIO_EXTENSION_ID:-}"
+fi
 validate_signing_configuration "$CONFIGURATION" "$SIGN_IDENTITY" "$EXPECTED_TEAM_ID"
 validate_release_entitlements "$CONFIGURATION" "$ENTITLEMENTS_PATH"
 
@@ -50,18 +54,32 @@ LOCK_ACQUIRED=true
 SWIFT_BUILD_EXEC="$(find_compatible_swift_tool swift "${SWIFT_BUILD_EXEC:-}")"
 BUILD_DIR="$("$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --show-bin-path)"
 "$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --product PromptStudio >&2
+"$SWIFT_BUILD_EXEC" build -c "$CONFIGURATION" --product PromptStudioCaptureHost >&2
 
 APP_PATH="$BUILD_DIR/PromptStudio.app"
 STAGING_APP_PATH="$BUILD_DIR/.PromptStudio.app.staging.$$"
 PREVIOUS_APP_PATH="$BUILD_DIR/.PromptStudio.app.previous.$$"
 EXECUTABLE_PATH="$BUILD_DIR/PromptStudio"
 RESOURCE_BUNDLE="$BUILD_DIR/PromptStudio_PromptStudio.bundle"
+CAPTURE_HOST_EXECUTABLE="$BUILD_DIR/PromptStudioCaptureHost"
 
 rm -rf "$STAGING_APP_PATH" "$PREVIOUS_APP_PATH"
-mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources"
+mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources" "$STAGING_APP_PATH/Contents/Helpers"
 
 cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
+cp "$CAPTURE_HOST_EXECUTABLE" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
+if [[ "$CONFIGURATION" != release ]]; then
+    # The checked-in extension key is development-only. Production installs come
+    # from the Web Store ID supplied below; bundling this tree in a release app
+    # would create an origin that the production helper correctly rejects.
+    cp -R "$ROOT_DIR/BrowserExtension" "$STAGING_APP_PATH/Contents/Resources/BrowserExtension"
+fi
+if [[ "$CONFIGURATION" == release ]]; then
+    write_capture_host_allowed_origins_json \
+        "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost.allowed-origins.json" \
+        "$(extension_origin_for_id "$PROMPTSTUDIO_EXTENSION_ID")"
+fi
 
 if [[ -n "$LICENSE_PUBLIC_KEY" && -n "$LICENSE_KEY_ID" ]]; then
     /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys dict" "$STAGING_APP_PATH/Contents/Info.plist"
@@ -81,6 +99,7 @@ if [[ -d "$RESOURCE_BUNDLE" ]]; then
 fi
 
 chmod +x "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
+chmod +x "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 
 codesign_args=(--force --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
@@ -96,6 +115,17 @@ if [[ -n "$ENTITLEMENTS_PATH" ]]; then
     fi
     codesign_args+=(--entitlements "$ENTITLEMENTS_PATH")
 fi
+
+helper_codesign_args=(--force --sign "$SIGN_IDENTITY")
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    helper_codesign_args+=(--timestamp=none)
+else
+    helper_codesign_args+=(--options runtime --timestamp)
+fi
+
+# Sign the nested stdio helper before signing the containing app. The helper intentionally has
+# no app entitlements or app designated requirement; the containing app is verified below.
+/usr/bin/codesign "${helper_codesign_args[@]}" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 
 /usr/bin/codesign "${codesign_args[@]}" "$STAGING_APP_PATH"
 verify_signed_app "$CONFIGURATION" "$STAGING_APP_PATH" "$EXPECTED_TEAM_ID"

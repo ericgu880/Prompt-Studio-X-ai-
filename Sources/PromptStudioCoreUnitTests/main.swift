@@ -19,6 +19,24 @@ enum CoreUnitTestError: Error, LocalizedError {
     }
 }
 
+final class CaptureRaceState: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var items: [PromptItem] = []
+    private(set) var errors: [String] = []
+
+    func append(item: PromptItem) {
+        lock.lock()
+        items.append(item)
+        lock.unlock()
+    }
+
+    func append(error: Error) {
+        lock.lock()
+        errors.append(error.localizedDescription)
+        lock.unlock()
+    }
+}
+
 func sampleItem(
     title: String,
     modelId: String = "nano_banana_2",
@@ -725,6 +743,275 @@ func testPinnedAtPersistsAndMigratesFromOldSchema() throws {
     try expect(try migratedRepository.loadItems().isEmpty, "old empty database should still load after pinnedAt migration")
 }
 
+func testWebCaptureCoreContracts() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let candidate = WebCaptureCandidate(
+        captureID: "capture-contract-1",
+        selectedText: "   🌲   Forest   prompt   \nsecond line",
+        pageTitle: "Example page",
+        pageURL: "https://example.test/articles/forest",
+        siteName: "Example",
+        clickScreenPoint: WebCapturePoint(x: 120.5, y: 88.25),
+        capturedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    let isoEncoder = JSONEncoder()
+    isoEncoder.dateEncodingStrategy = .iso8601
+    let isoDecoder = JSONDecoder()
+    isoDecoder.dateDecodingStrategy = .iso8601
+    let encoded = try isoEncoder.encode(candidate)
+    let decoded = try isoDecoder.decode(WebCaptureCandidate.self, from: encoded)
+    try expect(decoded == candidate, "web capture candidates should round-trip through Codable")
+    try expect(String(data: encoded, encoding: .utf8)?.contains("2023-11-14") == true, "capture timestamps should use ISO-8601 on the browser wire")
+
+    let item = try service.createCapturedPrompt(candidate)
+    try expect(item.type == .text, "captured prompts should always use text type")
+    try expect(item.modelId == "unspecified_text" && item.modelName == "未指定模型", "capture service should ensure the unspecified text model")
+    try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "capture service should use the top-level capture inbox")
+    try expect(item.tags == ["网页采集", "待整理"], "capture service should apply the capture inbox tags")
+    try expect(item.captureID == candidate.captureID, "capture ID should persist on the prompt")
+    try expect(item.capturedSource?.pageURL == candidate.pageURL, "captured source metadata should persist on the prompt")
+    try expect(item.title == "🌲 Forest prompt", "capture titles should use the first non-empty line with compressed whitespace")
+
+    let loaded = try repository.findItem(captureID: candidate.captureID)
+    try expect(loaded?.id == item.id, "repository should find a prompt by capture ID")
+    let retried = try service.createCapturedPrompt(candidate)
+    try expect(retried.id == item.id, "retries with the same capture ID should return the original prompt")
+    try expect(try repository.loadItems().count == 1, "capture retries should not create duplicate prompts")
+}
+
+func testWebCaptureEventsUseDiscriminatedProtocolPayloads() throws {
+    let events: [WebCaptureEvent] = [
+        .presented(captureID: "capture-events"),
+        .cancelled(captureID: "capture-events"),
+        .animate(captureID: "capture-events", mouthScreenPoint: WebCapturePoint(x: 10.5, y: 20.25)),
+        .saved(captureID: "capture-events", itemID: "item-events"),
+        .failed(captureID: "capture-events", code: "app-unavailable", retryable: true)
+    ]
+    let encoder = JSONEncoder()
+    let decoder = JSONDecoder()
+    for event in events {
+        let data = try encoder.encode(event)
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        try expect(object?["type"] is String, "web capture events should include a discriminating type field")
+        try expect(object?["captureID"] as? String == "capture-events", "every capture event should include captureID")
+        try expect(try decoder.decode(WebCaptureEvent.self, from: data) == event, "web capture events should round-trip through Codable")
+    }
+
+    let animate = try JSONSerialization.jsonObject(with: encoder.encode(events[2])) as? [String: Any]
+    let mouth = animate?["mouthScreenPoint"] as? [String: Any]
+    try expect(mouth?["x"] as? Double == 10.5 && mouth?["y"] as? Double == 20.25, "animate events should carry the mouth screen point")
+    let saved = try JSONSerialization.jsonObject(with: encoder.encode(events[3])) as? [String: Any]
+    try expect(saved?["itemID"] as? String == "item-events", "saved events should carry the item ID")
+    let failed = try JSONSerialization.jsonObject(with: encoder.encode(events[4])) as? [String: Any]
+    try expect(failed?["code"] as? String == "app-unavailable" && failed?["retryable"] as? Bool == true, "failed events should carry code and retryability")
+}
+
+func testCapturedInsertIsAtomicAndNeverReplacesExistingVersions() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let service = PromptStudioAutomationService(repository: repository)
+    let candidate = WebCaptureCandidate(captureID: "atomic-capture", selectedText: "original prompt")
+    let original = try service.createCapturedPrompt(candidate)
+    let originalVersionIDs = original.versions.map(\.id)
+
+    var conflicting = sampleItem(title: "conflicting", prompt: "replacement prompt")
+    conflicting.captureID = candidate.captureID
+    conflicting.capturedSource = candidate.capturedSource
+    let returned = try repository.saveCapturedItem(conflicting)
+    try expect(returned.id == original.id, "capture insert-or-return-existing should return the original row")
+    let loaded = try repository.findItem(captureID: candidate.captureID)
+    try expect(loaded?.id == original.id, "a different item ID must not replace an existing capture")
+    try expect(loaded?.versions.map(\.id) == originalVersionIDs, "an idempotent retry must preserve original versions")
+    try expect(loaded?.currentVersion?.prompt == "original prompt", "an idempotent retry must preserve original content")
+
+    do {
+        try repository.saveItem(conflicting)
+        throw CoreUnitTestError.failure("the partial unique capture index should reject a direct duplicate save")
+    } catch SQLiteError.stepFailed {
+        // Expected: the generic save path must not replace a capture row.
+    }
+    let afterRejected = try repository.findItem(captureID: candidate.captureID)
+    try expect(afterRejected?.id == original.id && afterRejected?.versions.map(\.id) == originalVersionIDs, "a rejected duplicate save must preserve the original row and versions")
+
+    var nullCaptureA = sampleItem(title: "null-a", prompt: "a")
+    var nullCaptureB = sampleItem(title: "null-b", prompt: "b")
+    nullCaptureA.captureID = nil
+    nullCaptureB.captureID = nil
+    try repository.saveItem(nullCaptureA)
+    try repository.saveItem(nullCaptureB)
+    try expect(try repository.loadItems().count == 3, "the partial unique index should allow multiple NULL capture IDs")
+}
+
+func testCapturedInsertSerializesAcrossRepositoryConnections() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let firstRepository = try PromptRepository(libraryURL: libraryURL)
+    let secondRepository = try PromptRepository(libraryURL: libraryURL)
+    let services = [
+        PromptStudioAutomationService(repository: firstRepository),
+        PromptStudioAutomationService(repository: secondRepository)
+    ]
+    let candidate = WebCaptureCandidate(captureID: "concurrent-capture", selectedText: "concurrent prompt")
+    let group = DispatchGroup()
+    let state = CaptureRaceState()
+    for service in services {
+        group.enter()
+        DispatchQueue.global().async {
+            defer { group.leave() }
+            do {
+                state.append(item: try service.createCapturedPrompt(candidate))
+            } catch {
+                state.append(error: error)
+            }
+        }
+    }
+    group.wait()
+    try expect(state.errors.isEmpty, "concurrent capture retries should not fail with SQLite busy/constraint errors")
+    try expect(state.items.count == 2 && state.items[0].id == state.items[1].id, "concurrent capture retries should return one winning item")
+    try expect(try firstRepository.loadItems().count == 1, "concurrent capture retries should persist one item")
+}
+
+func testCaptureDefaultsRepairExistingResources() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    try repository.saveModelProfile(ModelProfile(id: "unspecified_text", name: "Wrong", type: .image, parameters: ["bad"]))
+    try repository.saveFolder(LibraryFolder(id: "folder-capture-inbox", name: "Wrong", parentId: "parent", type: .image, sortOrder: 2))
+
+    let item = try PromptStudioAutomationService(repository: repository).createCapturedPrompt(
+        WebCaptureCandidate(captureID: "default-repair", selectedText: "captured")
+    )
+    let model = try repository.loadModelProfiles().first { $0.id == "unspecified_text" }
+    let folder = try repository.loadFolders().first { $0.id == "folder-capture-inbox" }
+    try expect(item.modelId == "unspecified_text" && item.modelName == "未指定模型", "capture creation should repair the canonical model")
+    try expect(model?.name == "未指定模型" && model?.type == .text && model?.parameters.isEmpty == true, "capture model repair should canonicalize all model fields")
+    try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "capture creation should repair the canonical folder")
+    try expect(folder?.name == "待整理" && folder?.type == .text && folder?.parentId == nil, "capture folder repair should restore a top-level text inbox")
+}
+
+func testWebCaptureValidationAndTitleLimit() throws {
+    let service = try PromptStudioAutomationService(repository: PromptRepository(libraryURL: temporaryLibraryURL()))
+
+    do {
+        _ = try service.createCapturedPrompt(WebCaptureCandidate(captureID: "empty", selectedText: " \n\t"))
+        throw CoreUnitTestError.failure("empty capture text should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    do {
+        _ = try service.createCapturedPrompt(
+            WebCaptureCandidate(captureID: "oversized", selectedText: String(repeating: "a", count: 50_001))
+        )
+        throw CoreUnitTestError.failure("oversized capture text should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let longTitle = String(repeating: "界", count: 39) + "😀😀"
+    let item = try service.createCapturedPrompt(
+        WebCaptureCandidate(captureID: "title-limit", selectedText: "  \(longTitle)  \nbody")
+    )
+    try expect(item.title.count == 40, "capture title limit should count Swift Characters")
+    try expect(item.title == String(longTitle.prefix(40)), "capture title should truncate by Character, not UTF-16 units")
+}
+
+func testWebCaptureSchemaMigrationAddsColumnsAndIndex() throws {
+    let oldLibraryURL = try temporaryLibraryURL()
+    try PromptRepository.createLibraryDirectories(at: oldLibraryURL)
+    let databaseURL = oldLibraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path)
+    try database.execute(
+        """
+        CREATE TABLE prompt_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,
+            assetKind TEXT NOT NULL DEFAULT 'image',
+            modelId TEXT NOT NULL,
+            modelName TEXT NOT NULL,
+            folderId TEXT NOT NULL DEFAULT '',
+            folderName TEXT NOT NULL,
+            category TEXT NOT NULL,
+            assetPath TEXT NOT NULL,
+            thumbnailPath TEXT NOT NULL,
+            aspectRatio TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            format TEXT NOT NULL,
+            fileSize INTEGER NOT NULL,
+            favorite INTEGER NOT NULL,
+            deletedAt TEXT,
+            createdAt TEXT NOT NULL,
+            updatedAt TEXT NOT NULL,
+            lastUsedAt TEXT NOT NULL,
+            sortOrder INTEGER NOT NULL DEFAULT 0,
+            tagsJSON TEXT NOT NULL,
+            referencesJSON TEXT NOT NULL,
+            description TEXT NOT NULL
+        );
+        """
+    )
+
+    let legacyID = "legacy-row"
+    let legacyVersionID = "legacy-version"
+    let legacyDate = "2026-08-12T00:00:00Z"
+    try database.execute(
+        """
+        CREATE TABLE prompt_versions (
+            id TEXT PRIMARY KEY,
+            promptItemId TEXT NOT NULL,
+            version TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            negativePrompt TEXT NOT NULL,
+            parametersJSON TEXT NOT NULL,
+            note TEXT NOT NULL,
+            createdAt TEXT NOT NULL
+        );
+        INSERT INTO prompt_items VALUES ('\(legacyID)', 'Legacy', 'text', 'text', 'legacy-model', 'Legacy model', '', '未分类', '文本', '', '', '', 0, 0, 'TEXT', 0, 0, NULL, '\(legacyDate)', '\(legacyDate)', '\(legacyDate)', 7, '[]', '[]', 'legacy description');
+        INSERT INTO prompt_versions VALUES ('\(legacyVersionID)', '\(legacyID)', 'V1.0', 'legacy body', '', '{}', 'legacy note', '\(legacyDate)');
+        """
+    )
+
+    let migratedRepository = try PromptRepository(libraryURL: oldLibraryURL)
+    let migrated = try SQLiteDatabase(path: databaseURL.path)
+    let columns = try migrated.query("PRAGMA table_info(prompt_items);")
+    let names = Set(columns.compactMap { $0["name"] ?? nil })
+    try expect(names.contains("captureId"), "migration should add captureId to old prompt_items tables")
+    try expect(names.contains("captureSourceJSON"), "migration should add captureSourceJSON to old prompt_items tables")
+    try expect(names.count == 28, "migrated prompt_items schema should have 28 columns")
+    let legacy = try migratedRepository.loadItems().first { $0.id == legacyID }
+    try expect(legacy?.currentVersion?.id == legacyVersionID && legacy?.currentVersion?.prompt == "legacy body", "migration must preserve legacy prompt rows and versions")
+    let reopenedRepository = try PromptRepository(libraryURL: oldLibraryURL)
+    try expect(try reopenedRepository.loadItems().first { $0.id == legacyID }?.currentVersion?.id == legacyVersionID, "migration should be safe to run repeatedly")
+    let indexes = try migrated.query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_prompt_items_capture_id';"
+    )
+    try expect(indexes.count == 1, "migration should add the partial unique capture ID index")
+
+    let exactLimit = try PromptStudioAutomationService(repository: migratedRepository).createCapturedPrompt(
+        WebCaptureCandidate(captureID: "exact-limit", selectedText: String(repeating: "x", count: 50_000))
+    )
+    try expect(exactLimit.currentVersion?.prompt.count == 50_000, "exactly 50,000 capture characters should be accepted")
+
+    do {
+        _ = try PromptStudioAutomationService(repository: migratedRepository).createCapturedPrompt(
+            WebCaptureCandidate(captureID: "over-limit", selectedText: String(repeating: "x", count: 50_001))
+        )
+        throw CoreUnitTestError.failure("50,001 capture characters should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let current = sampleItem(title: "legacy-json", prompt: "json")
+    let currentData = try JSONEncoder().encode(current)
+    var oldObject = try JSONSerialization.jsonObject(with: currentData) as! [String: Any]
+    oldObject.removeValue(forKey: "captureID")
+    oldObject.removeValue(forKey: "capturedSource")
+    let oldJSON = try JSONSerialization.data(withJSONObject: oldObject)
+    let decodedOld = try JSONDecoder().decode(PromptItem.self, from: oldJSON)
+    try expect(decodedOld.captureID == nil && decodedOld.capturedSource == nil, "PromptItem JSON without new capture fields should remain decodable")
+}
+
 func testFolderSeedIsIdempotent() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let folders = [
@@ -868,6 +1155,13 @@ do {
     try testPinnedAtDoesNotAffectNormalCollectionSorting()
     try testPinnedAtDoesNotAffectRecentOrTrashSorting()
     try testPinnedAtPersistsAndMigratesFromOldSchema()
+    try testWebCaptureCoreContracts()
+    try testWebCaptureEventsUseDiscriminatedProtocolPayloads()
+    try testCapturedInsertIsAtomicAndNeverReplacesExistingVersions()
+    try testCapturedInsertSerializesAcrossRepositoryConnections()
+    try testCaptureDefaultsRepairExistingResources()
+    try testWebCaptureValidationAndTitleLimit()
+    try testWebCaptureSchemaMigrationAddsColumnsAndIndex()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
     try testAutomationServiceCreatesAndUpdatesPrompts()
