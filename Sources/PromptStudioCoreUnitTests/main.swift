@@ -1261,6 +1261,33 @@ func testPromptClipboardInterpreterDoesNotTreatRealisticAsWriteIntent() throws {
     try expect(interpretation.suggestedType == .image, "写实 should contribute image semantics without becoming a writing intent")
 }
 
+func testPromptClipboardInterpreterRecognizesExplicitTargetIntents() throws {
+    let chineseCases: [(String, PromptType)] = [
+        ("输出一张高清图", .image),
+        ("修改这张图片", .image),
+        ("改写这篇文章", .text),
+        ("写文章介绍产品", .text),
+        ("设计温柔女声音色", .audio)
+    ]
+
+    for (source, expectedType) in chineseCases {
+        let interpretation = PromptClipboardInterpreter.interpret(source)
+        try expect(interpretation.suggestedType == expectedType, "\(source) should suggest \(expectedType.rawValue)")
+        try expect(interpretation.typeConfidence == .high, "\(source) should have high confidence")
+    }
+
+    let englishCases: [(String, PromptType)] = [
+        ("edit this image", .image),
+        ("rewrite this article", .text),
+        ("design a gentle female voice timbre", .audio)
+    ]
+    for (source, expectedType) in englishCases {
+        let interpretation = PromptClipboardInterpreter.interpret(source)
+        try expect(interpretation.suggestedType == expectedType, "\(source) should suggest \(expectedType.rawValue)")
+        try expect(interpretation.typeConfidence == .high, "\(source) should have high confidence")
+    }
+}
+
 func testPromptClipboardInterpreterPrefersVideoOutputOverReferenceImage() throws {
     let interpretation = PromptClipboardInterpreter.interpret("图1是人物参考，生成一个5秒人物转身视频，镜头连续运镜。")
 
@@ -1393,6 +1420,7 @@ do {
     try testPromptClipboardInterpreterParsesJSON()
     try testPromptClipboardInterpreterInfersFourPromptTypes()
     try testPromptClipboardInterpreterDoesNotTreatRealisticAsWriteIntent()
+    try testPromptClipboardInterpreterRecognizesExplicitTargetIntents()
     try testPromptClipboardInterpreterPrefersVideoOutputOverReferenceImage()
     try testPromptClipboardInterpreterKeepsModelAndFormatHintsWeak()
     try testPromptClipboardInterpreterPreservesTagsAndMidjourneyParameters()

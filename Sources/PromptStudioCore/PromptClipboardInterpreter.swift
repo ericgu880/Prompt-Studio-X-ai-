@@ -127,17 +127,17 @@ public enum PromptClipboardInterpreter {
     private static let formatKeys: Set<String> = ["format", "outputformat", "格式", "输出格式"]
 
     private static let chineseOutputIntentTerms = [
-        "生成", "输出", "制作", "创建", "撰写", "总结", "翻译", "整理", "提取", "分析", "产出"
+        "生成", "输出", "制作", "创建", "撰写", "修改", "改写", "设计", "总结", "翻译", "整理", "提取", "分析", "产出"
     ]
 
     private static let englishOutputIntentTerms = [
-        "generate", "output", "create", "make", "write", "produce", "render", "compose", "summarize", "translate", "extract", "analyze"
+        "generate", "output", "create", "make", "write", "edit", "rewrite", "design", "produce", "render", "compose", "summarize", "translate", "extract", "analyze"
     ]
 
     private static let imageSignals: [(String, Int)] = [
         ("静态画面", 3), ("静态", 2), ("构图", 2), ("人物", 1), ("人像", 2), ("肖像", 2), ("服装", 2), ("穿着", 2),
         ("光线", 2), ("光影", 2), ("色调", 2), ("焦段", 2), ("画幅", 2), ("摄影", 2), ("照片", 3), ("图片", 3),
-        ("插画", 3), ("画面", 2), ("image", 3), ("photo", 3), ("portrait", 2), ("illustration", 3), ("static", 2),
+        ("插画", 3), ("画面", 2), ("高清图", 4), ("图像", 3), ("image", 3), ("photo", 3), ("portrait", 2), ("illustration", 3), ("static", 2),
         ("composition", 2), ("clothing", 2), ("outfit", 2), ("lighting", 2), ("color tone", 2), ("focal length", 2), ("aspect ratio", 1)
     ]
 
@@ -157,7 +157,7 @@ public enum PromptClipboardInterpreter {
     private static let textSignals: [(String, Int)] = [
         ("文本", 3), ("文章", 3), ("文案", 3), ("报告", 3), ("写作", 3), ("整理", 2), ("提取", 2),
         ("分析", 2), ("翻译", 3), ("总结", 3), ("markdown", 3), ("结构化数据", 3), ("json", 2), ("数据", 2),
-        ("text", 3), ("document", 3), ("report", 3), ("writing", 3), ("summarize", 3), ("translate", 3), ("extract", 2),
+        ("text", 3), ("document", 3), ("article", 3), ("report", 3), ("writing", 3), ("summarize", 3), ("translate", 3), ("extract", 2),
         ("analyze", 2), ("structured data", 3)
     ]
 
@@ -321,6 +321,9 @@ public enum PromptClipboardInterpreter {
             || clause.contains("写一")
             || clause.contains("写个")
             || clause.contains("写篇")
+            || clause.contains("写文章")
+            || clause.contains("写文案")
+            || clause.contains("写报告")
             || clause.contains("写出")
             || clause.contains("写成")
             || clause.contains("写作")
