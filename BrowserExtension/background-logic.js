@@ -1,5 +1,5 @@
 (function exposeBackgroundLogic(global) {
-  const CAPTURE_TTL_MS = 60_000;
+  const CAPTURE_TTL_MS = 300_000;
   const MAX_RETRY_ATTEMPTS = 4;
   const TERMINAL_TYPES = new Set(['saved', 'cancelled', 'failed']);
 

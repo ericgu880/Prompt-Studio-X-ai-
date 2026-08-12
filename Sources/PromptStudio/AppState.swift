@@ -378,10 +378,15 @@ final class AppState: ObservableObject {
     /// Browser captures deliberately cannot override their folder, model, or
     /// tags here. Core owns those fixed defaults and the capture-ID based
     /// idempotency guarantee.
-    func configureDefaultPetCaptureHandler(libraryURL: URL? = nil) {
-        let targetLibraryURL = libraryURL ?? self.libraryURL
+    func configureDefaultPetCaptureHandler() {
         petCaptureHandler = { [weak self] request in
             do {
+                guard let self else { throw PetCaptureError.unavailable }
+                // Resolve the authorized library for every request. Users can
+                // reconnect a different library while the app remains open;
+                // capturing must follow that live context instead of the URL
+                // that happened to be active when the handler was installed.
+                let targetLibraryURL = self.libraryURL
                 let service = try PromptStudioAutomationService(libraryURL: targetLibraryURL)
                 let clickPoint = request.clickPoint.map {
                     WebCapturePoint(x: $0.x, y: $0.y)
@@ -396,7 +401,7 @@ final class AppState: ObservableObject {
                     capturedAt: request.capturedAt
                 )
                 let item = try service.createCapturedPrompt(candidate)
-                self?.reload(selecting: self?.selectedID)
+                self.reload(selecting: self.selectedID)
                 return .saved(
                     captureID: item.captureID ?? request.captureID,
                     mouthPoint: nil
