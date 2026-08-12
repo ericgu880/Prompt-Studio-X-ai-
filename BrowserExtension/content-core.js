@@ -57,7 +57,31 @@
     });
   }
 
-  const api = { FEED_BUTTON_DELAY_MS, FEED_BUTTON_TTL_MS, selectionPresence, readSelectionAtClick, mapScreenPointToViewport, flightKeyframes };
+  function shouldAnimateCaptureResponse(type, captureID, animatedCaptureIDs) {
+    if (!captureID || !animatedCaptureIDs) return false;
+    if (type === 'animate') {
+      if (animatedCaptureIDs.has(captureID)) return false;
+      animatedCaptureIDs.add(captureID);
+      return true;
+    }
+    if (type === 'saved') {
+      const shouldAnimate = !animatedCaptureIDs.has(captureID);
+      animatedCaptureIDs.delete(captureID);
+      return shouldAnimate;
+    }
+    if (type === 'cancelled' || type === 'failed') animatedCaptureIDs.delete(captureID);
+    return false;
+  }
+
+  const api = {
+    FEED_BUTTON_DELAY_MS,
+    FEED_BUTTON_TTL_MS,
+    selectionPresence,
+    readSelectionAtClick,
+    mapScreenPointToViewport,
+    flightKeyframes,
+    shouldAnimateCaptureResponse,
+  };
   global.PromptStudioContentCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this));

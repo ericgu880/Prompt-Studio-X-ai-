@@ -11,6 +11,7 @@
   let selectionRange = null;
   let selectionRect = null;
   const captureOrigins = new Map();
+  const animatedCaptureIDs = new Set();
 
   function isPasswordNode(node) {
     const element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
@@ -163,14 +164,21 @@
     if (!message || message.type !== 'captureResult') return;
     const result = message.result || {};
     const messageCaptureID = result.captureID;
-    if ((result.type === 'saved' || result.type === 'animate') && result.mouthScreenPoint) {
+    if ((result.type === 'saved' || result.type === 'animate')
+        && result.mouthScreenPoint
+        && C.shouldAnimateCaptureResponse(result.type, messageCaptureID, animatedCaptureIDs)) {
       animateTextFlight(result.selectedText || result.text || '', result.mouthScreenPoint, messageCaptureID);
       if (result.type === 'saved') captureOrigins.delete(messageCaptureID);
     } else if (result.type === 'failed') {
+      C.shouldAnimateCaptureResponse(result.type, messageCaptureID, animatedCaptureIDs);
       const failureCode = result.code || result.message || '';
       showNotice(failureCode === 'selection-too-large' ? '所选内容超过 50,000 个字符。' : '采集失败，请重试。', { left: 12, top: 12 });
       captureOrigins.delete(messageCaptureID);
     } else if (result.type === 'cancelled') {
+      C.shouldAnimateCaptureResponse(result.type, messageCaptureID, animatedCaptureIDs);
+      captureOrigins.delete(messageCaptureID);
+    } else if (result.type === 'saved') {
+      C.shouldAnimateCaptureResponse(result.type, messageCaptureID, animatedCaptureIDs);
       captureOrigins.delete(messageCaptureID);
     }
   });
