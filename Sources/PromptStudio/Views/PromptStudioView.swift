@@ -2928,6 +2928,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             guard layoutInputKey != lastLayoutInputKey else {
                 pendingDatasetUpdate = nil
                 syncExternalSelectionChange(state.selectedIDs)
+                syncExternalFolderSelection(state.selectedFolderID)
                 prepareVisibleThumbnails()
                 return
             }
@@ -2974,6 +2975,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             )
             guard layoutInputKey != lastLayoutInputKey else {
                 syncExternalSelectionChange(state.selectedIDs)
+                syncExternalFolderSelection(state.selectedFolderID)
                 prepareVisibleThumbnails()
                 return
             }
@@ -2991,6 +2993,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             lastLayoutInputKey = layoutInputKey
             lastRenderedSelectedItemIDs = state.selectedIDs
             lastEntryIDs = nextEntryIDs
+            syncExternalFolderSelection(state.selectedFolderID)
 
             if shouldResetScroll {
                 update.scrollView.contentView.scroll(to: .zero)
@@ -3061,6 +3064,18 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             lastRenderedSelectedItemIDs = selectedItemIDs
         }
 
+        private func syncExternalFolderSelection(_ nextFolderID: String?) {
+            guard nextFolderID != selectedFolderID else { return }
+            let previousFolderID = selectedFolderID
+            selectedFolderID = nextFolderID
+            reloadSelectionChanges(
+                previousItemIDs: lastRenderedSelectedItemIDs,
+                nextItemIDs: lastRenderedSelectedItemIDs,
+                previousFolderID: previousFolderID,
+                nextFolderID: nextFolderID
+            )
+        }
+
         func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
             entries.count
         }
@@ -3097,7 +3112,9 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let previousFolderID = selectedFolderID
             let previousItemIDs = state?.selectedIDs ?? []
             selectedFolderID = folderID
-            state?.selectItems(ids: [])
+            if let folder = state?.folders.first(where: { $0.id == folderID }) {
+                state?.selectFolderForPreview(folder)
+            }
             reloadSelectionChanges(
                 previousItemIDs: previousItemIDs,
                 nextItemIDs: [],
@@ -3156,6 +3173,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let previousIDs = state?.selectedIDs ?? []
             let previousFolderID = selectedFolderID
             selectedFolderID = nil
+            state?.clearSelectedFolder()
             state?.selectItems(ids: [])
             reloadSelectionChanges(
                 previousItemIDs: previousIDs,
@@ -4553,6 +4571,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     private weak var state: AppState?
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
+    private var representedItemIsDeleted = false
     private var isCardSelected = false
     private var draggedItemID: String?
     private var dragStartLocation: NSPoint?
@@ -4601,6 +4620,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         let snapshot = TextAssetCardSnapshot(item: item)
         self.state = state
         let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        representedItemIsDeleted = item.isDeleted
         draggedItemID = item.isDeleted ? nil : item.id
         self.selectAction = selectAction
         self.previewAction = previewAction
@@ -4743,6 +4763,7 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard let state else { return nil }
         selectAction?(event.modifierFlags)
         let menu = NSMenu()
         menuTargets = []
@@ -4754,7 +4775,17 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         addMenuItem("复制文档信息", symbolName: "doc.on.doc", to: menu, action: copyAction)
         addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu, action: copyPathAction)
         menu.addItem(.separator())
-        addMenuItem("移到回收站", symbolName: "trash", to: menu, action: trashAction)
+        if representedItemIsDeleted {
+            addMenuItem("恢复", symbolName: "arrow.uturn.backward", to: menu) {
+                state.restoreSelected()
+            }
+            menu.addItem(.separator())
+            addMenuItem("彻底删除...", symbolName: "trash.slash", to: menu) {
+                state.beginPermanentDeleteSelectedTrashItems()
+            }
+        } else {
+            addMenuItem("移到回收站", symbolName: "trash", to: menu, action: trashAction)
+        }
         return menu
     }
 
@@ -5048,7 +5079,6 @@ private struct MasonryGridView: View {
     @State private var reorderBaseItemIDs: [String] = []
     @State private var reorderPreviewItemIDs: [String] = []
     @State private var reorderPreviewTargetID: String?
-    @State private var selectedFolderID: String?
     @State private var lockedColumnCount: Int?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDragCurrent: CGPoint?
@@ -5097,7 +5127,7 @@ private struct MasonryGridView: View {
                             selectionDragStart = point
                             selectionDragCurrent = point
                             selectionDragBaseIDs = additive ? state.selectedIDs : []
-                            selectedFolderID = nil
+                            state.clearSelectedFolder()
                         },
                         onChange: { point in
                             selectionDragCurrent = point
@@ -5121,14 +5151,13 @@ private struct MasonryGridView: View {
                             SubfolderCardView(
                                 row: folder,
                                 width: width,
-                                isSelected: selectedFolderID == folder.id,
+                                isSelected: state.selectedFolderID == folder.id,
                                 onSelect: {
-                                    selectedFolderID = folder.id
-                                    state.selectItems(ids: [])
+                                    state.selectFolderForPreview(folder.folder)
                                 }
                             )
                                 .offset(x: placement.x, y: placement.y)
-                                .zIndex(selectedFolderID == folder.id ? 1 : 0)
+                                .zIndex(state.selectedFolderID == folder.id ? 1 : 0)
                         case .item(let item):
                             let reorderOffset = reorderPlacementOverrides[item.id]
                             AssetCardView(
@@ -5154,7 +5183,7 @@ private struct MasonryGridView: View {
                             ))
                             .allowsHitTesting(settlingItemID != item.id)
                             .simultaneousGesture(TapGesture().onEnded {
-                                selectedFolderID = nil
+                                state.clearSelectedFolder()
                             })
                             .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
                         }
@@ -5187,7 +5216,7 @@ private struct MasonryGridView: View {
                 pendingRenderOffsetY = nil
                 isRenderOffsetUpdateScheduled = false
                 scrollResetID = UUID()
-                selectedFolderID = nil
+                state.clearSelectedFolder()
                 cancelReorderSettlement()
                 clearSelectionDrag()
                 clearItemReorder()
@@ -5455,7 +5484,7 @@ private struct MasonryGridView: View {
     }
 
     private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags, visualItemIDs: [String]) {
-        selectedFolderID = nil
+        state.clearSelectedFolder()
         let isCommand = modifiers.contains(.command)
         let isShift = modifiers.contains(.shift)
 

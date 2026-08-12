@@ -293,6 +293,10 @@ final class AppState: ObservableObject {
         }
     }
     @Published private var selectionState = SelectionState()
+    /// The folder currently shown in the inspector without changing the active collection.
+    /// This is intentionally separate from `filter.collection`: a single click previews a
+    /// folder, while double-click/arrow actions continue to enter it.
+    @Published private(set) var selectedFolderID: String?
     var selectedID: String? { selectionState.primaryID }
     var selectedIDs: Set<String> { selectionState.ids }
     @Published private(set) var filteredItems: [PromptItem] = []
@@ -350,6 +354,11 @@ final class AppState: ObservableObject {
 
     var selectedItem: PromptItem? {
         selectedID.flatMap { itemsByID[$0] }
+    }
+
+    var selectedFolder: LibraryFolder? {
+        guard let selectedFolderID else { return nil }
+        return folders.first { $0.id == selectedFolderID }
     }
 
     var masonryLayoutItems: [PromptItem] { filteredItems }
@@ -549,10 +558,12 @@ final class AppState: ObservableObject {
     }
 
     func select(_ item: PromptItem) {
+        clearSelectedFolder()
         updateSelection(ids: [item.id], primaryID: item.id)
     }
 
     func toggleSelection(_ item: PromptItem) {
+        clearSelectedFolder()
         var nextIDs = selectedIDs
         let nextPrimaryID: String?
         if nextIDs.remove(item.id) != nil {
@@ -565,7 +576,40 @@ final class AppState: ObservableObject {
     }
 
     func selectItems(ids: Set<String>, primaryID: String? = nil) {
+        if !ids.isEmpty {
+            clearSelectedFolder()
+        }
         updateSelection(ids: ids, primaryID: primaryID)
+    }
+
+    /// Selects a folder for the right inspector without navigating away from the current view.
+    func selectFolderForPreview(_ folder: LibraryFolder) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedFolderID = folder.id
+            updateSelection(ids: [], primaryID: nil)
+        }
+    }
+
+    func clearSelectedFolder() {
+        guard selectedFolderID != nil else { return }
+        selectedFolderID = nil
+    }
+
+    func folderDescendantIDs(for folderID: String) -> Set<String> {
+        descendantFolderIDs(of: folderID, includingSelf: true)
+    }
+
+    func childFolders(of folderID: String) -> [LibraryFolder] {
+        folders
+            .filter { $0.parentId == folderID }
+            .sorted {
+                if $0.sortOrder == $1.sortOrder {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return $0.sortOrder < $1.sortOrder
+            }
     }
 
     private func updateSelection(ids: Set<String>, primaryID: String?) {
@@ -746,6 +790,7 @@ final class AppState: ObservableObject {
 
     func setCollection(_ collection: LibraryCollection) {
         guard filter.collection != collection else { return }
+        clearSelectedFolder()
         pushCurrentNavigationSnapshot()
         updateFilterPreservingSelection { filter in
             filter.collection = collection
@@ -754,6 +799,7 @@ final class AppState: ObservableObject {
 
     func resetToAll() {
         guard filter != PromptFilter() else { return }
+        clearSelectedFolder()
         pushCurrentNavigationSnapshot()
         updateFilterPreservingSelection { filter in
             filter = PromptFilter()
@@ -1792,6 +1838,7 @@ final class AppState: ObservableObject {
     }
 
     func selectFolder(_ folder: LibraryFolder) {
+        clearSelectedFolder()
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -2524,7 +2571,10 @@ final class AppState: ObservableObject {
         guard case .folder(let folderID) = filter.collection else {
             return PromptFiltering.apply(items, filter: filter)
         }
-        let folderIDs = descendantFolderIDs(of: folderID, includingSelf: true)
+        // Folder navigation is a single level at a time. Child folders are rendered as
+        // folder cards by `childFolderRowsForCurrentCollection`; their assets should only
+        // appear after the user opens that child folder, not alongside the parent assets.
+        let folderIDs: Set<String> = [folderID]
         var adjustedFilter = filter
         adjustedFilter.collection = .all
         return PromptFiltering.apply(

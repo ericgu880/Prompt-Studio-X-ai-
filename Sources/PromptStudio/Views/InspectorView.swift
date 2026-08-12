@@ -22,7 +22,9 @@ struct InspectorView: View {
 
     var body: some View {
         Group {
-            if let item = state.selectedItem {
+            if let folder = state.selectedFolder {
+                folderInspector(for: folder)
+            } else if let item = state.selectedItem {
                 inspector(for: item)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -53,6 +55,11 @@ struct InspectorView: View {
             }
             isPromptExpanded = false
             isNegativePromptExpanded = false
+            mediaPromptCopyFeedback = false
+            markdownPreviewCopyFeedback = false
+        }
+        .onChange(of: state.selectedFolderID) { _, _ in
+            stopEditing()
             mediaPromptCopyFeedback = false
             markdownPreviewCopyFeedback = false
         }
@@ -96,6 +103,193 @@ struct InspectorView: View {
         } else {
             fileReadOnlyInspector(item)
         }
+    }
+
+    private func folderInspector(for folder: LibraryFolder) -> some View {
+        let folderIDs = state.folderDescendantIDs(for: folder.id)
+        let assets = state.items
+            .filter { !$0.isDeleted && folderIDs.contains($0.folderId) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        let childFolders = state.childFolders(of: folder.id)
+        let imageCount = assets.filter { $0.assetKind == .image }.count
+        let videoCount = assets.filter { $0.assetKind == .video }.count
+        let documentCount = assets.filter { $0.isTextDocumentLike }.count
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(StudioColor.control)
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(StudioColor.primaryAction)
+                    }
+                    .frame(width: 58, height: 58)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(folder.name)
+                            .font(StudioFont.font(18, weight: .bold))
+                            .foregroundStyle(StudioColor.text)
+                            .lineLimit(3)
+                        Text("文件夹")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
+                    Spacer(minLength: 8)
+                }
+
+                SidePanelChipFlow(texts: [
+                    "(assets.count) 个素材",
+                    "(childFolders.count) 个子文件夹"
+                ])
+
+                if !assets.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SidePanelSectionTitle(title: "内容概览")
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                            ForEach(Array(assets.prefix(4))) { item in
+                                Button {
+                                    state.select(item)
+                                } label: {
+                                    AssetMediaView(item: item, contentMode: .fill)
+                                        .frame(height: 82)
+                                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                                .stroke(StudioColor.hairline, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .help(item.title)
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    SidePanelSectionTitle(title: "素材类型")
+                    VStack(spacing: 0) {
+                        folderStatRow(icon: "photo", title: "图片", value: imageCount)
+                        folderStatRow(icon: "film", title: "视频", value: videoCount)
+                        folderStatRow(icon: "doc.text", title: "文档", value: documentCount)
+                        folderStatRow(icon: "square.grid.2x2", title: "其他", value: max(0, assets.count - imageCount - videoCount - documentCount))
+                    }
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.control.opacity(0.55)))
+                }
+
+                if !childFolders.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            SidePanelSectionTitle(title: "子文件夹")
+                            Spacer()
+                            Text("(childFolders.count)")
+                                .font(StudioFont.font(12))
+                                .foregroundStyle(StudioColor.secondaryText)
+                        }
+                        VStack(spacing: 6) {
+                            ForEach(childFolders) { child in
+                                Button {
+                                    state.selectFolderForPreview(child)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "folder")
+                                            .foregroundStyle(StudioColor.primaryAction)
+                                        Text(child.name)
+                                            .font(StudioFont.font(13, weight: .medium))
+                                            .foregroundStyle(StudioColor.text)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        Text("(state.items.filter { !$0.isDeleted && $0.folderId == child.id }.count)")
+                                            .font(StudioFont.font(11))
+                                            .foregroundStyle(StudioColor.secondaryText)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(StudioColor.secondaryText)
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 34)
+                                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(StudioColor.control.opacity(0.62)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                if !assets.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SidePanelSectionTitle(title: "最近添加")
+                        VStack(spacing: 4) {
+                            ForEach(Array(assets.prefix(6))) { item in
+                                Button {
+                                    state.select(item)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        AssetMediaView(item: item, contentMode: .fill)
+                                            .frame(width: 42, height: 42)
+                                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(item.title)
+                                                .font(StudioFont.font(12, weight: .medium))
+                                                .foregroundStyle(StudioColor.text)
+                                                .lineLimit(1)
+                                            Text(item.format.isEmpty ? item.assetKind.displayName : item.format.uppercased())
+                                                .font(StudioFont.font(10))
+                                                .foregroundStyle(StudioColor.secondaryText)
+                                        }
+                                        Spacer(minLength: 4)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 52)
+                                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(StudioColor.control.opacity(0.42)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    state.selectFolder(folder)
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.right")
+                        Text("打开文件夹")
+                        Spacer()
+                    }
+                    .font(StudioFont.font(13, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(StudioColor.control))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(StudioColor.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+        }
+        .transparentScrollArea()
+    }
+
+    private func folderStatRow(icon: String, title: String, value: Int) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .frame(width: 18)
+                .foregroundStyle(StudioColor.secondaryText)
+            Text(title)
+                .font(StudioFont.font(12))
+                .foregroundStyle(StudioColor.secondaryText)
+            Spacer()
+            Text("\(value)")
+                .font(StudioFont.font(12, weight: .semibold))
+                .foregroundStyle(StudioColor.text)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 31)
     }
 
     private func mediaReadOnlyInspector(_ item: PromptItem) -> some View {

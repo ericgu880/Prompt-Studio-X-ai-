@@ -16,4 +16,10 @@ if ! grep -q 'ImmediateFolderClickCapture' <<<"$subfolder_body"; then
     exit 1
 fi
 
+app_state_body="$(sed -n '/private func filteredItems(for filter: PromptFilter)/,/private func rebuildItemLookup/p' "$ROOT_DIR/Sources/PromptStudio/AppState.swift")"
+if ! grep -q 'let folderIDs: Set<String> = \[folderID\]' <<<"$app_state_body"; then
+    echo "Folder navigation must filter direct assets only; descendants are opened separately." >&2
+    exit 1
+fi
+
 echo "Subfolder selection regression tests passed"
