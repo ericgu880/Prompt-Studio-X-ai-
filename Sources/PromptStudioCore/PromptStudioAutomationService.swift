@@ -182,6 +182,67 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         return item
     }
 
+    /// Persists an approved browser selection in the free capture inbox.
+    ///
+    /// This intentionally has no model, folder, or content overrides: web captures
+    /// always use the local capture defaults and cannot act as a general prompt API.
+    @discardableResult
+    public func createCapturedPrompt(_ candidate: WebCaptureCandidate) throws -> PromptItem {
+        let captureID = candidate.captureID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !captureID.isEmpty else {
+            throw AutomationServiceError.invalidInput("采集 ID 不能为空")
+        }
+
+        let selectedText = candidate.selectedText
+        guard !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AutomationServiceError.invalidInput("采集文本不能为空")
+        }
+        guard selectedText.count <= 50_000 else {
+            throw AutomationServiceError.invalidInput("采集文本不能超过 50,000 个字符")
+        }
+
+        if let existing = try repository.findItem(captureID: captureID) {
+            return existing
+        }
+
+        let model = try ensureCaptureModel()
+        let folder = try ensureCaptureFolder()
+        let id = UUID().uuidString
+        let item = PromptItem(
+            id: id,
+            title: captureTitle(from: selectedText),
+            type: .text,
+            assetKind: .text,
+            modelId: model.id,
+            modelName: model.name,
+            folderId: folder.id,
+            folderName: folder.name,
+            category: "文本",
+            assetPath: "",
+            thumbnailPath: "",
+            aspectRatio: "",
+            width: 0,
+            height: 0,
+            format: "TEXT",
+            fileSize: 0,
+            sortOrder: try nextTopSortOrder(),
+            tags: ["网页采集", "待整理"],
+            versions: [
+                PromptVersion(
+                    promptItemId: id,
+                    version: "V1.0",
+                    prompt: selectedText,
+                    note: "Captured from web"
+                )
+            ],
+            description: "网页采集",
+            captureID: captureID,
+            capturedSource: candidate.capturedSource
+        )
+        try repository.saveItem(item)
+        return item
+    }
+
     @discardableResult
     public func updatePrompt(id: String, input: AutomationUpdatePromptInput) throws -> PromptItem {
         var item = try item(id: id)
@@ -331,6 +392,38 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             return ModelProfile(id: trimmed, name: trimmed, type: .text, parameters: [])
         }
         return models.first ?? ModelProfile(id: "default", name: "未指定", type: .text, parameters: [])
+    }
+
+    private func ensureCaptureModel() throws -> ModelProfile {
+        let id = "unspecified_text"
+        if let existing = try repository.loadModelProfiles().first(where: { $0.id == id }) {
+            return existing
+        }
+        let profile = ModelProfile(id: id, name: "未指定模型", type: .text, parameters: [])
+        try repository.saveModelProfile(profile)
+        return profile
+    }
+
+    private func ensureCaptureFolder() throws -> LibraryFolder {
+        let id = "folder-capture-inbox"
+        if let existing = try repository.loadFolders().first(where: { $0.id == id }) {
+            return existing
+        }
+        let sortOrder = ((try repository.loadFolders()).map(\.sortOrder).max() ?? 0) + 1
+        let folder = LibraryFolder(id: id, name: "待整理", parentId: nil, type: .text, sortOrder: sortOrder)
+        try repository.saveFolder(folder)
+        return folder
+    }
+
+    private func captureTitle(from text: String) -> String {
+        let lines = text.components(separatedBy: CharacterSet.newlines)
+        for line in lines {
+            let normalized = line.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            if !normalized.isEmpty {
+                return String(normalized.prefix(40))
+            }
+        }
+        return "网页采集"
     }
 
     private func defaultModel(for assetKind: AssetKind) throws -> ModelProfile {
