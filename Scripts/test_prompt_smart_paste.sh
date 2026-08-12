@@ -42,11 +42,30 @@ require_pattern "$APP_FILE" \
     'appState.routePasteCommand()' \
     "The CommandGroup paste action must call the centralized AppState route."
 require_pattern "$OVERLAY_FILE" \
-    'smartPasteBarHeight: CGFloat = 44' \
-    "Prompt composer must reserve a compact 44pt smart-paste bar."
-require_pattern "$OVERLAY_FILE" \
     'smartPastePromptHeightBudget: CGFloat = 218' \
     "Simplified Prompt composer must use the compact 218pt prompt-height budget."
+require_pattern "$OVERLAY_FILE" \
+    'private var shouldShowSmartPasteEntry: Bool' \
+    "Smart paste must expose an empty-draft-only entry state."
+require_pattern "$OVERLAY_FILE" \
+    '@State private var showSmartPasteSuccessNotice = false' \
+    "Successful smart paste must use transient notice state."
+require_pattern "$OVERLAY_FILE" \
+    'Task.sleep(for: .seconds(4))' \
+    "The smart-paste success notice must dismiss after four seconds."
+require_pattern "$OVERLAY_FILE" \
+    'Text("已自动填充标题和 Prompt")' \
+    "The transient notice must clearly report the completed fill."
+require_pattern "$OVERLAY_FILE" \
+    'Button("撤销") {' \
+    "The transient notice must provide immediate undo."
+require_pattern "$OVERLAY_FILE" \
+    'private var smartPasteHeaderMenu' \
+    "Persistent smart-paste actions must live in the composer header."
+if /usr/bin/grep -Fq '已智能填充 ·' "$OVERLAY_FILE"; then
+    echo "Smart paste must not render a persistent filled-state bar." >&2
+    exit 1
+fi
 require_pattern "$OVERLAY_FILE" \
     '.popover(isPresented: $showSmartPasteDetails)' \
     "Smart-paste details must use a transient popover."
