@@ -3574,7 +3574,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let prefetchRequests = (layout?.indexPathsForItems(in: prefetchRect) ?? []).compactMap { indexPath -> ThumbnailImageRequest? in
                 guard entries.indices.contains(indexPath.item),
                       case .item(let item) = entries[indexPath.item],
-                      item.assetKind == .image else {
+                      item.assetKind == .image,
+                      item.hasAvailablePrimaryAsset else {
                     return nil
                 }
                 let path = item.thumbnailPath.isEmpty ? item.assetPath : item.thumbnailPath
@@ -3883,7 +3884,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         markdownCardView?.removeFromSuperview()
         markdownCardView = nil
 
-        if case .item(let item) = entry, item.assetKind == .image {
+        if case .item(let item) = entry, item.assetKind == .image, item.hasAvailablePrimaryAsset {
             hostingView?.removeFromSuperview()
             hostingView = nil
             selectionChromeView?.removeFromSuperview()
@@ -4099,17 +4100,19 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
         let menu = NSMenu()
         menuTargets = []
         addMenuItem("预览", symbolName: "eye", to: menu) { state.previewSelected() }
-        addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu) {
-            state.openSelectedInDefaultApplication()
-        }
-        addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu) {
-            state.revealSelectedInFinder()
+        if item.hasAvailablePrimaryAsset {
+            addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu) {
+                state.openSelectedInDefaultApplication()
+            }
+            addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu) {
+                state.revealSelectedInFinder()
+            }
         }
         menu.addItem(.separator())
 
         if !item.isDeleted {
             addMoveToFolderMenu(item: item, state: state, itemIDs: actionItemIDs, to: menu)
-            if item.isPromptPrimaryAsset {
+            if item.isPromptPrimaryAsset, item.hasAvailablePrimaryAsset {
                 addMenuItem("导出...", symbolName: "square.and.arrow.up", to: menu) {
                     state.modal = .export
                 }
@@ -4131,9 +4134,11 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
             copyItem?.isEnabled = hasPrompt(item: item, state: state)
         }
 
-        addMenuItem("复制文件", symbolName: "doc", to: menu) { state.copySelectedFile() }
-        addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu) {
-            state.copySelectedFilePath()
+        if item.hasAvailablePrimaryAsset {
+            addMenuItem("复制文件", symbolName: "doc", to: menu) { state.copySelectedFile() }
+            addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu) {
+                state.copySelectedFilePath()
+            }
         }
 
         if item.isPromptPrimaryAsset {
@@ -6539,7 +6544,9 @@ private struct AssetCardContentView: View, Equatable {
     let item: PromptItem
 
     var body: some View {
-        if item.isTextDocumentLike {
+        if item.isMediaPromptPlaceholder {
+            PromptVirtualCover(type: item.type)
+        } else if item.isTextDocumentLike {
             TextAssetCardCover(item: item)
         } else if item.assetKind == .image {
             AssetMediaView(item: item, contentMode: .fill)
@@ -7366,7 +7373,9 @@ struct AssetMediaView: View {
     var contentMode: ContentMode = .fill
 
     var body: some View {
-        if item.supportsGeneratedThumbnail, let thumbnailPath {
+        if item.isMediaPromptPlaceholder || (item.type != .text && !item.hasAvailablePrimaryAsset) {
+            PromptVirtualCover(type: item.type)
+        } else if item.supportsGeneratedThumbnail, let thumbnailPath {
             ThumbnailImage(
                 path: thumbnailPath,
                 contentVersion: item.updatedAt.timeIntervalSinceReferenceDate,

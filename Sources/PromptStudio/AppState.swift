@@ -406,6 +406,13 @@ final class AppState: ObservableObject {
         selectedID.flatMap { itemsByID[$0] }
     }
 
+    /// Resolve composer and inspector work by stable item identity. Selection
+    /// can change while a sheet is open, so edit paths must not read only the
+    /// current selected item.
+    func promptItem(for itemID: String) -> PromptItem? {
+        itemsByID[itemID] ?? items.first(where: { $0.id == itemID })
+    }
+
     var selectedFolder: LibraryFolder? {
         guard let selectedFolderID else { return nil }
         return folders.first { $0.id == selectedFolderID }
@@ -548,6 +555,23 @@ final class AppState: ObservableObject {
         try repository.seedFoldersIfNeeded(initialFolders)
         try migrateFolderHierarchyIfNeeded(repository: repository)
         try repository.repairSeedAssetPaths(from: seedItems)
+        let placeholderMigration = try repository.migratePromptPlaceholders()
+        if placeholderMigration.migratedCount > 0 || placeholderMigration.failedCount > 0 {
+            DebugPerformanceProbe.record(
+                "prompt.placeholder.migration.count",
+                value: Double(placeholderMigration.migratedCount)
+            )
+            if placeholderMigration.failedCount > 0 {
+                DebugPerformanceProbe.record(
+                    "prompt.placeholder.migration.failure",
+                    value: Double(placeholderMigration.failedCount)
+                )
+            }
+            print(
+                "Prompt placeholder migration: migrated \(placeholderMigration.migratedCount) of "
+                    + "\(placeholderMigration.candidateCount), failed \(placeholderMigration.failedCount)"
+            )
+        }
         let persistedModels = try repository.loadModelProfiles()
         let loadedFolders = try repository.loadFolders()
         let loadedItems = try repository.loadItems()
@@ -1133,10 +1157,9 @@ final class AppState: ObservableObject {
         }
 
         if item.assetKind == .audio {
-            if selectedID != item.id {
-                select(item)
-            }
-            previewSelected()
+            // Audio prompts edit their Prompt metadata; an audio file itself
+            // has no inline editor. Placeholders still open the composer.
+            openEditPromptComposer(for: item)
             return
         }
 
@@ -1147,6 +1170,10 @@ final class AppState: ObservableObject {
 
     func openSelectedInDefaultApplication() {
         guard let item = selectedItem else { return }
+        guard item.hasAvailablePrimaryAsset else {
+            showToast("当前 Prompt 尚未添加主素材")
+            return
+        }
         guard AppKitBridge.openDefaultApplication(path: item.assetPath) else {
             showToast("源文件不存在")
             return
@@ -1157,6 +1184,10 @@ final class AppState: ObservableObject {
 
     func copySelectedFilePath() {
         guard let item = selectedItem else { return }
+        guard item.hasAvailablePrimaryAsset else {
+            showToast("当前 Prompt 尚未添加主素材")
+            return
+        }
         AppKitBridge.copyToPasteboard(item.assetPath)
         markRecentlyUsed(itemID: item.id)
         showToast("已复制文件路径")
@@ -1168,13 +1199,17 @@ final class AppState: ObservableObject {
 
     func copySelectedFileForPasteboard() {
         let selectedItems = orderedSelectedItems()
-        guard !selectedItems.isEmpty else { return }
-        guard AppKitBridge.copyFilesToPasteboard(paths: selectedItems.map(\.assetPath)) else {
+        let realItems = selectedItems.filter(\.hasAvailablePrimaryAsset)
+        guard !realItems.isEmpty else {
+            showToast("当前 Prompt 尚未添加主素材")
+            return
+        }
+        guard AppKitBridge.copyFilesToPasteboard(paths: realItems.map(\.assetPath)) else {
             showToast("源文件不存在")
             return
         }
-        for item in selectedItems { markRecentlyUsed(itemID: item.id) }
-        showToast(selectedItems.count > 1 ? "已复制 \(selectedItems.count) 个文件" : "已复制文件")
+        for item in realItems { markRecentlyUsed(itemID: item.id) }
+        showToast(realItems.count > 1 ? "已复制 \(realItems.count) 个文件" : "已复制文件")
     }
 
     func pasteFilesFromPasteboard() {
@@ -1329,7 +1364,44 @@ final class AppState: ObservableObject {
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: item.thumbnailPath))
     }
 
+    private func cleanupReplacedPrimaryAsset(
+        oldPath: String,
+        oldThumbnailPath: String,
+        updatedItem: PromptItem,
+        primaryAssetChanged: Bool
+    ) {
+        guard primaryAssetChanged, !oldPath.isEmpty else { return }
+        let normalizedOldPath = URL(fileURLWithPath: oldPath).standardizedFileURL.path
+        let normalizedNewPath = URL(fileURLWithPath: updatedItem.assetPath).standardizedFileURL.path
+        guard normalizedOldPath != normalizedNewPath else { return }
+        if oldThumbnailPath != oldPath,
+           !oldThumbnailPath.isEmpty,
+           oldThumbnailPath != updatedItem.thumbnailPath,
+           FileManager.default.fileExists(atPath: oldThumbnailPath) {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: oldThumbnailPath))
+        }
+        guard isLibraryAssetPath(oldPath),
+              !updatedItem.referenceAssets.contains(where: { $0.path == oldPath }),
+              !items.contains(where: {
+                  $0.id != updatedItem.id
+                      && ($0.assetPath == oldPath || $0.referenceAssets.contains(where: { $0.path == oldPath }))
+              }) else {
+            return
+        }
+        if FileManager.default.fileExists(atPath: oldPath) {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: oldPath))
+        }
+    }
+
+    private func isLibraryAssetPath(_ path: String) -> Bool {
+        let assetsRoot = libraryURL.appendingPathComponent("assets", isDirectory: true).standardizedFileURL.path
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return normalized == assetsRoot || normalized.hasPrefix(assetsRoot + "/")
+    }
+
+    @discardableResult
     func savePrompt(
+        itemID: String,
         title: String,
         type: PromptType,
         modelId: String?,
@@ -1339,98 +1411,176 @@ final class AppState: ObservableObject {
         parameters: [String: String],
         note: String,
         saveAsNewVersion: Bool,
+        primaryAssetUpdate: PrimaryAssetUpdate = .unchanged,
+        preserveExistingPrimaryAsReference: Bool = false,
         referenceURLs: [URL] = []
-    ) {
-        guard requireFeature(.proEditPrompt) else { return }
-        guard var item = selectedItem else { return }
+    ) -> Bool {
+        guard requireFeature(.proEditPrompt) else { return false }
+        guard var item = promptItem(for: itemID), let repository else { return false }
+
+        let oldAssetPath = item.assetPath
+        let oldThumbnailPath = item.thumbnailPath
+        var newlyCopiedPaths: [String] = []
+        var primaryAssetChanged = false
+
         do {
+            guard item.type == type || primaryAssetUpdate != .unchanged || preserveExistingPrimaryAsReference || oldAssetPath.isEmpty else {
+                throw CocoaError(.validationMissingMandatoryProperty)
+            }
+
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
-                let copied = try repository?.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source)) ?? source
+                let copied = try repository.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source))
+                newlyCopiedPaths.append(copied.path)
                 return (source, copied)
             }
-            let newReferences = copiedReferences.map { pair in
+            item.referenceAssets.append(contentsOf: copiedReferences.map { pair in
                 ReferenceAsset(
                     type: pair.original.pathExtension.uppercased(),
                     path: pair.copied.path,
                     label: pair.original.deletingPathExtension().lastPathComponent
                 )
-            }
-            item.referenceAssets.append(contentsOf: newReferences)
-            if type == .text, item.type != .text {
-                if !item.assetPath.isEmpty,
-                   !item.referenceAssets.contains(where: { $0.path == item.assetPath }) {
-                    item.referenceAssets.append(
-                        ReferenceAsset(
-                            type: item.format,
-                            path: item.assetPath,
-                            label: URL(fileURLWithPath: item.assetPath).deletingPathExtension().lastPathComponent
-                        )
+            })
+
+            if (preserveExistingPrimaryAsReference || type == .text && item.type != .text),
+               !oldAssetPath.isEmpty,
+               !item.referenceAssets.contains(where: { $0.path == oldAssetPath }) {
+                item.referenceAssets.append(
+                    ReferenceAsset(
+                        type: item.format,
+                        path: oldAssetPath,
+                        label: URL(fileURLWithPath: oldAssetPath).deletingPathExtension().lastPathComponent
                     )
-                }
-                if let textAssetURL = try createTextPromptAssetIfNeeded(
+                )
+            }
+
+            if type == .text {
+                let textAssetURL = try createTextPromptAssetIfNeeded(
                     title: title,
                     type: .text,
                     prompt: prompt,
                     parameters: parameters,
-                    hasPreviewImage: false
-                ) {
-                    let assetKind = AppKitBridge.assetKind(for: textAssetURL)
-                    let fileInfo = AppKitBridge.fileInfo(for: textAssetURL, assetKind: assetKind)
-                    item.assetKind = assetKind
-                    item.assetPath = textAssetURL.path
-                    item.thumbnailPath = textAssetURL.path
-                    item.aspectRatio = Self.normalizedAspectRatio(width: fileInfo.width, height: fileInfo.height)
-                    item.width = fileInfo.width
-                    item.height = fileInfo.height
-                    item.format = fileInfo.format
-                    item.fileSize = fileInfo.fileSize
+                    hasPrimaryAsset: false
+                )
+                guard let textAssetURL else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                newlyCopiedPaths.append(textAssetURL.path)
+                let assetKind = AppKitBridge.assetKind(for: textAssetURL)
+                let fileInfo = AppKitBridge.fileInfo(for: textAssetURL, assetKind: assetKind)
+                item.assetKind = assetKind
+                item.assetPath = textAssetURL.path
+                item.thumbnailPath = textAssetURL.path
+                item.aspectRatio = Self.normalizedAspectRatio(width: fileInfo.width, height: fileInfo.height)
+                item.width = fileInfo.width
+                item.height = fileInfo.height
+                item.format = fileInfo.format
+                item.fileSize = fileInfo.fileSize
+                primaryAssetChanged = oldAssetPath != item.assetPath
+            } else if item.type != type {
+                primaryAssetChanged = !oldAssetPath.isEmpty
+                item.assetKind = type == .image ? .image : (type == .video ? .video : .audio)
+                item.assetPath = ""
+                item.thumbnailPath = ""
+                item.aspectRatio = ""
+                item.width = 0
+                item.height = 0
+                item.format = ""
+                item.fileSize = 0
+            } else {
+                switch primaryAssetUpdate {
+                case .unchanged:
+                    break
+                case .replace(let source):
+                    let sourceKind = AppKitBridge.assetKind(for: source)
+                    guard sourceKind.promptType == type else {
+                        throw CocoaError(.fileWriteInvalidFileName)
+                    }
+                    let copied = try repository.copyAssetIntoLibrary(from: source, assetKind: sourceKind)
+                    newlyCopiedPaths.append(copied.path)
+                    primaryAssetChanged = URL(fileURLWithPath: oldAssetPath).standardizedFileURL.path
+                        != copied.standardizedFileURL.path
+                    let info = AppKitBridge.fileInfo(for: copied, assetKind: sourceKind)
+                    item.assetKind = sourceKind
+                    item.assetPath = copied.path
+                    item.thumbnailPath = copied.path
+                    item.aspectRatio = Self.normalizedAspectRatio(width: info.width, height: info.height)
+                    item.width = info.width
+                    item.height = info.height
+                    item.format = info.format
+                    item.fileSize = info.fileSize
+                case .remove:
+                    primaryAssetChanged = !oldAssetPath.isEmpty
+                    item.assetKind = type == .image ? .image : (type == .video ? .video : .audio)
+                    item.assetPath = ""
+                    item.thumbnailPath = ""
+                    item.aspectRatio = ""
+                    item.width = 0
+                    item.height = 0
+                    item.format = ""
+                    item.fileSize = 0
                 }
             }
-        } catch {
-            modal = .error(error.localizedDescription)
-            return
-        }
-        item.title = title
-        item.type = type
-        item.category = type.displayName
-        if let modelId {
-            item.modelId = modelId
-            item.modelName = models.first(where: { $0.id == modelId })?.name
-                ?? (modelId == PromptComposerMetadataPolicy.unspecifiedModelID
-                    ? PromptComposerMetadataPolicy.unspecifiedModelName
-                    : item.modelName)
-        }
-        item.tags = tags
-        item.updatedAt = Date()
-        if filter.collection != .recent {
-            item.lastUsedAt = Date()
-        }
 
-        if saveAsNewVersion || item.versions.isEmpty {
-            item.versions.append(
-                PromptVersion(
-                    promptItemId: item.id,
-                    version: nextVersion(after: item.versions.last?.version),
-                    prompt: prompt,
-                    negativePrompt: negativePrompt,
-                    parameters: parameters,
-                    note: note.isEmpty ? "编辑保存" : note
+            item.title = title
+            item.type = type
+            item.category = type.displayName
+            if let modelId {
+                item.modelId = modelId
+                item.modelName = models.first(where: { $0.id == modelId })?.name
+                    ?? (modelId == PromptComposerMetadataPolicy.unspecifiedModelID
+                        ? PromptComposerMetadataPolicy.unspecifiedModelName
+                        : item.modelName)
+            }
+            item.tags = tags
+            item.updatedAt = Date()
+            if filter.collection != .recent {
+                item.lastUsedAt = Date()
+            }
+
+            if saveAsNewVersion || item.versions.isEmpty {
+                item.versions.append(
+                    PromptVersion(
+                        promptItemId: item.id,
+                        version: nextVersion(after: item.versions.last?.version),
+                        prompt: prompt,
+                        negativePrompt: negativePrompt,
+                        parameters: parameters,
+                        note: note.isEmpty ? "编辑保存" : note
+                    )
                 )
-            )
-        } else if let index = item.versions.indices.last {
-            item.versions[index].prompt = prompt
-            item.versions[index].negativePrompt = negativePrompt
-            item.versions[index].parameters = parameters
-            item.versions[index].note = note
-        }
+            } else if let index = item.versions.indices.last {
+                item.versions[index].prompt = prompt
+                item.versions[index].negativePrompt = negativePrompt
+                item.versions[index].parameters = parameters
+                item.versions[index].note = note
+            }
 
-        save(item, toast: "已保存 Prompt")
-        markRecentlyUsed(itemID: item.id)
+            // Persist the complete item before touching any old file. If SQLite
+            // fails, the copied files are cleaned and the composer stays open.
+            try repository.saveItem(item)
+            cleanupReplacedPrimaryAsset(
+                oldPath: oldAssetPath,
+                oldThumbnailPath: oldThumbnailPath,
+                updatedItem: item,
+                primaryAssetChanged: primaryAssetChanged
+            )
+            reload(selecting: item.id)
+            showToast("已保存 Prompt")
+            markRecentlyUsed(itemID: item.id)
+            return true
+        } catch {
+            for path in newlyCopiedPaths where path != oldAssetPath {
+                guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { continue }
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+            }
+            modal = .error(error.localizedDescription)
+            return false
+        }
     }
 
     func saveMarkdownDocument(_ text: String, for item: PromptItem) {
         guard requireFeature(.proEditPrompt) else { return }
-        guard var current = selectedItem, current.id == item.id else { return }
+        guard var current = promptItem(for: item.id) else { return }
         do {
             if !current.assetPath.isEmpty {
                 let url = URL(fileURLWithPath: current.assetPath)
@@ -1467,6 +1617,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    @discardableResult
     func createPrompt(
         title: String,
         type: PromptType,
@@ -1475,10 +1626,10 @@ final class AppState: ObservableObject {
         negativePrompt: String,
         tags: [String],
         parameters: [String: String] = ["比例": "16:9", "质量": "high"],
-        previewImageURL: URL? = nil,
+        primaryAssetURL: URL? = nil,
         referenceURLs: [URL] = []
-    ) {
-        guard requireFeature(.proCreatePrompt) else { return }
+    ) -> Bool {
+        guard requireFeature(.proCreatePrompt) else { return false }
         let model = modelId.flatMap { requestedID in
             models.first(where: { $0.id == requestedID && $0.type == type })
         } ?? ModelProfile(
@@ -1497,19 +1648,33 @@ final class AppState: ObservableObject {
             note: "新建 Prompt"
         )
 
+        var newlyCopiedPaths: [String] = []
         do {
-            let previewPath = try previewImageURL.map { source in
-                try repository?.copyAssetIntoLibrary(from: source, type: .image) ?? source
+            guard let repository else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let primaryAssetKind: AssetKind? = primaryAssetURL.map(AppKitBridge.assetKind(for:))
+            if let primaryAssetKind, primaryAssetKind.promptType != type {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            let primaryPath = try primaryAssetURL.map { source in
+                let copied = try repository.copyAssetIntoLibrary(from: source, assetKind: primaryAssetKind ?? AppKitBridge.assetKind(for: source))
+                newlyCopiedPaths.append(copied.path)
+                return copied
             }?.path ?? ""
             let textAssetURL = try createTextPromptAssetIfNeeded(
                 title: title,
                 type: type,
                 prompt: prompt,
                 parameters: parameters,
-                hasPreviewImage: !previewPath.isEmpty
+                hasPrimaryAsset: type != .text && primaryAssetURL != nil
             )
+            if let textAssetURL {
+                newlyCopiedPaths.append(textAssetURL.path)
+            }
             let copiedReferences = try referenceURLs.map { source -> (original: URL, copied: URL) in
-                let copied = try repository?.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source)) ?? source
+                let copied = try repository.copyAssetIntoLibrary(from: source, assetKind: AppKitBridge.assetKind(for: source))
+                newlyCopiedPaths.append(copied.path)
                 return (source, copied)
             }
             let references = copiedReferences.map { pair in
@@ -1519,10 +1684,19 @@ final class AppState: ObservableObject {
                     label: pair.original.deletingPathExtension().lastPathComponent
                 )
             }
-            let assetURL = textAssetURL ?? (previewPath.isEmpty ? nil : URL(fileURLWithPath: previewPath))
-            let assetKind: AssetKind = textAssetURL.map { AppKitBridge.assetKind(for: $0) } ?? (previewPath.isEmpty ? .text : .image)
+            let assetURL = textAssetURL ?? (primaryPath.isEmpty ? nil : URL(fileURLWithPath: primaryPath))
+            let assetKind: AssetKind = textAssetURL.map { AppKitBridge.assetKind(for: $0) }
+                ?? primaryAssetKind
+                ?? {
+                    switch type {
+                    case .image: return .image
+                    case .video: return .video
+                    case .audio: return .audio
+                    case .text: return .markdown
+                    }
+                }()
             let previewInfo = assetURL.map { AppKitBridge.fileInfo(for: $0, assetKind: assetKind) }
-                ?? (width: 0, height: 0, fileSize: Int64(0), format: "PROMPT")
+                ?? (width: 0, height: 0, fileSize: Int64(0), format: "")
             let item = PromptItem(
                 id: id,
                 title: title,
@@ -1534,7 +1708,7 @@ final class AppState: ObservableObject {
                 folderName: defaultFolder().name,
                 category: type.displayName,
                 assetPath: assetURL?.path ?? "",
-                aspectRatio: Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
+                aspectRatio: assetURL == nil ? "" : Self.normalizedAspectRatio(width: previewInfo.width, height: previewInfo.height),
                 width: previewInfo.width,
                 height: previewInfo.height,
                 format: previewInfo.format,
@@ -1546,12 +1720,17 @@ final class AppState: ObservableObject {
                 versions: [version],
                 description: "用户新建 Prompt"
             )
-            try repository?.saveItem(item)
+            try repository.saveItem(item)
             reload(selecting: id)
             markRecentlyUsed(itemID: id)
             showToast("已新建 Prompt")
+            return true
         } catch {
+            for path in newlyCopiedPaths where !path.isEmpty && FileManager.default.fileExists(atPath: path) {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+            }
             modal = .error(error.localizedDescription)
+            return false
         }
     }
 
@@ -1680,6 +1859,10 @@ final class AppState: ObservableObject {
 
     func exportSelected(format: PromptStudioExportFormat) {
         guard let item = selectedItem else { return }
+        guard item.hasAvailablePrimaryAsset else {
+            showToast("当前 Prompt 尚未添加主素材")
+            return
+        }
         guard !format.requiresImage || item.assetKind == .image else {
             showToast("当前素材不是图片")
             return
@@ -1722,7 +1905,8 @@ final class AppState: ObservableObject {
     }
 
     func revealSelectedInFinder() {
-        guard let item = selectedItem, FileManager.default.fileExists(atPath: item.assetPath) else {
+        guard let item = selectedItem, item.hasAvailablePrimaryAsset,
+              FileManager.default.fileExists(atPath: item.assetPath) else {
             showToast("源文件不存在")
             return
         }
@@ -1732,6 +1916,10 @@ final class AppState: ObservableObject {
 
     func previewSelected() {
         guard let item = selectedItem else { return }
+        guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike else {
+            openEditPromptComposer(for: item)
+            return
+        }
         modal = nil
         promptComposerMode = nil
         markdownEditorItemID = nil
@@ -2909,7 +3097,7 @@ final class AppState: ObservableObject {
         var candidates: [PromptItem] = []
         var existingGenerated: [(String, String)] = []
         for item in items {
-            guard item.supportsGeneratedThumbnail else { continue }
+            guard item.supportsGeneratedThumbnail, item.hasAvailablePrimaryAsset else { continue }
             if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
                 if existingPath != item.thumbnailPath {
                     existingGenerated.append((item.id, existingPath))
@@ -3026,6 +3214,7 @@ final class AppState: ObservableObject {
         for itemID in itemIDs {
             guard let item = itemsByID[itemID],
                   item.supportsGeneratedThumbnail,
+                  item.hasAvailablePrimaryAsset,
                   !item.isTextDocumentLike else {
                 continue
             }
@@ -3178,9 +3367,9 @@ final class AppState: ObservableObject {
         type: PromptType,
         prompt: String,
         parameters: [String: String],
-        hasPreviewImage: Bool
+        hasPrimaryAsset: Bool
     ) throws -> URL? {
-        guard type == .text, !hasPreviewImage, let repository else { return nil }
+        guard type == .text, !hasPrimaryAsset, let repository else { return nil }
         let fileExtension = textPromptFileExtension(parameters: parameters)
         let directory = repository.libraryURL.appendingPathComponent("assets/documents")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -154,8 +154,8 @@ struct ImmersivePreviewOverlay: View {
             previewedReference = nil
             resetImageTransform()
         }
-        .task(id: previewImagePreloadPaths(currentID: item.id)) {
-            await OverlayImageLoader.preload(paths: previewImagePreloadPaths(currentID: item.id))
+        .task(id: primaryAssetPreloadPaths(currentID: item.id)) {
+            await OverlayImageLoader.preload(paths: primaryAssetPreloadPaths(currentID: item.id))
         }
     }
 
@@ -186,7 +186,7 @@ struct ImmersivePreviewOverlay: View {
         onSelectRailItemID(itemID)
     }
 
-    private func previewImagePreloadPaths(currentID: String) -> [String] {
+    private func primaryAssetPreloadPaths(currentID: String) -> [String] {
         guard item.assetKind == .image,
               let currentIndex = railItems.firstIndex(where: { $0.id == currentID }) else {
             return []
@@ -226,7 +226,10 @@ struct ImmersivePreviewOverlay: View {
 
     @ViewBuilder
     private var previewMedia: some View {
-        if let path = previewedReference?.path {
+        if item.isMediaPromptPlaceholder {
+            PromptVirtualCover(type: item.type)
+                .onTapGesture { state.openEditPromptComposer(for: item) }
+        } else if let path = previewedReference?.path {
             OverlayImagePreview(path: path, scale: imageScale, offset: activeImageOffset)
                 .contentShape(Rectangle())
                 .gesture(imagePanGesture)
@@ -396,25 +399,32 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private var previewPromptActions: [SidePanelAction] {
-        [
+        var actions: [SidePanelAction] = [
             SidePanelAction(icon: .pencil, help: "编辑") {
                 state.requestInlineEdit(item)
             },
             SidePanelAction(icon: .copy, help: "复制提示词") {
                 state.copySelectedPrompt()
             },
-            SidePanelAction(icon: .circleArrowDown, help: "下载") {
-                state.isPreviewPresented = false
-                state.modal = .export
-            },
             SidePanelAction(icon: .history, help: "历史版本") {
                 state.isPreviewPresented = false
                 state.modal = .versionHistory
             }
         ]
+        if item.hasAvailablePrimaryAsset {
+            actions.insert(
+                SidePanelAction(icon: .circleArrowDown, help: "下载") {
+                    state.isPreviewPresented = false
+                    state.modal = .export
+                },
+                at: 2
+            )
+        }
+        return actions
     }
 
     private func textSummary(for item: PromptItem) -> String {
+        guard item.hasAvailablePrimaryAsset else { return "尚未添加主素材。" }
         guard item.canExtractPromptFromAsset else {
             return fileFallbackSummary(for: item)
         }
@@ -815,6 +825,10 @@ struct PromptComposerOverlay: View {
     @State private var title = ""
     @State private var typeDecision = PromptComposerTypeDecision.unresolved(reason: "请输入 Prompt 后自动识别")
     @State private var typeMode: PromptComposerTypeMode = .automatic
+    @State private var pendingTypeChoice: PromptType?
+    @State private var pendingDeleteType: PromptType?
+    @State private var preserveExistingPrimaryAsReference = false
+    @State private var showTypeDeleteConfirmation = false
     @State private var modelId: String?
     @State private var modelHint: String?
     @State private var formatHint: String?
@@ -825,13 +839,14 @@ struct PromptComposerOverlay: View {
     @State private var parameters = ""
     @State private var note = ""
     @State private var saveAsNewVersion = true
-    @State private var previewImageURL: URL?
+    @State private var primaryAssetURL: URL?
+    @State private var primaryAssetRemovalRequested = false
     @State private var referenceURLs: [URL] = []
     @State private var initialSignature = ""
     @State private var showCloseConfirmation = false
-    @State private var isPreviewImageDropTarget = false
+    @State private var isPrimaryAssetDropTarget = false
     @State private var isReferenceDropTarget = false
-    @State private var isPreviewImageHovered = false
+    @State private var isPrimaryAssetHovered = false
     @State private var isReferenceHovered = false
     @State private var smartPasteInterpretation: PromptClipboardInterpretation?
     @State private var smartPasteAppliedPrompt: String?
@@ -859,15 +874,15 @@ struct PromptComposerOverlay: View {
         let parameters: String
         let note: String
         let saveAsNewVersion: Bool
-        let previewImageURL: URL?
+        let primaryAssetURL: URL?
         let referenceURLs: [URL]
         let smartPasteInterpretation: PromptClipboardInterpretation?
         let smartPasteAppliedPrompt: String?
     }
 
     private var editingItem: PromptItem? {
-        if case .edit = mode {
-            return state.selectedItem
+        if case .edit(let itemID) = mode {
+            return state.promptItem(for: itemID)
         }
         return nil
     }
@@ -885,7 +900,7 @@ struct PromptComposerOverlay: View {
         resolvedType != nil
     }
 
-    private var shouldShowPreviewImage: Bool {
+    private var shouldShowPrimaryAssetUpload: Bool {
         resolvedType != .text
     }
 
@@ -964,6 +979,34 @@ struct PromptComposerOverlay: View {
             }
         } message: {
             Text("当前草稿已有内容，覆盖前会保留完整快照，可用“撤销填充”恢复。")
+        }
+        .confirmationDialog("已有主素材，如何处理？", isPresented: Binding(
+            get: { pendingTypeChoice != nil },
+            set: { if !$0 { pendingTypeChoice = nil } }
+        )) {
+            Button("转为参考资产") {
+                guard let pendingTypeChoice else { return }
+                applyTypeChoice(pendingTypeChoice, preservePrimary: true)
+            }
+            Button("删除旧素材", role: .destructive) {
+                guard let pendingTypeChoice else { return }
+                self.pendingDeleteType = pendingTypeChoice
+                self.pendingTypeChoice = nil
+                showTypeDeleteConfirmation = true
+            }
+            Button("取消", role: .cancel) { pendingTypeChoice = nil }
+        } message: {
+            Text("切换资源类型会改变主素材。你可以将旧素材转为参考资产，或删除旧素材。")
+        }
+        .confirmationDialog("确认删除旧主素材？", isPresented: $showTypeDeleteConfirmation) {
+            Button("删除旧素材", role: .destructive) {
+                guard let pendingDeleteType else { return }
+                applyTypeChoice(pendingDeleteType, preservePrimary: false)
+                self.pendingDeleteType = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteType = nil }
+        } message: {
+            Text("旧素材只会在保存成功后从资料库删除。")
         }
         .overlay(alignment: .bottom) {
             if showSmartPasteSuccessNotice {
@@ -1109,15 +1152,15 @@ struct PromptComposerOverlay: View {
     }
 
     private func createUploadColumn(availableHeight: CGFloat) -> some View {
-        let showsPreviewImage = shouldShowPreviewImage
-        let previewHeight = showsPreviewImage ? min(236, max(180, availableHeight * 0.30)) : 0
-        let referenceHeight = showsPreviewImage
-            ? min(280, max(180, availableHeight - previewHeight - 82))
+        let showsPrimaryAsset = shouldShowPrimaryAssetUpload
+        let primaryAssetHeight = showsPrimaryAsset ? min(236, max(180, availableHeight * 0.30)) : 0
+        let referenceHeight = showsPrimaryAsset
+            ? min(280, max(180, availableHeight - primaryAssetHeight - 82))
             : min(420, max(240, availableHeight - 30))
         return VStack(alignment: .leading, spacing: 22) {
-            if showsPreviewImage {
-                createField("预览图") {
-                    previewImageDropZone(height: previewHeight)
+            if showsPrimaryAsset {
+                createField("主素材") {
+                    primaryAssetDropZone(height: primaryAssetHeight)
                 }
             }
 
@@ -1290,52 +1333,62 @@ struct PromptComposerOverlay: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
     }
 
-    private func previewImageDropZone(height: CGFloat) -> some View {
+    private func primaryAssetDropZone(height: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isPreviewImageDropTarget || isPreviewImageHovered ? CreateComposerColor.dropActive : CreateComposerColor.documentBackground)
+                .fill(isPrimaryAssetDropTarget || isPrimaryAssetHovered ? CreateComposerColor.dropActive : CreateComposerColor.documentBackground)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(
-                            isPreviewImageDropTarget ? StudioColor.primaryAction.opacity(0.55) : CreateComposerColor.border,
-                            style: StrokeStyle(lineWidth: 1, dash: previewImageURL == nil ? [6, 5] : [])
+                            isPrimaryAssetDropTarget ? StudioColor.primaryAction.opacity(0.55) : CreateComposerColor.border,
+                            style: StrokeStyle(lineWidth: 1, dash: primaryAssetURL == nil ? [6, 5] : [])
                         )
                 )
 
-            if let previewImageURL {
+            if let primaryAssetURL {
                 GeometryReader { proxy in
                     ZStack(alignment: .topTrailing) {
-                        ComposerPreviewImage(path: previewImageURL.path, contentMode: .fit)
-                            .frame(
-                                width: max(0, proxy.size.width - 36),
-                                height: max(0, proxy.size.height - 36)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-
-                        if !isEditing {
-                            composerRemoveButton {
-                                self.previewImageURL = nil
+                        if AppKitBridge.assetKind(for: primaryAssetURL) == .image {
+                            ComposerPreviewImage(path: primaryAssetURL.path, contentMode: .fit)
+                        } else {
+                            VStack(spacing: 10) {
+                                Image(systemName: primaryAssetIcon(for: primaryAssetURL))
+                                    .font(.system(size: 28, weight: .medium))
+                                Text(primaryAssetURL.lastPathComponent)
+                                    .font(StudioFont.font(11))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 10)
                             }
-                            .padding(14)
+                            .foregroundStyle(CreateComposerColor.secondaryText)
                         }
+                        .frame(
+                            width: max(0, proxy.size.width - 36),
+                            height: max(0, proxy.size.height - 36)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+
+                        composerRemoveButton {
+                            self.primaryAssetURL = nil
+                            self.primaryAssetRemovalRequested = true
+                        }
+                        .padding(14)
                     }
                 }
-            } else if isEditing {
-                createUploadPlaceholder("当前素材无预览图")
             } else {
                 Button {
-                    setPreviewImage(AppKitBridge.chooseReferenceImages())
+                    setPrimaryAsset(AppKitBridge.choosePrimaryAsset(acceptedType: resolvedType).map { [$0] } ?? [])
                 } label: {
-                    createUploadPlaceholder("添加预览图")
+                    createUploadPlaceholder(isEditing ? "添加或替换主素材" : "添加主素材")
                 }
                 .buttonStyle(.plain)
             }
         }
         .frame(height: height)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onHover { isPreviewImageHovered = $0 }
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isPreviewImageDropTarget, perform: handlePreviewImageDrop)
+        .onHover { isPrimaryAssetHovered = $0 }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isPrimaryAssetDropTarget, perform: handlePrimaryAssetDrop)
     }
 
     private func referenceImagesDropZone(height: CGFloat) -> some View {
@@ -1435,9 +1488,9 @@ struct PromptComposerOverlay: View {
                         .lineLimit(3)
                 }
 
-                if shouldShowPreviewImage, let previewImageURL {
-                    ComposerPreviewImage(path: previewImageURL.path, contentMode: .fit)
-                        .frame(width: previewImageSize.width, height: previewImageSize.height)
+                if shouldShowPrimaryAssetUpload, let primaryAssetURL {
+                    ComposerPreviewImage(path: primaryAssetURL.path, contentMode: .fit)
+                        .frame(width: primaryAssetSize.width, height: primaryAssetSize.height)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1513,15 +1566,15 @@ struct PromptComposerOverlay: View {
     }
 
     private var hasMeaningfulPreviewContent: Bool {
-        hasTitle || hasPrompt || (shouldShowPreviewImage && previewImageURL != nil) || !allReferencePreviewAssets.isEmpty
+        hasTitle || hasPrompt || (shouldShowPrimaryAssetUpload && primaryAssetURL != nil) || !allReferencePreviewAssets.isEmpty
     }
 
-    private var previewImageSize: CGSize {
+    private var primaryAssetSize: CGSize {
         let maxHeight: CGFloat = 80
         let maxWidth: CGFloat = 260
         let aspectRatio: CGFloat
-        if let previewImageInfo, previewImageInfo.width > 0, previewImageInfo.height > 0 {
-            aspectRatio = max(0.15, CGFloat(previewImageInfo.width) / CGFloat(previewImageInfo.height))
+        if let primaryAssetInfo, primaryAssetInfo.width > 0, primaryAssetInfo.height > 0 {
+            aspectRatio = max(0.15, CGFloat(primaryAssetInfo.width) / CGFloat(primaryAssetInfo.height))
         } else {
             aspectRatio = 16.0 / 9.0
         }
@@ -2033,9 +2086,9 @@ struct PromptComposerOverlay: View {
         return cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle
     }
 
-    private var previewImageInfo: (width: Int, height: Int, fileSize: Int64, format: String)? {
-        guard let previewImageURL else { return nil }
-        return AppKitBridge.fileInfo(for: previewImageURL, assetKind: .image)
+    private var primaryAssetInfo: (width: Int, height: Int, fileSize: Int64, format: String)? {
+        guard let primaryAssetURL else { return nil }
+        return AppKitBridge.fileInfo(for: primaryAssetURL, assetKind: AppKitBridge.assetKind(for: primaryAssetURL))
     }
 
     private var previewMetadataChips: [String] {
@@ -2065,15 +2118,15 @@ struct PromptComposerOverlay: View {
     }
 
     private var previewResolutionText: String? {
-        guard let previewImageInfo, previewImageInfo.width > 0, previewImageInfo.height > 0 else {
+        guard let primaryAssetInfo, primaryAssetInfo.width > 0, primaryAssetInfo.height > 0 else {
             return nil
         }
-        return "\(previewImageInfo.width) x \(previewImageInfo.height)"
+        return "\(primaryAssetInfo.width) x \(primaryAssetInfo.height)"
     }
 
     private var previewFormatText: String? {
-        guard let previewImageInfo else { return nil }
-        return previewImageInfo.format.isEmpty ? "IMG" : previewImageInfo.format.uppercased()
+        guard let primaryAssetInfo else { return nil }
+        return primaryAssetInfo.format.isEmpty ? "IMG" : primaryAssetInfo.format.uppercased()
     }
 
     private var extractedStyleTag: String? {
@@ -2200,9 +2253,45 @@ struct PromptComposerOverlay: View {
     }
 
     private func chooseTypeManually(_ type: PromptType) {
+        if shouldConfirmTypeChange(to: type) {
+            pendingTypeChoice = type
+            return
+        }
+        applyTypeChoice(type, preservePrimary: false)
+    }
+
+    private func shouldConfirmTypeChange(to type: PromptType) -> Bool {
+        guard let previousType = resolvedType,
+              previousType != type,
+              primaryAssetURL != nil else {
+            return false
+        }
+        // The draft URL is populated only for an available persisted primary
+        // asset in edit mode, or for a newly selected asset in either mode.
+        // Missing primaries therefore remain switchable without a prompt.
+        return true
+    }
+
+    private func applyTypeChoice(_ type: PromptType, preservePrimary: Bool) {
         let previousType = resolvedType
+        let previousPrimaryURL = primaryAssetURL
         typeMode = .manual(type)
         typeDecision = .manual(type: type)
+        preserveExistingPrimaryAsReference = preservePrimary
+        pendingTypeChoice = nil
+        pendingDeleteType = nil
+        if previousType != type, let previousPrimaryURL {
+            if preservePrimary,
+               !referenceURLs.contains(previousPrimaryURL),
+               editingItem?.assetPath != previousPrimaryURL.path {
+                referenceURLs.append(previousPrimaryURL)
+            }
+            // A type switch must not leave the old primary asset displayed as
+            // the new type's main asset. savePrompt will either preserve this
+            // path as a reference or delete it after the database commit.
+            primaryAssetURL = nil
+            primaryAssetRemovalRequested = isEditing
+        }
         if previousType != type {
             if previousType != nil {
                 parameters = ""
@@ -2211,7 +2300,7 @@ struct PromptComposerOverlay: View {
             modelHint = nil
             formatHint = nil
             if type == .text {
-                moveUnsavedPreviewImageToReferencesIfNeeded()
+                moveUnsavedPrimaryAssetToReferencesIfNeeded()
             }
         }
     }
@@ -2231,7 +2320,7 @@ struct PromptComposerOverlay: View {
                     .joined(separator: "\n")
             }
             if resolvedType == .text {
-                moveUnsavedPreviewImageToReferencesIfNeeded()
+                moveUnsavedPrimaryAssetToReferencesIfNeeded()
             }
             modelId = resolvedType.map { currentMetadata(for: $0).model.id }
             return
@@ -2239,12 +2328,12 @@ struct PromptComposerOverlay: View {
         updateAutomaticTypeDecision()
     }
 
-    private func moveUnsavedPreviewImageToReferencesIfNeeded() {
-        guard let previewImageURL else { return }
-        if !referenceURLs.contains(previewImageURL), editingItem?.assetPath != previewImageURL.path {
-            referenceURLs.append(previewImageURL)
+    private func moveUnsavedPrimaryAssetToReferencesIfNeeded() {
+        guard let primaryAssetURL else { return }
+        if !referenceURLs.contains(primaryAssetURL), editingItem?.assetPath != primaryAssetURL.path {
+            referenceURLs.append(primaryAssetURL)
         }
-        self.previewImageURL = nil
+        self.primaryAssetURL = nil
     }
 
     private func updateAutomaticTypeDecision() {
@@ -2263,12 +2352,17 @@ struct PromptComposerOverlay: View {
             return
         }
         let interpretation = PromptClipboardInterpreter.interpret(prompt)
-        typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        let nextDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if let nextType = nextDecision.type, shouldConfirmTypeChange(to: nextType) {
+            pendingTypeChoice = nextType
+            return
+        }
+        typeDecision = nextDecision
         if let previousType, previousType != resolvedType {
             parameters = ""
         }
         if resolvedType == .text {
-            moveUnsavedPreviewImageToReferencesIfNeeded()
+            moveUnsavedPrimaryAssetToReferencesIfNeeded()
         }
         if let nextModelHint = interpretation.modelHint {
             modelHint = nextModelHint
@@ -2331,7 +2425,9 @@ struct PromptComposerOverlay: View {
             parameters = ""
             note = ""
             saveAsNewVersion = true
-            previewImageURL = nil
+            primaryAssetURL = nil
+            primaryAssetRemovalRequested = false
+            preserveExistingPrimaryAsReference = false
             referenceURLs = []
             smartPasteInterpretation = nil
             smartPasteAppliedPrompt = nil
@@ -2356,11 +2452,13 @@ struct PromptComposerOverlay: View {
                 .joined(separator: "\n")
             note = ""
             saveAsNewVersion = true
-            if item.assetKind == .image, !item.assetPath.isEmpty, FileManager.default.fileExists(atPath: item.assetPath) {
-                previewImageURL = URL(fileURLWithPath: item.assetPath)
+            if item.hasAvailablePrimaryAsset, !item.assetPath.isEmpty {
+                primaryAssetURL = URL(fileURLWithPath: item.assetPath)
             } else {
-                previewImageURL = nil
+                primaryAssetURL = nil
             }
+            primaryAssetRemovalRequested = false
+            preserveExistingPrimaryAsReference = false
             referenceURLs = []
             smartPasteInterpretation = nil
             smartPasteAppliedPrompt = nil
@@ -2386,7 +2484,7 @@ struct PromptComposerOverlay: View {
             tags.isEmpty &&
             parameters.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            previewImageURL == nil &&
+            primaryAssetURL == nil &&
             referenceURLs.isEmpty
     }
 
@@ -2440,7 +2538,7 @@ struct PromptComposerOverlay: View {
             parameters: parameters,
             note: note,
             saveAsNewVersion: saveAsNewVersion,
-            previewImageURL: previewImageURL,
+            primaryAssetURL: primaryAssetURL,
             referenceURLs: referenceURLs,
             smartPasteInterpretation: smartPasteInterpretation,
             smartPasteAppliedPrompt: smartPasteAppliedPrompt
@@ -2461,7 +2559,7 @@ struct PromptComposerOverlay: View {
         parameters = snapshot.parameters
         note = snapshot.note
         saveAsNewVersion = snapshot.saveAsNewVersion
-        previewImageURL = snapshot.previewImageURL
+        primaryAssetURL = snapshot.primaryAssetURL
         referenceURLs = snapshot.referenceURLs
         smartPasteInterpretation = snapshot.smartPasteInterpretation
         smartPasteAppliedPrompt = snapshot.smartPasteAppliedPrompt
@@ -2472,9 +2570,14 @@ struct PromptComposerOverlay: View {
 
         modelHint = interpretation.modelHint
         formatHint = interpretation.formatHint
-        typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        let nextDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if let nextType = nextDecision.type, shouldConfirmTypeChange(to: nextType) {
+            pendingTypeChoice = nextType
+        } else {
+            typeDecision = nextDecision
+        }
         if resolvedType == .text {
-            moveUnsavedPreviewImageToReferencesIfNeeded()
+            moveUnsavedPrimaryAssetToReferencesIfNeeded()
         }
         if let resolvedType {
             modelId = currentMetadata(for: resolvedType).model.id
@@ -2517,10 +2620,12 @@ struct PromptComposerOverlay: View {
         modelHint = fields.hasModel ? interpretation.modelHint : modelHint
         formatHint = fields.hasFormat ? interpretation.formatHint : formatHint
         let matchedTypeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
-        if matchedTypeDecision.type != nil {
+        if let nextType = matchedTypeDecision.type, shouldConfirmTypeChange(to: nextType) {
+            pendingTypeChoice = nextType
+        } else if matchedTypeDecision.type != nil {
             typeDecision = matchedTypeDecision
         }
-        if resolvedType == .text { moveUnsavedPreviewImageToReferencesIfNeeded() }
+        if resolvedType == .text { moveUnsavedPrimaryAssetToReferencesIfNeeded() }
         modelId = resolvedType.map { currentMetadata(for: $0).model.id }
         smartPasteInterpretation = interpretation
         // Preserve the full structured interpretation until the user edits Prompt.
@@ -2588,7 +2693,7 @@ struct PromptComposerOverlay: View {
         let metadata = currentMetadata(for: resolvedType)
         switch mode {
         case .create(_):
-            state.createPrompt(
+            let saved = state.createPrompt(
                 title: cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle,
                 type: resolvedType,
                 modelId: metadata.model.id,
@@ -2596,11 +2701,25 @@ struct PromptComposerOverlay: View {
                 negativePrompt: negativePrompt,
                 tags: tags,
                 parameters: savedParameters,
-                previewImageURL: previewImageURL,
+                primaryAssetURL: primaryAssetURL,
                 referenceURLs: referenceURLs
             )
-        case .edit:
-            state.savePrompt(
+            guard saved else { return }
+        case .edit(let itemID):
+            let primaryUpdate: PrimaryAssetUpdate
+            if primaryAssetRemovalRequested {
+                primaryUpdate = .remove
+            } else if let primaryAssetURL {
+                let oldPath = editingItem?.assetPath ?? ""
+                let oldURL = URL(fileURLWithPath: oldPath).standardizedFileURL.path
+                primaryUpdate = oldPath.isEmpty || oldURL != primaryAssetURL.standardizedFileURL.path
+                    ? .replace(primaryAssetURL)
+                    : .unchanged
+            } else {
+                primaryUpdate = .unchanged
+            }
+            let saved = state.savePrompt(
+                itemID: itemID,
                 title: cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle,
                 type: resolvedType,
                 modelId: metadata.model.id,
@@ -2610,8 +2729,11 @@ struct PromptComposerOverlay: View {
                 parameters: savedParameters,
                 note: note,
                 saveAsNewVersion: saveAsNewVersion,
+                primaryAssetUpdate: primaryUpdate,
+                preserveExistingPrimaryAsReference: preserveExistingPrimaryAsReference,
                 referenceURLs: referenceURLs
             )
+            guard saved else { return }
         }
         initialSignature = draftSignature
         state.closePromptComposer()
@@ -2639,7 +2761,7 @@ struct PromptComposerOverlay: View {
             parameters,
             note,
             "\(saveAsNewVersion)",
-            previewImageURL?.path ?? "",
+            primaryAssetURL?.path ?? "",
             referenceURLs.map(\.path).joined(separator: "\u{1f}")
         ].joined(separator: "\u{1e}")
     }
@@ -2683,18 +2805,24 @@ struct PromptComposerOverlay: View {
         }
     }
 
-    private func setPreviewImage(_ urls: [URL]) {
-        guard !isEditing else { return }
-        let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
-        guard let imageURL = urls.first(where: { imageExtensions.contains($0.pathExtension.lowercased()) }) else { return }
-        guard shouldShowPreviewImage else {
-            appendReferenceImages([imageURL])
+    private func setPrimaryAsset(_ urls: [URL]) {
+        guard let candidateURL = urls.first(where: isSupportedReferenceAsset) else { return }
+        guard shouldShowPrimaryAssetUpload else {
+            appendReferenceImages([candidateURL])
             return
         }
-        previewImageURL = imageURL
+        let candidateKind = AppKitBridge.assetKind(for: candidateURL)
+        guard let candidateType = candidateKind.promptType else { return }
+        if let resolvedType, candidateType != resolvedType {
+            pendingTypeChoice = candidateType
+            pendingPrimaryAssetURL = candidateURL
+            return
+        }
+        primaryAssetURL = candidateURL
+        primaryAssetRemovalRequested = false
     }
 
-    private func handlePreviewImageDrop(_ providers: [NSItemProvider]) -> Bool {
+    private func handlePrimaryAssetDrop(_ providers: [NSItemProvider]) -> Bool {
         guard !isEditing else { return false }
         var handled = false
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -2710,7 +2838,7 @@ struct PromptComposerOverlay: View {
                 }
                 guard let url else { return }
                 DispatchQueue.main.async {
-                    setPreviewImage([url])
+                    setPrimaryAsset([url])
                 }
             }
         }
@@ -2745,6 +2873,23 @@ struct PromptComposerOverlay: View {
             true
         default:
             false
+        }
+    }
+
+    private func isSupportedPrimaryAsset(_ url: URL) -> Bool {
+        switch AppKitBridge.assetKind(for: url) {
+        case .image, .video, .audio:
+            return resolvedType == AppKitBridge.assetKind(for: url).promptType
+        default:
+            return false
+        }
+    }
+
+    private func primaryAssetIcon(for url: URL) -> String {
+        switch AppKitBridge.assetKind(for: url) {
+        case .video: return "film"
+        case .audio: return "waveform"
+        default: return "doc"
         }
     }
 

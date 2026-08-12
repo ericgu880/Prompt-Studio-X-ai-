@@ -78,6 +78,29 @@ enum AppKitBridge {
         return panel.runModal() == .OK ? panel.urls : []
     }
 
+    /// Select exactly one supported primary asset. The caller decides whether
+    /// it replaces the current primary asset or becomes a reference asset.
+    @MainActor
+    static func choosePrimaryAsset(acceptedType: PromptType? = nil) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "选择主素材"
+        panel.message = "可选择图片、视频或音频作为 Prompt 主素材。"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        switch acceptedType {
+        case .image:
+            panel.allowedContentTypes = [.image]
+        case .video:
+            panel.allowedContentTypes = [.movie, .video]
+        case .audio:
+            panel.allowedContentTypes = [.audio]
+        case .text, nil:
+            panel.allowedContentTypes = [.image, .movie, .video, .audio]
+        }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     @MainActor
     static func chooseReferenceImages() -> [URL] {
         let panel = NSOpenPanel()

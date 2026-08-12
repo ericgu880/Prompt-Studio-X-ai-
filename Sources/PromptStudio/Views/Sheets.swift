@@ -14,6 +14,7 @@ struct NewPromptSheet: View {
     @State private var negativePrompt = ""
     @State private var tags = ["风景", "人物"]
     @State private var tagDraft = ""
+    @State private var primaryAssetURL: URL?
     @State private var referenceURLs: [URL] = []
     @State private var isReferenceDropTarget = false
 
@@ -47,6 +48,10 @@ struct NewPromptSheet: View {
         .onChange(of: type) { _, newValue in
             if !modelOptions.contains(where: { $0.id == modelId }) {
                 modelId = defaultModelID(for: newValue)
+            }
+            if let primaryAssetURL,
+               AppKitBridge.assetKind(for: primaryAssetURL).promptType != newValue {
+                self.primaryAssetURL = nil
             }
         }
     }
@@ -87,6 +92,8 @@ struct NewPromptSheet: View {
                     ) {
                         Button("图片 Prompt") { type = .image }
                         Button("视频 Prompt") { type = .video }
+                        Button("音频 Prompt") { type = .audio }
+                        Button("文本 Prompt") { type = .text }
                     }
                 }
 
@@ -115,6 +122,27 @@ struct NewPromptSheet: View {
                 tagInput
             }
 
+            if type != .text {
+                NewPromptField(title: "主素材（可选）", help: "上传匹配类型的图片、视频或音频；不上传时保留虚拟占位封面。") {
+                    Button {
+                        primaryAssetURL = AppKitBridge.choosePrimaryAsset(acceptedType: type)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: primaryAssetURL == nil ? "plus" : "checkmark.circle.fill")
+                            Text(primaryAssetURL?.lastPathComponent ?? "添加主素材")
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 42)
+                        .background(StudioColor.control.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
             NewPromptField(title: "参考资产（可选）", help: "上传图片、音频或视频参考，帮助 Prompt 保持上下文。") {
                 referenceUpload
             }
@@ -127,16 +155,17 @@ struct NewPromptSheet: View {
             Button("取消") { dismiss() }
                 .buttonStyle(NewPromptSecondaryButtonStyle())
             Button("创建") {
-                state.createPrompt(
+                let saved = state.createPrompt(
                     title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名 Prompt" : title,
                     type: type,
                     modelId: modelId,
                     prompt: prompt,
                     negativePrompt: negativePrompt,
                     tags: tags,
+                    primaryAssetURL: primaryAssetURL,
                     referenceURLs: referenceURLs
                 )
-                dismiss()
+                if saved { dismiss() }
             }
             .buttonStyle(NewPromptPrimaryButtonStyle())
         }

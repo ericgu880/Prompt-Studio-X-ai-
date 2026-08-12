@@ -53,7 +53,8 @@ enum ThumbnailService {
 
     @discardableResult
     static func generateThumbnail(for item: PromptItem, libraryURL: URL) throws -> String? {
-        guard FileManager.default.fileExists(atPath: item.assetPath) else { return nil }
+        guard item.hasAvailablePrimaryAsset,
+              FileManager.default.fileExists(atPath: item.assetPath) else { return nil }
         guard item.supportsGeneratedThumbnail else { return nil }
 
         let sourceURL = URL(fileURLWithPath: item.assetPath)
@@ -197,7 +198,7 @@ enum ThumbnailService {
                 withAttributes: lineNumberAttributes
             )
             attributedLine.draw(
-                in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 120 - contentInset, height: lineHeight),
+                in: NSRect(x: panelRect.minX + 120, y: y, width: panelRect.width - 120 - contentInset, height: lineHeight)
             )
             y -= lineHeight
         }

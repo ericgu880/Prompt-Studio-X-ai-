@@ -553,7 +553,11 @@ struct InspectorView: View {
             ZStack(alignment: .leading) {
                 Color.clear
 
-                AssetMediaView(item: item, contentMode: .fit)
+                if item.isMediaPromptPlaceholder {
+                    PromptVirtualCover(type: item.type)
+                } else {
+                    AssetMediaView(item: item, contentMode: .fit)
+                }
                     .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(
@@ -694,12 +698,18 @@ struct InspectorView: View {
     }
 
     private func mediaPromptActions(_ item: PromptItem) -> [SidePanelAction] {
-        [
+        var actions: [SidePanelAction] = [
             SidePanelAction(icon: .pencil, help: "编辑") { state.requestInlineEdit(item) },
             SidePanelAction(icon: .copy, help: "复制提示词") { state.copySelectedPrompt() },
-            SidePanelAction(icon: .circleArrowDown, help: "下载") { state.modal = .export },
             SidePanelAction(icon: .history, help: "历史版本") { state.modal = .versionHistory }
         ]
+        if item.hasAvailablePrimaryAsset {
+            actions.insert(
+                SidePanelAction(icon: .circleArrowDown, help: "下载") { state.modal = .export },
+                at: 2
+            )
+        }
+        return actions
     }
 
     private func mediaActionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
@@ -842,15 +852,17 @@ struct InspectorView: View {
                 .buttonStyle(IconCircleButtonStyle())
                 .help("编辑")
 
-                Button {
-                    state.modal = .export
-                } label: {
-                    LucideIcon(kind: .circleArrowDown)
-                        .frame(width: 14, height: 14)
-                        .accessibilityLabel("导出")
+                if item.hasAvailablePrimaryAsset {
+                    Button {
+                        state.modal = .export
+                    } label: {
+                        LucideIcon(kind: .circleArrowDown)
+                            .frame(width: 14, height: 14)
+                            .accessibilityLabel("导出")
+                    }
+                    .buttonStyle(IconCircleButtonStyle())
+                    .help("导出")
                 }
-                .buttonStyle(IconCircleButtonStyle())
-                .help("导出")
 
                 Button {
                     if item.isTextDocumentLike {
@@ -957,6 +969,7 @@ struct InspectorView: View {
         }
 
         state.savePrompt(
+            itemID: item.id,
             title: item.title,
             type: item.type,
             modelId: item.modelId,
