@@ -2,6 +2,419 @@ import Foundation
 import Testing
 @testable import PromptStudioCaptureHost
 
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+
+@Test("image staging accepts ordered chunks and returns only a generated token")
+func imageStagingAcceptsOrderedChunksAndGeneratedToken() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("hello image".utf8)
+    let digest = sha256Hex(bytes)
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-1", capturedAt: "2026-08-13T00:00:00.000Z")
+    let store = ImageStagingStore(rootDirectory: root)
+
+    let session = try store.begin(candidate: candidate, expectedByteCount: Int64(bytes.count), sha256: digest)
+    #expect(!session.stagingToken.isEmpty)
+    #expect(!session.stagingToken.contains("/"))
+    #expect(session.stagingToken != root.path)
+    try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: bytes.base64EncodedString())
+    let staged = try store.finish(captureID: candidate.captureID, byteCount: Int64(bytes.count), sha256: digest)
+    #expect(staged.stagingToken == session.stagingToken)
+    #expect(try Data(contentsOf: staged.fileURL) == bytes)
+}
+
+@Test("image staging atomically skips a preoccupied token and never follows a symlink")
+func imageStagingAtomicallySkipsSymlinkCollision() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-collision-\(UUID().uuidString)", isDirectory: true)
+    let target = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-target-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: target)
+    }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let original = Data("must-not-change".utf8)
+    try original.write(to: target)
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("collision"), withDestinationURL: target)
+    var tokens = ["collision", "next-token"]
+    let store = ImageStagingStore(rootDirectory: root, tokenGenerator: { tokens.removeFirst() })
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-collision", capturedAt: "2026-08-13T00:00:00.000Z")
+
+    let session = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    #expect(session.stagingToken == "next-token")
+    #expect(try Data(contentsOf: target) == original)
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("collision").path))
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("next-token").path))
+}
+
+@Test("image staging rejects duplicate and out-of-order chunks")
+func imageStagingRejectsDuplicateAndOutOfOrderChunks() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = ImageStagingStore(rootDirectory: root)
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-order", capturedAt: "2026-08-13T00:00:00.000Z")
+    let bytes = Data("chunk".utf8)
+    let digest = sha256Hex(bytes)
+    _ = try store.begin(candidate: candidate, expectedByteCount: Int64(bytes.count), sha256: digest)
+    #expect(throws: ImageStagingError.outOfOrderChunk) {
+        try store.appendChunk(captureID: candidate.captureID, index: 1, base64Data: bytes.base64EncodedString())
+    }
+    #expect(store.activeSession == nil)
+
+    _ = try store.begin(candidate: candidate, expectedByteCount: Int64(bytes.count * 2), sha256: sha256Hex(bytes + bytes))
+    try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: bytes.base64EncodedString())
+    #expect(throws: ImageStagingError.duplicateChunk) {
+        try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: bytes.base64EncodedString())
+    }
+    #expect(store.activeSession == nil)
+}
+
+@Test("image staging enforces raw chunk, 50 MiB, hash, and truncation limits")
+func imageStagingEnforcesLimitsHashAndTruncation() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = ImageStagingStore(rootDirectory: root)
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-limits", capturedAt: "2026-08-13T00:00:00.000Z")
+    let oversizedChunk = Data(repeating: 0x61, count: ImageStagingStore.maxRawChunkBytes + 1).base64EncodedString()
+    #expect(throws: ImageStagingError.chunkTooLarge) {
+        _ = try store.begin(candidate: candidate, expectedByteCount: Int64(ImageStagingStore.maxRawChunkBytes + 1), sha256: String(repeating: "0", count: 64))
+        try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: oversizedChunk)
+    }
+    #expect(store.activeSession == nil)
+
+    #expect(throws: ImageStagingError.imageTooLarge) {
+        _ = try store.begin(candidate: candidate, expectedByteCount: ImageStagingStore.maxImageBytes + 1, sha256: String(repeating: "0", count: 64))
+    }
+
+    let bytes = Data("truncated".utf8)
+    _ = try store.begin(candidate: candidate, expectedByteCount: Int64(bytes.count + 1), sha256: sha256Hex(bytes))
+    try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: bytes.base64EncodedString())
+    #expect(throws: ImageStagingError.truncatedImage) {
+        try store.finish(captureID: candidate.captureID, byteCount: Int64(bytes.count), sha256: sha256Hex(bytes))
+    }
+    #expect(store.activeSession == nil)
+
+    _ = try store.begin(candidate: candidate, expectedByteCount: Int64(bytes.count), sha256: String(repeating: "0", count: 64))
+    try store.appendChunk(captureID: candidate.captureID, index: 0, base64Data: bytes.base64EncodedString())
+    #expect(throws: ImageStagingError.hashMismatch) {
+        try store.finish(captureID: candidate.captureID, byteCount: Int64(bytes.count), sha256: String(repeating: "0", count: 64))
+    }
+    #expect(store.activeSession == nil)
+}
+
+@Test("image staging cleans up on cancel, disconnect, timeout, TTL, and forged paths")
+func imageStagingCleansUpAndRejectsForgedPaths() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var now = Date(timeIntervalSince1970: 100)
+    let store = ImageStagingStore(rootDirectory: root, clock: { now }, tokenGenerator: { "generated-token" })
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-cleanup", capturedAt: "2026-08-13T00:00:00.000Z")
+    #expect(throws: ImageStagingError.clientPathRejected) {
+        try store.begin(candidate: candidate, expectedByteCount: 0, sha256: "", clientPath: "/tmp/forged")
+    }
+    _ = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    let token = try #require(store.activeSession?.stagingToken)
+    let stagedURL = try #require(store.resolve(token: token))
+    #expect(stagedURL.path.hasSuffix(token))
+    let rootAttributes = try FileManager.default.attributesOfItem(atPath: root.path)
+    let fileAttributes = try FileManager.default.attributesOfItem(atPath: stagedURL.path)
+    #expect((rootAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+    #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    #expect(store.resolve(token: "../forged") == nil)
+    #expect(store.resolve(token: "/tmp/forged") == nil)
+    store.cancel(captureID: candidate.captureID)
+    #expect(store.activeSession == nil)
+
+    _ = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    now = now.addingTimeInterval(ImageStagingStore.transferTimeout + 1)
+    store.pruneExpired(now: now)
+    #expect(store.activeSession == nil)
+
+    _ = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    let completed = try store.finish(captureID: candidate.captureID, byteCount: 0, sha256: sha256Hex(Data()))
+    #expect(FileManager.default.fileExists(atPath: completed.fileURL.path))
+    now = now.addingTimeInterval(ImageStagingStore.completedTTL + 1)
+    store.pruneExpired(now: now)
+    #expect(!FileManager.default.fileExists(atPath: completed.fileURL.path))
+
+    _ = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    store.disconnect()
+    #expect(store.activeSession == nil)
+
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let orphan = root.appendingPathComponent("orphan-token")
+    try Data("orphan".utf8).write(to: orphan)
+    try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-(ImageStagingStore.completedTTL + 1))], ofItemAtPath: orphan.path)
+    store.pruneExpired(now: now)
+    #expect(!FileManager.default.fileExists(atPath: orphan.path))
+}
+
+@Test("capture host response carries optional retryability without changing text fields")
+func captureHostResponseCarriesRetryability() throws {
+    let encoded = try JSONEncoder().encode(CaptureHostResponse(type: "failed", captureID: "busy", code: "image-busy", retryable: true))
+    let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    #expect(object["retryable"] as? Bool == true)
+    let decoded = try JSONDecoder().decode(CaptureHostResponse.self, from: encoded)
+    #expect(decoded.retryable == true)
+}
+
+@Test("image begin rejects candidate integrity fields that disagree with the outer envelope")
+func imageBeginRejectsCandidateIntegrityMismatch() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-integrity-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let origin = CaptureOriginAllowlist.developmentOrigin
+    let emptyDigest = sha256Hex(Data())
+    let byteCountMismatch = BrowserImageCaptureCandidate(
+        captureID: "image-integrity-byte-count",
+        byteCount: 1,
+        sha256: emptyDigest,
+        capturedAt: "2026-08-13T00:00:00.000Z"
+    )
+    let hashMismatch = BrowserImageCaptureCandidate(
+        captureID: "image-integrity-hash",
+        byteCount: 0,
+        sha256: String(repeating: "0", count: 64),
+        capturedAt: "2026-08-13T00:00:00.000Z"
+    )
+    let first = try imageRequestJSON([
+        "type": "imageBegin", "origin": origin,
+        "candidate": try jsonObject(byteCountMismatch),
+        "expectedByteCount": 0, "sha256": emptyDigest
+    ])
+    let second = try imageRequestJSON([
+        "type": "imageBegin", "origin": origin,
+        "candidate": try jsonObject(hashMismatch),
+        "expectedByteCount": 0, "sha256": emptyDigest
+    ])
+    let inputURL = try temporaryFile(first + second)
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-integrity-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: origin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: UnixSocketCaptureForwarder(streamingExchange: { _, _, _, _ in fatalError("integrity mismatch must not reach app") }),
+        stagingStore: ImageStagingStore(rootDirectory: root)
+    )
+    try host.run()
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    var responses: [CaptureHostResponse] = []
+    while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
+        responses.append(try JSONDecoder().decode(CaptureHostResponse.self, from: frame))
+    }
+    #expect(responses.map(\.type) == ["failed", "failed"])
+    #expect(responses.map(\.code) == ["image-invalid", "image-invalid"])
+}
+
+@Test("forwarder passes caller terminal types to the socket exchange")
+func forwarderPassesCallerTerminalTypes() throws {
+    var observedTerminalTypes: Set<String> = []
+    var frames: [CaptureHostResponse] = []
+    let forwarder = UnixSocketCaptureForwarder(terminalStreamingExchange: { _, _, _, terminalTypes, sink in
+        observedTerminalTypes = terminalTypes
+        try sink(JSONEncoder().encode(CaptureHostResponse(type: "ack", captureID: "image-terminal")))
+        if terminalTypes.contains("saved") {
+            try sink(JSONEncoder().encode(CaptureHostResponse(type: "saved", captureID: "image-terminal")))
+        }
+    })
+    try forwarder.forwardStreaming(Data("image-end".utf8), responseSink: { payload in
+        frames.append(try JSONDecoder().decode(CaptureHostResponse.self, from: payload))
+    }, terminalTypes: ["saved", "cancelled", "failed"])
+    #expect(observedTerminalTypes == ["saved", "cancelled", "failed"])
+    #expect(frames.map(\.type) == ["ack", "saved"])
+
+    frames.removeAll()
+    try forwarder.forwardStreaming(Data("image-preview".utf8), responseSink: { payload in
+        frames.append(try JSONDecoder().decode(CaptureHostResponse.self, from: payload))
+    }, terminalTypes: ["ack"])
+    #expect(observedTerminalTypes == ["ack"])
+    #expect(frames.map(\.type) == ["ack"])
+}
+
+@Test("host stages image frames and forwards a tokenized candidate without a path")
+func hostStagesImageFramesAndForwardsTokenizedCandidate() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let origin = CaptureOriginAllowlist.developmentOrigin
+    let bytes = Data("image bytes".utf8)
+    let digest = sha256Hex(bytes)
+    let candidate = BrowserImageCaptureCandidate(
+        captureID: "image-host-1",
+        pageTitle: "Page",
+        pageURL: "https://example.test/private?token=redact",
+        siteName: "example.test",
+        altText: "A picture",
+        originalFileName: "picture.png",
+        mimeType: "image/png",
+        capturedAt: "2026-08-13T00:00:00.000Z"
+    )
+    let begin = try imageRequestJSON([
+        "type": "imageBegin",
+        "origin": origin,
+        "candidate": try jsonObject(candidate),
+        "expectedByteCount": bytes.count,
+        "sha256": digest
+    ])
+    let chunk = try imageRequestJSON([
+        "type": "imageChunk",
+        "origin": origin,
+        "captureID": candidate.captureID,
+        "index": 0,
+        "base64Data": bytes.base64EncodedString()
+    ])
+    let end = try imageRequestJSON([
+        "type": "imageEnd",
+        "origin": origin,
+        "captureID": candidate.captureID,
+        "byteCount": bytes.count,
+        "sha256": digest
+    ])
+    let inputURL = try temporaryFile(begin + chunk + end)
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let appResponses = [
+        CaptureHostResponse(type: "presented", captureID: candidate.captureID),
+        CaptureHostResponse(type: "animate", captureID: candidate.captureID, mouthScreenPoint: CaptureScreenPoint(x: 2, y: 3)),
+        CaptureHostResponse(type: "saved", captureID: candidate.captureID)
+    ]
+    let appPayloads = try appResponses.map { try JSONEncoder().encode($0) }
+    var forwardedPayload: Data?
+    let forwarder = UnixSocketCaptureForwarder(streamingExchange: { payload, _, _, sink in
+        forwardedPayload = payload
+        for response in appPayloads { try sink(response) }
+    })
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: origin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: forwarder,
+        stagingStore: ImageStagingStore(rootDirectory: root)
+    )
+    try host.run()
+
+    let payload = try #require(forwardedPayload)
+    let appObject = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+    #expect(appObject["type"] as? String == "imageCapture")
+    #expect(appObject["stagingToken"] as? String != nil)
+    #expect(appObject["stagedFilePath"] == nil)
+    #expect(appObject["fileURL"] == nil)
+    #expect(appObject["path"] == nil)
+    #expect(String(decoding: payload, as: UTF8.self).contains("private?token=redact"))
+
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    var responses: [CaptureHostResponse] = []
+    while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
+        responses.append(try JSONDecoder().decode(CaptureHostResponse.self, from: frame))
+    }
+    #expect(responses.map(\.type) == ["ack", "ack", "presented", "animate", "saved"])
+    #expect(responses.last?.captureID == candidate.captureID)
+}
+
+@Test("host reports image busy, rejects forged paths, and enforces image origin")
+func hostReportsImageBusyAndRejectsForgeryAndOrigin() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-busy-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let origin = CaptureOriginAllowlist.developmentOrigin
+    let digest = String(repeating: "0", count: 64)
+    let candidate = BrowserImageCaptureCandidate(captureID: "busy-image", capturedAt: "2026-08-13T00:00:00.000Z")
+    let candidateObject = try jsonObject(candidate)
+    let firstBegin = try imageRequestJSON(["type": "imageBegin", "origin": origin, "candidate": candidateObject, "expectedByteCount": 0, "sha256": sha256Hex(Data())])
+    let secondBegin = try imageRequestJSON(["type": "imageBegin", "origin": origin, "candidate": ["captureID": "busy-image-2", "capturedAt": "2026-08-13T00:00:00.000Z"], "expectedByteCount": 0, "sha256": sha256Hex(Data())])
+    let forged = try imageRequestJSON(["type": "imageBegin", "origin": origin, "candidate": candidateObject, "expectedByteCount": 0, "sha256": digest, "path": "/tmp/forged-local-path"])
+    let wrongOrigin = try imageRequestJSON(["type": "imageBegin", "origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop/", "candidate": candidateObject, "expectedByteCount": 0, "sha256": sha256Hex(Data())])
+    let inputURL = try temporaryFile(firstBegin + secondBegin + forged + wrongOrigin)
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-busy-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: origin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: UnixSocketCaptureForwarder(streamingExchange: { _, _, _, _ in fatalError("no app request expected") }),
+        stagingStore: ImageStagingStore(rootDirectory: root)
+    )
+    try host.run()
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    var responses: [CaptureHostResponse] = []
+    while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
+        responses.append(try JSONDecoder().decode(CaptureHostResponse.self, from: frame))
+    }
+    #expect(responses.map(\.type) == ["ack", "failed", "failed", "failed"])
+    #expect(responses[1].code == "image-busy")
+    #expect(responses[1].retryable == true)
+    #expect(responses[2].code == "image-path-rejected")
+    #expect(responses[3].code == "origin-mismatch" || responses[3].code == "origin-not-allowed")
+}
+
+@Test("host forwards bounded drag preview acknowledgements through the app socket")
+func hostForwardsDragPreviewAcknowledgement() throws {
+    let origin = CaptureOriginAllowlist.developmentOrigin
+    let preview = try imageRequestJSON([
+        "type": "imageDragPreview",
+        "origin": origin,
+        "captureID": "drag-1",
+        "screenPoint": ["x": 12, "y": 24],
+        "insidePet": true,
+        "drop": false
+    ])
+    let inputURL = try temporaryFile(preview)
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-preview-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    var forwarded: Data?
+    let appAck = try JSONEncoder().encode(CaptureHostResponse(type: "ack", captureID: "drag-1", code: "preview-accepted"))
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: origin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: UnixSocketCaptureForwarder(streamingExchange: { payload, _, _, sink in
+            forwarded = payload
+            try sink(appAck)
+        }),
+        stagingStore: ImageStagingStore(rootDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-preview-stage-\(UUID().uuidString)"))
+    )
+    try host.run()
+    let forwardedObject = try #require(forwarded.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+    #expect(forwardedObject["type"] as? String == "imageDragPreview")
+    #expect(forwardedObject["captureID"] as? String == "drag-1")
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    let responseFrame = try #require(try NativeMessagingFramer.readFrame(from: outputHandle))
+    let response = try #require(try? JSONDecoder().decode(CaptureHostResponse.self, from: responseFrame))
+    #expect(response.type == "ack")
+    #expect(response.code == "preview-accepted")
+}
+
+private func imageRequestJSON(_ object: [String: Any]) throws -> Data {
+    try NativeMessagingFramer.encode(JSONSerialization.data(withJSONObject: object))
+}
+
+private func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+    try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+}
+
+private func sha256Hex(_ data: Data) -> String {
+#if canImport(CryptoKit)
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+#else
+    ""
+#endif
+}
+
 @Test("native messaging framing round trips little-endian JSON")
 func nativeMessagingFramingRoundTrips() throws {
     let payload = Data(#"{"type":"capture","text":"hello"}"#.utf8)
