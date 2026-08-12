@@ -180,6 +180,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
     public let type: String
     public let captureID: String
     public let code: String?
+    public let retryable: Bool?
     public let selectedText: String?
     public let message: String?
     public let mouthScreenPoint: CaptureScreenPoint?
@@ -190,6 +191,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         case status
         case captureID
         case code
+        case retryable
         case message
         case selectedText
         case text
@@ -202,6 +204,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         type: String,
         captureID: String,
         code: String? = nil,
+        retryable: Bool? = nil,
         selectedText: String? = nil,
         message: String? = nil,
         mouthScreenPoint: CaptureScreenPoint? = nil,
@@ -210,6 +213,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         self.type = type
         self.captureID = captureID
         self.code = code
+        self.retryable = retryable
         self.selectedText = selectedText
         self.message = message
         self.mouthScreenPoint = mouthScreenPoint
@@ -224,6 +228,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         type = rawType == "captureResult" ? "failed" : rawType
         captureID = try values.decodeIfPresent(String.self, forKey: .captureID) ?? ""
         code = try values.decodeIfPresent(String.self, forKey: .code)
+        retryable = try values.decodeIfPresent(Bool.self, forKey: .retryable)
         message = try values.decodeIfPresent(String.self, forKey: .message)
             ?? code
         let selectedTextValue = try values.decodeIfPresent(String.self, forKey: .selectedText)
@@ -240,6 +245,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         try values.encode(type, forKey: .type)
         try values.encode(captureID, forKey: .captureID)
         try values.encodeIfPresent(code, forKey: .code)
+        try values.encodeIfPresent(retryable, forKey: .retryable)
         try values.encodeIfPresent(message, forKey: .message)
         try values.encodeIfPresent(selectedText, forKey: .selectedText)
         try values.encodeIfPresent(mouthScreenPoint, forKey: .mouthScreenPoint)
