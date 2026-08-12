@@ -162,11 +162,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             model = matchedModel
         } else {
             type = PromptTypeClassifier.classify(text: input.prompt)
-            if let requestedModel, !requestedModel.isEmpty {
-                model = ModelProfile(id: requestedModel, name: requestedModel, type: type, parameters: [])
-            } else {
-                model = try ensureCaptureModel(for: type)
-            }
+            model = try ensureCaptureModel(for: type)
         }
         let folder = try resolveFolder(input.folderID)
         let id = UUID().uuidString

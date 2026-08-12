@@ -662,9 +662,6 @@ public final class PromptRepository: @unchecked Sendable {
             return destination
         } catch {
             try? fileManager.removeItem(at: temporary)
-            if !destinationExistedBefore {
-                try? fileManager.removeItem(at: destination)
-            }
             throw error
         }
     }

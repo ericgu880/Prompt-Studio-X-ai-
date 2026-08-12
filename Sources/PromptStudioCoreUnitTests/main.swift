@@ -1452,6 +1452,11 @@ func testAutomationServiceCreatesTypedPromptPlaceholdersAndMarkdown() throws {
     try expect(vague.type == .image && vague.modelId == "unspecified_image", "an unspecified model should follow the image fallback type")
     try expect(vague.assetKind == .image && vague.assetPath.isEmpty, "an unspecified media prompt should remain file-less")
 
+    let unknownModel = try service.createPrompt(
+        AutomationCreatePromptInput(title: "Unknown model", prompt: "生成 5 秒视频", model: "Not Installed")
+    )
+    try expect(unknownModel.type == .video && unknownModel.modelId == "unspecified_video", "an unknown model should use the final type's unspecified model")
+
     let text = try service.createPrompt(
         AutomationCreatePromptInput(title: "Writing", prompt: "写一篇关于森林的文章")
     )
@@ -1474,6 +1479,11 @@ func testAutomationServiceCreatesTypedPromptPlaceholdersAndMarkdown() throws {
         includingPropertiesForKeys: nil
     )
     try expect(failedDocuments.isEmpty, "failed createPrompt should not leave an orphan Markdown file")
+
+    let firstMarkdown = try repository.writeMarkdownPromptAsset(promptID: "collision", title: "First", prompt: "first")
+    let secondMarkdown = try repository.writeMarkdownPromptAsset(promptID: "collision", title: "Second", prompt: "second")
+    try expect(firstMarkdown != secondMarkdown, "Markdown asset names should remain unique")
+    try expect(FileManager.default.fileExists(atPath: firstMarkdown.path), "writing a second Markdown asset must not delete the first")
 }
 
 func testAutomationServiceImportsTextMetadata() throws {
