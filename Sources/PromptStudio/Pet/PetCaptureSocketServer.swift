@@ -421,7 +421,12 @@ final class PetCaptureSocketServer {
     private func receiveOutcome(_ object: Any?) {
         guard let outcome = object as? PetCaptureOutcome,
               pendingIDs.contains(outcome.captureID) else { return }
-        activeImageCaptureID = nil
+        if PetImageCaptureAdmission.shouldReleaseActiveImage(
+            activeCaptureID: activeImageCaptureID,
+            outcomeCaptureID: outcome.captureID
+        ) {
+            activeImageCaptureID = nil
+        }
         terminalOutcomes[outcome.captureID] = outcome
         pendingIDs.remove(outcome.captureID)
         let waiterDictionary = pendingWaiters.removeValue(forKey: outcome.captureID)

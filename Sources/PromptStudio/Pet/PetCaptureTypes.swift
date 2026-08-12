@@ -458,6 +458,24 @@ enum PetCaptureAdmission {
     }
 }
 
+enum PetImageCaptureAdmission {
+    static func canBeginDrag(
+        state: PetState,
+        hasPendingText: Bool,
+        hasPendingImage: Bool
+    ) -> Bool {
+        guard !hasPendingText, !hasPendingImage else { return false }
+        return state == .idle || state == .hidden
+    }
+
+    static func shouldReleaseActiveImage(
+        activeCaptureID: String?,
+        outcomeCaptureID: String
+    ) -> Bool {
+        activeCaptureID != nil && activeCaptureID == outcomeCaptureID
+    }
+}
+
 enum PetCaptureNotifications {
     static func postHiddenCompletion(_ outcome: PetCaptureOutcome) {
         NotificationCenter.default.post(name: .petHiddenCaptureCompleted, object: outcome)

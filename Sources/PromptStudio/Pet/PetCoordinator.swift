@@ -223,7 +223,8 @@ final class PetCoordinator: ObservableObject {
             return .failed(captureID: request.captureID, message: PetCaptureError.disabled.localizedDescription, code: "capture-disabled")
         }
         let isDrop = imagePhase.isDropped && imagePhase.captureID == request.captureID
-        if (!isDrop && imagePhase.isActive) || (!isDrop && pendingImageRequest != nil) || (!isDrop && pendingRequest != nil) {
+        let machineIsAvailable = machine.state == .idle || machine.state == .hidden
+        if !isDrop && (imagePhase.isActive || pendingImageRequest != nil || pendingRequest != nil || !machineIsAvailable) {
             try? FileManager.default.removeItem(at: stagedFileURL)
             return imageBusyOutcome(captureID: request.captureID)
         }
@@ -322,6 +323,13 @@ final class PetCoordinator: ObservableObject {
 
     func receiveImageDragPreview(_ preview: PetImageDragPreview) -> PetImageDragFeedback {
         if !imagePhase.isActive {
+            guard PetImageCaptureAdmission.canBeginDrag(
+                state: machine.state,
+                hasPendingText: pendingRequest != nil,
+                hasPendingImage: pendingImageRequest != nil
+            ) else {
+                return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
+            }
             let hidden = isSessionHidden || machine.state == .hidden
             guard imagePhase.begin(captureID: preview.captureID, temporarilyShown: hidden) else {
                 return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
@@ -361,7 +369,7 @@ final class PetCoordinator: ObservableObject {
         // Hidden mode intentionally bypasses the visible state machine and
         // saves directly; visible requests must be the sole owner of idle →
         // asking so a second browser request cannot replace the first card.
-        if PetCaptureAdmission.isBusy(
+        if imagePhase.isActive || pendingImageRequest != nil || PetCaptureAdmission.isBusy(
             state: machine.state,
             hasPendingRequest: pendingRequest != nil,
             hidden: hidden

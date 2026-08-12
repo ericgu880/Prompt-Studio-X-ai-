@@ -215,6 +215,11 @@ struct PromptStudioPetTests {
         check(imageDrop.consumeFinalAck(sequence: finalSequence - 1, insidePet: true, mouthPoint: .init(x: 5, y: 6)) == .waiting, "image drag rejects stale final ACK", failures: &failures)
         check(imageDrop.consumeFinalAck(sequence: finalSequence, insidePet: true, mouthPoint: .init(x: 5, y: 6)) == .drop, "image drag drops only on exact native hit", failures: &failures)
         check(imageDrop.shouldRestoreHiddenPet, "image drag restores temporary hidden presentation", failures: &failures)
+        check(PetImageCaptureAdmission.canBeginDrag(state: .idle, hasPendingText: false, hasPendingImage: false), "image drag is admitted from idle", failures: &failures)
+        check(!PetImageCaptureAdmission.canBeginDrag(state: .asking, hasPendingText: true, hasPendingImage: false), "image drag cannot corrupt an active text confirmation", failures: &failures)
+        check(!PetImageCaptureAdmission.canBeginDrag(state: .success, hasPendingText: false, hasPendingImage: false), "image drag waits for terminal animation reset", failures: &failures)
+        check(!PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "text-result"), "text outcomes cannot release an active image lock", failures: &failures)
+        check(PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "image-lock"), "matching image outcome releases its lock", failures: &failures)
 
         var consecutiveRequestCount = 0
         let consecutiveDirectory = URL(fileURLWithPath: "/tmp/pspet-consecutive-\(UUID().uuidString.prefix(8))", isDirectory: true)
