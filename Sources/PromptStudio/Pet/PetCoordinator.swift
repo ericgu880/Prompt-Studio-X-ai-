@@ -15,6 +15,7 @@ final class PetCoordinator: ObservableObject {
 
     private let preferencesStore: PetPreferencesStore
     private var preferenceObserver: NSObjectProtocol?
+    private var captureDisconnectObserver: NSObjectProtocol?
     private var didStart = false
     private var resetTask: Task<Void, Never>?
 
@@ -74,6 +75,16 @@ final class PetCoordinator: ObservableObject {
                 }
             }
         }
+        captureDisconnectObserver = NotificationCenter.default.addObserver(
+            forName: .petCaptureClientDisconnected,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let captureID = notification.object as? String else { return }
+            Task { @MainActor [weak self] in
+                self?.abandonPendingCapture(captureID: captureID)
+            }
+        }
 
         if preferences.showOnLaunch {
             show()
@@ -92,7 +103,20 @@ final class PetCoordinator: ObservableObject {
             NotificationCenter.default.removeObserver(preferenceObserver)
             self.preferenceObserver = nil
         }
+        if let captureDisconnectObserver {
+            NotificationCenter.default.removeObserver(captureDisconnectObserver)
+            self.captureDisconnectObserver = nil
+        }
         panelController.hide()
+    }
+
+    private func abandonPendingCapture(captureID: String) {
+        guard pendingRequest?.captureID == captureID else { return }
+        pendingRequest = nil
+        panelController.setAsking(false)
+        resetTask?.cancel()
+        _ = machine.transition(.cancel)
+        _ = machine.transition(.reset)
     }
 
     private func enableBrowserConnection() {

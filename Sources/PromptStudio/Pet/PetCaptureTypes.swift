@@ -238,5 +238,6 @@ extension Notification.Name {
     static let petCaptureFailed = Notification.Name("PromptStudio.petCaptureFailed")
     static let petHiddenCaptureCompleted = Notification.Name("PromptStudio.petHiddenCaptureCompleted")
     static let petCaptureSourceShouldClear = Notification.Name("PromptStudio.petCaptureSourceShouldClear")
+    static let petCaptureClientDisconnected = Notification.Name("PromptStudio.petCaptureClientDisconnected")
     static let petPreferencesDidChange = Notification.Name("PromptStudio.petPreferencesDidChange")
 }

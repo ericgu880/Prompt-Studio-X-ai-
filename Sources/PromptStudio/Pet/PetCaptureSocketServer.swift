@@ -435,6 +435,16 @@ final class PetCaptureSocketServer {
                 if Task.isCancelled { return }
                 continue
             }
+            var noSigPipe: Int32 = 1
+            _ = withUnsafePointer(to: &noSigPipe) { pointer in
+                Darwin.setsockopt(
+                    client,
+                    SOL_SOCKET,
+                    SO_NOSIGPIPE,
+                    pointer,
+                    socklen_t(MemoryLayout<Int32>.size)
+                )
+            }
             Task.detached(priority: .utility) { [weak self] in
                 await self?.serve(clientDescriptor: client)
             }
@@ -477,8 +487,10 @@ final class PetCaptureSocketServer {
     private func disconnect(captureID: String) {
         pendingIDs.remove(captureID)
         terminalOutcomes.removeValue(forKey: captureID)
-        guard let waiterDictionary = pendingWaiters.removeValue(forKey: captureID) else { return }
-        waiterDictionary.values.forEach { $0.resume(returning: nil) }
+        if let waiterDictionary = pendingWaiters.removeValue(forKey: captureID) {
+            waiterDictionary.values.forEach { $0.resume(returning: nil) }
+        }
+        NotificationCenter.default.post(name: .petCaptureClientDisconnected, object: captureID)
     }
 
     private nonisolated func followUpResponses(for outcome: PetCaptureOutcome) async -> [Data] {

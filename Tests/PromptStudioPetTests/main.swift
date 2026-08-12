@@ -240,6 +240,14 @@ struct PromptStudioPetTests {
             try? await Task.sleep(nanoseconds: 80_000_000)
             return .presented(captureID: request.id)
         }
+        var disconnectedCaptureID: String?
+        let disconnectObserver = NotificationCenter.default.addObserver(
+            forName: .petCaptureClientDisconnected,
+            object: nil,
+            queue: nil
+        ) { notification in
+            disconnectedCaptureID = notification.object as? String
+        }
         disconnectServer.start()
         check(disconnectServer.isRunning, "disconnect socket starts: \(disconnectServer.lastStartError ?? "unknown")", failures: &failures)
         let disconnectClientTask = Task.detached {
@@ -252,10 +260,12 @@ struct PromptStudioPetTests {
             Darwin.close(descriptor)
         }
         _ = try? await disconnectClientTask.value
-        for _ in 0..<100 where !disconnectServer.pendingCaptureIDs.isEmpty {
+        for _ in 0..<100 where disconnectedCaptureID == nil {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         check(!disconnectServer.pendingCaptureIDs.contains("drop-1"), "failed initial write releases pending capture", failures: &failures)
+        check(disconnectedCaptureID == "drop-1", "client disconnect releases coordinator capture", failures: &failures)
+        NotificationCenter.default.removeObserver(disconnectObserver)
         disconnectServer.stop()
 
         if failures.isEmpty {
