@@ -1605,6 +1605,7 @@ do {
     try testPromptComposerMetadataPolicyUsesExactSameTypeModels()
     try testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown()
     try testPromptClipboardInterpreterInfersExplicitTextOutputFormats()
+    try await runReferenceThumbnailServiceTests()
     try testPromptRepositoryBatchFolderUpdateRollsBack()
     try testPromptRepositoryFolderUpdatePreservesVersions()
     print("PromptStudioCoreUnitTests passed")

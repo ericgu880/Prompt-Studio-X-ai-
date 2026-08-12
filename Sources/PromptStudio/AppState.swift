@@ -370,6 +370,10 @@ final class AppState: ObservableObject {
     private var activeThumbnailGenerationIDs: Set<UUID> = []
     private var activeThumbnailGenerationBatches: [UUID: Set<String>] = [:]
     private var activeThumbnailItemIDs: Set<String> = []
+    private var referenceThumbnailService: ReferenceThumbnailService?
+    private var referenceThumbnailBackfillTask: Task<Void, Never>?
+    private var referenceThumbnailPriorityTask: Task<Void, Never>?
+    private var inspectorSelectionStartedAt: [String: Double] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private var isBatchingFilterUpdate = false
     private var navigationBackStack: [NavigationSnapshot] = []
@@ -525,6 +529,12 @@ final class AppState: ObservableObject {
     private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) {
         stopLibraryBackgroundWork()
         authorizedLibraryContext = context
+        referenceThumbnailService = ReferenceThumbnailService.shared(
+            libraryURL: context.url,
+            probe: { event in
+                Self.recordReferenceThumbnailProbe(event)
+            }
+        )
         models = data.models
         folders = data.folders
         expandedFolderIDs = Set(data.folders.map(\.id))
@@ -543,6 +553,7 @@ final class AppState: ObservableObject {
             )
         )
         prepareMissingThumbnails()
+        scheduleReferenceThumbnailBackfill()
     }
 
     private func stopLibraryBackgroundWork() {
@@ -551,6 +562,12 @@ final class AppState: ObservableObject {
         activeThumbnailGenerationIDs.removeAll()
         activeThumbnailGenerationBatches.removeAll()
         activeThumbnailItemIDs.removeAll()
+        referenceThumbnailBackfillTask?.cancel()
+        referenceThumbnailBackfillTask = nil
+        referenceThumbnailPriorityTask?.cancel()
+        referenceThumbnailPriorityTask = nil
+        referenceThumbnailService?.cancelPendingRequests()
+        referenceThumbnailService = nil
     }
 
     private func handleLibraryLoadError(_ error: LibraryLoadError) {
@@ -657,7 +674,20 @@ final class AppState: ObservableObject {
         let normalizedPrimaryID = primaryID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
         let nextState = SelectionState(primaryID: normalizedPrimaryID, ids: ids)
         guard nextState != selectionState else { return }
+        if let normalizedPrimaryID {
+            inspectorSelectionStartedAt = [normalizedPrimaryID: DebugPerformanceProbe.now()]
+        } else {
+            inspectorSelectionStartedAt.removeAll()
+        }
         selectionState = nextState
+        if let normalizedPrimaryID, let item = itemsByID[normalizedPrimaryID] {
+            prioritizeReferenceThumbnails(for: item)
+        }
+    }
+
+    func recordInspectorReady(itemID: String) {
+        guard let startedAt = inspectorSelectionStartedAt.removeValue(forKey: itemID) else { return }
+        DebugPerformanceProbe.recordDuration("inspector.selection.ready.ms", startedAt: startedAt)
     }
 
     func orderedItemIDsForDrag(startingWith itemID: String) -> [String] {
@@ -2684,6 +2714,7 @@ final class AppState: ObservableObject {
             items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
             refreshFilteredItems(selecting: id)
+            scheduleReferenceThumbnailBackfill()
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -2831,6 +2862,61 @@ final class AppState: ObservableObject {
         applyGeneratedThumbnails(existingGenerated)
         guard !candidates.isEmpty else { return }
         startThumbnailGeneration(for: candidates)
+    }
+
+    private func scheduleReferenceThumbnailBackfill() {
+        guard let service = referenceThumbnailService else { return }
+        let allReferences = items.flatMap(\.referenceAssets)
+        let imageReferences = allReferences.filter(Self.isImageReferenceAsset)
+        let validIDs = Set(allReferences.map(\.id))
+        referenceThumbnailBackfillTask?.cancel()
+        referenceThumbnailBackfillTask = Task(priority: .utility) { [weak self] in
+            await self?.cleanupOrphanedReferenceThumbnails(
+                service: service,
+                validReferenceIDs: validIDs
+            )
+            guard !Task.isCancelled else { return }
+            await service.prewarm(imageReferences, priority: .utility)
+        }
+    }
+
+    private func prioritizeReferenceThumbnails(for item: PromptItem) {
+        let imageReferences = item.referenceAssets.filter(Self.isImageReferenceAsset)
+        guard let service = referenceThumbnailService, !imageReferences.isEmpty else { return }
+        referenceThumbnailPriorityTask?.cancel()
+        referenceThumbnailPriorityTask = Task(priority: .userInitiated) {
+            await service.prewarm(imageReferences, priority: .userInitiated)
+        }
+    }
+
+    private static func isImageReferenceAsset(_ reference: ReferenceAsset) -> Bool {
+        let pathExtension = URL(fileURLWithPath: reference.path).pathExtension
+        let format = pathExtension.isEmpty ? reference.type : pathExtension
+        return AssetFormatCatalog.support(forFileExtension: format).assetKind == .image
+    }
+
+    private func cleanupOrphanedReferenceThumbnails(
+        service: ReferenceThumbnailService,
+        validReferenceIDs: Set<String>
+    ) async {
+        do {
+            _ = try await service.cleanupOrphans(keeping: validReferenceIDs)
+        } catch {
+            DebugPerformanceProbe.record("reference.thumbnail.cleanup.failure")
+        }
+    }
+
+    private nonisolated static func recordReferenceThumbnailProbe(_ event: ReferenceThumbnailService.ProbeEvent) {
+        switch event {
+        case .hit:
+            DebugPerformanceProbe.record("reference.thumbnail.hit")
+        case .miss:
+            DebugPerformanceProbe.record("reference.thumbnail.miss")
+        case .generation(let milliseconds):
+            DebugPerformanceProbe.record("reference.thumbnail.generation.ms", value: milliseconds)
+        case .failure:
+            DebugPerformanceProbe.record("reference.thumbnail.failure")
+        }
     }
 
     private func applyGeneratedThumbnails(_ generated: [(String, String)]) {

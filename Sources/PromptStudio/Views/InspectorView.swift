@@ -69,6 +69,13 @@ struct InspectorView: View {
                   request.itemID == item.id else { return }
             startEditing(item)
         }
+        .onChange(of: state.selectedID, initial: true) { _, selectedID in
+            guard let selectedID else { return }
+            Task { @MainActor in
+                await Task.yield()
+                state.recordInspectorReady(itemID: selectedID)
+            }
+        }
         .onDisappear {
             markdownDocumentLoadTask?.cancel()
             markdownDocumentLoadTask = nil
@@ -788,7 +795,10 @@ struct InspectorView: View {
             sectionTitle("参考资产")
             HStack(spacing: 10) {
                 ForEach(item.referenceAssets.prefix(4)) { reference in
-                    ReferenceAssetPreview(reference: reference)
+                    ReferenceAssetPreview(
+                        reference: reference,
+                        mode: .thumbnail(libraryURL: state.libraryURL)
+                    )
                         .frame(width: 48, height: 48)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
@@ -798,7 +808,10 @@ struct InspectorView: View {
     }
 
     private func mediaReferenceSection(_ item: PromptItem) -> some View {
-        SidePanelReferenceSection(references: item.referenceAssets)
+        SidePanelReferenceSection(
+            references: item.referenceAssets,
+            libraryURL: state.libraryURL
+        )
     }
 
     private func actionSection(_ item: PromptItem) -> some View {

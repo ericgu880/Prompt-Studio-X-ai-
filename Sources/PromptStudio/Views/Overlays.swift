@@ -357,7 +357,10 @@ struct ImmersivePreviewOverlay: View {
     }
 
     private var previewReferenceSection: some View {
-        SidePanelReferenceSection(references: item.referenceAssets) { reference in
+        SidePanelReferenceSection(
+            references: item.referenceAssets,
+            libraryURL: state.libraryURL
+        ) { reference in
             previewedReference = reference
             resetImageTransform()
         }
@@ -1493,7 +1496,11 @@ struct PromptComposerOverlay: View {
     }
 
     private var createPreviewReferenceSection: some View {
-        SidePanelReferenceSection(references: allReferencePreviewAssets)
+        SidePanelReferenceSection(
+            references: allReferencePreviewAssets,
+            libraryURL: state.libraryURL,
+            usesPersistentThumbnails: false
+        )
         .padding(.bottom, 4)
     }
 

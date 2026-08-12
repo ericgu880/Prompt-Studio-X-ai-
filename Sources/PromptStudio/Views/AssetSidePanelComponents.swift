@@ -73,8 +73,10 @@ struct SidePanelChip: View {
 
 struct SidePanelReferenceSection: View {
     let references: [ReferenceAsset]
+    let libraryURL: URL
     var title: String = "参考资产"
     var limit: Int = 8
+    var usesPersistentThumbnails = true
     var onPreview: ((ReferenceAsset) -> Void)?
 
     private var columns: [GridItem] {
@@ -87,7 +89,12 @@ struct SidePanelReferenceSection: View {
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                 ForEach(references.prefix(limit)) { reference in
-                    SidePanelReferenceThumbnail(reference: reference, onPreview: onPreview)
+                    SidePanelReferenceThumbnail(
+                        reference: reference,
+                        libraryURL: libraryURL,
+                        usesPersistentThumbnail: usesPersistentThumbnails,
+                        onPreview: onPreview
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -99,6 +106,8 @@ struct SidePanelReferenceSection: View {
 private struct SidePanelReferenceThumbnail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reference: ReferenceAsset
+    let libraryURL: URL
+    let usesPersistentThumbnail: Bool
     let onPreview: ((ReferenceAsset) -> Void)?
     @State private var isHovered = false
 
@@ -131,7 +140,10 @@ private struct SidePanelReferenceThumbnail: View {
 
     private func thumbnailContent(showsPreviewControl: Bool) -> some View {
         ZStack {
-            ReferenceAssetPreview(reference: reference)
+            ReferenceAssetPreview(
+                reference: reference,
+                mode: usesPersistentThumbnail ? .thumbnail(libraryURL: libraryURL) : .original
+            )
 
             if showsPreviewControl {
                 Color.black.opacity(0.28)
