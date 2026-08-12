@@ -131,6 +131,7 @@ fi
 bash "$ROOT_DIR/Scripts/test_selection_performance.sh"
 bash "$ROOT_DIR/Scripts/test_immediate_selection_chrome.sh"
 bash "$ROOT_DIR/Scripts/test_native_fallback_selection_input.sh"
+bash "$ROOT_DIR/Scripts/test_subfolder_selection.sh"
 bash "$ROOT_DIR/Scripts/test_native_drag_cancel.sh"
 bash "$ROOT_DIR/Scripts/test_reorder_interaction.sh"
 bash "$ROOT_DIR/Scripts/test_hover_reveal_scroller_overflow.sh"

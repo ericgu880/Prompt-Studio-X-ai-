@@ -3780,7 +3780,10 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard item != nil else {
+            return super.hitTest(point)
+        }
+        return bounds.contains(point) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
