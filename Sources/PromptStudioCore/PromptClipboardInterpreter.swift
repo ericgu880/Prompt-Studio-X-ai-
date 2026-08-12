@@ -66,6 +66,7 @@ public enum PromptClipboardInterpreter {
 
         let hints = extractHints(from: originalText)
         let isJSON = jsonDictionary(from: originalText) != nil
+        let formatHint = hints.format ?? (isJSON ? "JSON" : nil)
         let parsingText = isJSON ? originalText : removingMetadataLines(from: originalText)
         let structured = isJSON || containsStructuredSyntax(in: parsingText) || parsingText != originalText
 
@@ -82,7 +83,7 @@ public enum PromptClipboardInterpreter {
         let typeResult = inferType(
             from: [prompt, metadata.negativePrompt].filter { !$0.isEmpty }.joined(separator: "\n"),
             modelHint: hints.model,
-            formatHint: hints.format
+            formatHint: formatHint
         )
 
         return PromptClipboardInterpretation(
@@ -97,7 +98,7 @@ public enum PromptClipboardInterpreter {
             typeReason: typeResult.reason,
             warnings: typeResult.warnings,
             modelHint: hints.model,
-            formatHint: hints.format
+            formatHint: formatHint
         )
     }
 
@@ -204,7 +205,24 @@ public enum PromptClipboardInterpreter {
                 hints.format = jsonString(object, keys: formatKeys)
             }
         }
+        if hints.format == nil {
+            hints.format = explicitOutputFormat(in: text)
+        }
         return hints
+    }
+
+    private static func explicitOutputFormat(in text: String) -> String? {
+        let normalized = text.lowercased()
+        let hasOutputIntent = chineseOutputIntentTerms.contains(where: normalized.contains)
+            || englishOutputIntentTerms.contains(where: normalized.contains)
+            || normalized.contains("保存为")
+            || normalized.contains("save as")
+        guard hasOutputIntent else { return nil }
+        if normalized.range(of: #"\bjson\b"#, options: .regularExpression) != nil { return "JSON" }
+        if normalized.range(of: #"\bya?ml\b"#, options: .regularExpression) != nil { return "YAML" }
+        if normalized.range(of: #"\btxt\b"#, options: .regularExpression) != nil { return "TXT" }
+        if normalized.range(of: #"\b(?:md|markdown)\b"#, options: .regularExpression) != nil { return "Markdown" }
+        return nil
     }
 
     private static func jsonDictionary(from text: String) -> [String: Any]? {
@@ -265,6 +283,9 @@ public enum PromptClipboardInterpreter {
 
     private static func inferType(from text: String, modelHint: String?, formatHint: String?) -> TypeResult {
         let lower = text.lowercased()
+        if isFormatOnlyTextOutput(lower, formatHint: formatHint) {
+            return TypeResult(type: .text, confidence: .high, reason: "根据明确的文本格式输出意图判断", warnings: [])
+        }
         let explicitTypes = explicitOutputTypes(in: lower)
         if explicitTypes.count > 1 {
             let labels = explicitTypes.sorted { typeOrder($0) < typeOrder($1) }.map(\.displayName).joined(separator: "、")
@@ -295,6 +316,13 @@ public enum PromptClipboardInterpreter {
 
         let confidence: PromptClipboardTypeConfidence = bestScore >= 6 && bestScore - secondScore >= 3 ? .high : .medium
         return TypeResult(type: best, confidence: confidence, reason: semanticReason(for: best), warnings: [])
+    }
+
+    private static func isFormatOnlyTextOutput(_ lower: String, formatHint: String?) -> Bool {
+        let format = formatHint?.lowercased() ?? ""
+        let isTextFormat = containsAny(format, ["json", "yaml", "markdown", "md", "txt", "text"])
+        let hasSaveAsIntent = lower.contains("保存为") || lower.contains("save as")
+        return isTextFormat && hasSaveAsIntent
     }
 
     private static func explicitOutputTypes(in lower: String) -> Set<PromptType> {

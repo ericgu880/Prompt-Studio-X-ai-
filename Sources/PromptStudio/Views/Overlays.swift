@@ -733,59 +733,19 @@ private enum CreateComposerInputField: Hashable {
 
 private enum SmartPasteLayoutMetrics {
     static let smartPasteBarHeight: CGFloat = 44
-    static let smartPastePromptHeightBudget: CGFloat = 266
-    static let regularPromptHeightBudget: CGFloat = 212
-}
-
-private struct PromptFormatOption: Identifiable, Equatable {
-    let id: String
-    let title: String
-
-    static func options(for type: PromptType) -> [PromptFormatOption] {
-        switch type {
-        case .image:
-            return [
-                PromptFormatOption(id: "image_general", title: "通用图片"),
-                PromptFormatOption(id: "image_character", title: "角色设定"),
-                PromptFormatOption(id: "image_product", title: "产品图"),
-                PromptFormatOption(id: "image_midjourney", title: "Midjourney 参数"),
-                PromptFormatOption(id: "image_nano_banana", title: "Nano Banana 格式")
-            ]
-        case .video:
-            return [
-                PromptFormatOption(id: "video_general", title: "通用视频"),
-                PromptFormatOption(id: "video_storyboard", title: "分镜脚本"),
-                PromptFormatOption(id: "video_seedance_api_block", title: "Seedance API block"),
-                PromptFormatOption(id: "video_kling_shot", title: "Kling 镜头"),
-                PromptFormatOption(id: "video_shot_table", title: "镜头表")
-            ]
-        case .text:
-            return [
-                PromptFormatOption(id: "text_markdown", title: "Markdown"),
-                PromptFormatOption(id: "text_json", title: "JSON"),
-                PromptFormatOption(id: "text_yaml", title: "YAML"),
-                PromptFormatOption(id: "text_txt", title: "TXT"),
-                PromptFormatOption(id: "text_agent_handoff", title: "Agent handoff")
-            ]
-        case .audio:
-            return [
-                PromptFormatOption(id: "audio_voiceover", title: "旁白"),
-                PromptFormatOption(id: "audio_voice_reference", title: "音色参考"),
-                PromptFormatOption(id: "audio_music_mood", title: "音乐氛围"),
-                PromptFormatOption(id: "audio_sound_effect", title: "音效"),
-                PromptFormatOption(id: "audio_spoken_script", title: "口播稿")
-            ]
-        }
-    }
+    static let smartPastePromptHeightBudget: CGFloat = 218
+    static let regularPromptHeightBudget: CGFloat = 166
 }
 
 struct PromptComposerOverlay: View {
     @EnvironmentObject private var state: AppState
     let mode: AppState.PromptComposerMode
     @State private var title = ""
-    @State private var type: PromptType = .image
-    @State private var modelId = "image_2"
-    @State private var promptFormatID = ""
+    @State private var typeDecision = PromptComposerTypeDecision.unresolved(reason: "请输入 Prompt 后自动识别")
+    @State private var typeMode: PromptComposerTypeMode = .automatic
+    @State private var modelId: String?
+    @State private var modelHint: String?
+    @State private var formatHint: String?
     @State private var prompt = ""
     @State private var negativePrompt = ""
     @State private var tags: [String] = []
@@ -802,6 +762,7 @@ struct PromptComposerOverlay: View {
     @State private var isPreviewImageHovered = false
     @State private var isReferenceHovered = false
     @State private var smartPasteInterpretation: PromptClipboardInterpretation?
+    @State private var smartPasteAppliedPrompt: String?
     @State private var pendingSmartPasteInterpretation: PromptClipboardInterpretation?
     @State private var smartPasteSnapshot: PromptComposerDraftSnapshot?
     @State private var showSmartPasteDetails = false
@@ -810,9 +771,11 @@ struct PromptComposerOverlay: View {
 
     private struct PromptComposerDraftSnapshot {
         let title: String
-        let type: PromptType
-        let modelId: String
-        let promptFormatID: String
+        let typeDecision: PromptComposerTypeDecision
+        let typeMode: PromptComposerTypeMode
+        let modelId: String?
+        let modelHint: String?
+        let formatHint: String?
         let prompt: String
         let negativePrompt: String
         let tags: [String]
@@ -822,6 +785,8 @@ struct PromptComposerOverlay: View {
         let saveAsNewVersion: Bool
         let previewImageURL: URL?
         let referenceURLs: [URL]
+        let smartPasteInterpretation: PromptClipboardInterpretation?
+        let smartPasteAppliedPrompt: String?
     }
 
     private var editingItem: PromptItem? {
@@ -836,6 +801,56 @@ struct PromptComposerOverlay: View {
         return false
     }
 
+    private var resolvedType: PromptType? {
+        typeDecision.type
+    }
+
+    private var canSubmitPrompt: Bool {
+        resolvedType != nil
+    }
+
+    private var shouldShowPreviewImage: Bool {
+        resolvedType != .text
+    }
+
+    private var typeStatusTitle: String {
+        switch typeDecision {
+        case .automatic(let type, _, _):
+            return "已识别：\(typeTitle(type))"
+        case .manual(let type):
+            return "已选择：\(typeTitle(type))"
+        case .unresolved:
+            return "请选择类型"
+        }
+    }
+
+    private var typeStatusIcon: String {
+        switch typeDecision {
+        case .automatic:
+            return "wand.and.stars"
+        case .manual:
+            return "checkmark.circle"
+        case .unresolved:
+            return "questionmark.circle"
+        }
+    }
+
+    private var typeModeSignature: String {
+        switch typeMode {
+        case .automatic:
+            return "automatic"
+        case .manual(let type):
+            return "manual:\(type.rawValue)"
+        }
+    }
+
+    private var automaticInferenceTaskID: String {
+        if smartPasteInterpretation != nil, prompt == smartPasteAppliedPrompt {
+            return "smart-paste-managed"
+        }
+        return prompt
+    }
+
     var body: some View {
         createComposerBody
         .foregroundStyle(OPSColor.bodyText)
@@ -844,6 +859,11 @@ struct PromptComposerOverlay: View {
         .onChange(of: mode.id) { _, _ in loadDraft() }
         .onChange(of: state.pendingSmartPasteRequest?.token) { _, _ in
             handlePendingSmartPasteRequest()
+        }
+        .task(id: automaticInferenceTaskID) {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            updateAutomaticTypeDecision()
         }
         .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
             Button("放弃修改", role: .destructive) {
@@ -900,9 +920,8 @@ struct PromptComposerOverlay: View {
             let panelHeight = max(0, geometry.size.height - verticalPadding * 2 - headerHeight - headerGap)
             let contentWidth = panelWidth
             let contentHeight = panelHeight
-            let showsUploadColumn = type != .text
-            let uploadWidth = showsUploadColumn ? min(320, max(280, contentWidth * 0.28)) : 0
-            let leftWidth = showsUploadColumn ? max(0, contentWidth - columnSpacing - uploadWidth) : contentWidth
+            let uploadWidth = min(320, max(280, contentWidth * 0.28))
+            let leftWidth = max(0, contentWidth - columnSpacing - uploadWidth)
             let promptHeightBudget = isEditing
                 ? SmartPasteLayoutMetrics.regularPromptHeightBudget
                 : SmartPasteLayoutMetrics.smartPastePromptHeightBudget
@@ -922,6 +941,7 @@ struct PromptComposerOverlay: View {
                             save()
                         }
                         .buttonStyle(CreateComposerPrimaryButtonStyle())
+                        .disabled(!canSubmitPrompt)
                     }
                     .frame(width: panelWidth, height: headerHeight, alignment: .center)
 
@@ -934,16 +954,14 @@ struct PromptComposerOverlay: View {
                                 .frame(width: leftWidth, alignment: .topLeading)
                         }
 
-                        if showsUploadColumn {
-                            createUploadColumn(availableHeight: contentHeight)
-                                .frame(width: uploadWidth, alignment: .topLeading)
-                                .overlay(alignment: .leading) {
-                                    Rectangle()
-                                        .fill(StudioColor.hairline)
-                                        .frame(width: 1, height: contentHeight)
-                                        .offset(x: -columnSpacing / 2)
-                                }
-                        }
+                        createUploadColumn(availableHeight: contentHeight)
+                            .frame(width: uploadWidth, alignment: .topLeading)
+                            .overlay(alignment: .leading) {
+                                Rectangle()
+                                    .fill(StudioColor.hairline)
+                                    .frame(width: 1, height: contentHeight)
+                                    .offset(x: -columnSpacing / 2)
+                            }
                     }
                     .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
                 }
@@ -955,16 +973,8 @@ struct PromptComposerOverlay: View {
 
     private func createHeaderControls(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            createTypeTabs
+            createTypeStatusMenu
                 .frame(width: width, alignment: .leading)
-
-            HStack(alignment: .center, spacing: 10) {
-                createModelMenu
-                    .frame(maxWidth: .infinity)
-                createFormatMenu
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(width: width)
 
             if !isEditing {
                 smartPasteBar
@@ -1012,31 +1022,29 @@ struct PromptComposerOverlay: View {
             .accessibilityHint("从剪贴板读取并解析 Prompt 文本")
 
             if smartPasteInterpretation != nil {
-                Button("展开详情") {
-                    showSmartPasteDetails = true
+                Menu {
+                    Button("查看原文与识别详情") {
+                        showSmartPasteDetails = true
+                    }
+                    Button("撤销填充") {
+                        undoSmartPaste()
+                    }
+                    Divider()
+                    Button("清除智能填充") {
+                        clearSmartPaste()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(StudioFont.symbol(13, weight: .semibold))
+                        .foregroundStyle(CreateComposerColor.secondaryText)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .font(StudioFont.font(11))
-                .foregroundStyle(CreateComposerColor.secondaryText)
-                .accessibilityLabel("展开智能粘贴详情")
-                .accessibilityHint("编辑负面提示词、标签和参数")
-
-                Button("撤销填充") {
-                    undoSmartPaste()
-                }
-                .buttonStyle(.plain)
-                .font(StudioFont.font(11))
-                .foregroundStyle(CreateComposerColor.secondaryText)
-                .accessibilityLabel("撤销智能填充")
-
-                Button("清除") {
-                    clearSmartPaste()
-                }
-                .buttonStyle(.plain)
-                .font(StudioFont.font(11))
-                .foregroundStyle(CreateComposerColor.secondaryText)
-                .accessibilityLabel("清除智能填充")
-                .accessibilityHint("恢复智能填充前的草稿，不会删除预览图或参考资产")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("智能粘贴更多操作")
+                .accessibilityHint("查看详情、撤销或清除智能填充")
             }
         }
         .padding(.horizontal, 12)
@@ -1140,11 +1148,16 @@ struct PromptComposerOverlay: View {
     }
 
     private func createUploadColumn(availableHeight: CGFloat) -> some View {
-        let previewHeight = min(236, max(180, availableHeight * 0.30))
-        let referenceHeight = min(280, max(180, availableHeight - previewHeight - 82))
+        let showsPreviewImage = shouldShowPreviewImage
+        let previewHeight = showsPreviewImage ? min(236, max(180, availableHeight * 0.30)) : 0
+        let referenceHeight = showsPreviewImage
+            ? min(280, max(180, availableHeight - previewHeight - 82))
+            : min(420, max(240, availableHeight - 30))
         return VStack(alignment: .leading, spacing: 22) {
-            createField("预览图") {
-                previewImageDropZone(height: previewHeight)
+            if showsPreviewImage {
+                createField("预览图") {
+                    previewImageDropZone(height: previewHeight)
+                }
             }
 
             createField("参考资产") {
@@ -1153,102 +1166,41 @@ struct PromptComposerOverlay: View {
         }
     }
 
-    private var createTypeTabs: some View {
-        HStack(spacing: 2) {
-            ForEach(createTypeOptions) { option in
-                createTypeTab(option)
+    private var createTypeStatusMenu: some View {
+        Menu {
+            ForEach(PromptType.allCases) { option in
+                Button(typeTitle(option)) {
+                    chooseTypeManually(option)
+                }
             }
+            if case .manual = typeDecision {
+                Divider()
+                Button("恢复自动识别") {
+                    typeMode = .automatic
+                    updateAutomaticTypeDecision()
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: typeStatusIcon)
+                    .font(StudioFont.symbol(12, weight: .semibold))
+                Text(typeStatusTitle)
+                    .font(StudioFont.font(12, weight: .semibold))
+                Image(systemName: "chevron.down")
+                    .font(StudioFont.symbol(9, weight: .semibold))
+            }
+            .foregroundStyle(resolvedType == nil ? StudioColor.primaryAction : CreateComposerColor.primaryText)
+            .padding(.horizontal, 11)
+            .frame(height: 32)
+            .background(CreateComposerColor.inputBackground)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(CreateComposerColor.border, lineWidth: 1))
+            .contentShape(Capsule())
         }
-        .padding(3)
-        .background(CreateComposerColor.inputBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+        .buttonStyle(.plain)
         .fixedSize()
-    }
-
-    private var createTypeOptions: [PromptType] {
-        [.image, .video, .audio, .text]
-    }
-
-    private func createTypeTab(_ option: PromptType) -> some View {
-        let active = type == option
-        let title = createTypeTitle(option)
-        return CreateComposerTypeTab(title: title, active: active) {
-            type = option
-            ensureModelMatchesType()
-            ensurePromptFormatMatchesType()
-        }
-    }
-
-    private func createTypeTitle(_ option: PromptType) -> String {
-        switch option {
-        case .image:
-            return "图片"
-        case .video:
-            return "视频"
-        case .audio:
-            return "音乐"
-        case .text:
-            return "文本"
-        }
-    }
-
-    private var createModelMenu: some View {
-        Menu {
-            ForEach(modelOptions) { model in
-                Button(model.name) {
-                    modelId = model.id
-                }
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Text(activeModelName.isEmpty ? "选择模型" : activeModelName)
-                    .font(StudioFont.font(13))
-                    .foregroundStyle(activeModelName.isEmpty ? CreateComposerColor.placeholderText : CreateComposerColor.primaryText)
-                    .lineLimit(1)
-                Spacer()
-                Image(systemName: "chevron.down")
-                    .font(StudioFont.symbol(11, weight: .semibold))
-                    .foregroundStyle(CreateComposerColor.primaryText)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 40)
-            .background(CreateComposerColor.inputBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var createFormatMenu: some View {
-        Menu {
-            ForEach(promptFormatOptions) { option in
-                Button(option.title) {
-                    promptFormatID = option.id
-                }
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Text(activePromptFormatTitle)
-                    .font(StudioFont.font(13))
-                    .foregroundStyle(CreateComposerColor.primaryText)
-                    .lineLimit(1)
-                Spacer()
-                Image(systemName: "chevron.down")
-                    .font(StudioFont.symbol(11, weight: .semibold))
-                    .foregroundStyle(CreateComposerColor.primaryText)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 40)
-            .background(CreateComposerColor.inputBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel(typeStatusTitle)
+        .accessibilityHint("选择 Prompt 类型或恢复自动识别")
     }
 
 
@@ -1453,7 +1405,7 @@ struct PromptComposerOverlay: View {
                         .lineLimit(3)
                 }
 
-                if let previewImageURL {
+                if shouldShowPreviewImage, let previewImageURL {
                     ComposerPreviewImage(path: previewImageURL.path, contentMode: .fit)
                         .frame(width: previewImageSize.width, height: previewImageSize.height)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1527,7 +1479,7 @@ struct PromptComposerOverlay: View {
     }
 
     private var hasMeaningfulPreviewContent: Bool {
-        hasTitle || hasPrompt || previewImageURL != nil || !allReferencePreviewAssets.isEmpty
+        hasTitle || hasPrompt || (shouldShowPreviewImage && previewImageURL != nil) || !allReferencePreviewAssets.isEmpty
     }
 
     private var previewImageSize: CGSize {
@@ -1710,10 +1662,6 @@ struct PromptComposerOverlay: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             }
 
-            HStack(spacing: 8) {
-                typeSegmentedControl.frame(width: 146)
-                modelMenu.frame(width: 166)
-            }
         }
         .frame(width: 320, alignment: .leading)
     }
@@ -1746,7 +1694,9 @@ struct PromptComposerOverlay: View {
             counter("字符", prompt.count + negativePrompt.count)
             counter("词数估算", estimatedTokenCount)
             counter("参考资产", referenceURLs.count + (editingItem?.referenceAssets.count ?? 0))
-            counter(type.displayName.replacingOccurrences(of: " Prompt", with: ""), 0, showValue: false)
+            if let resolvedType {
+                counter(typeTitle(resolvedType), 0, showValue: false)
+            }
             Spacer()
         }
         .frame(width: 320)
@@ -1757,24 +1707,6 @@ struct PromptComposerOverlay: View {
             VStack(alignment: .leading, spacing: 16) {
                 composerField("标题") {
                     TextField("未命名 Prompt", text: $title)
-                }
-
-                composerField("类型") {
-                    Picker("", selection: $type) {
-                        ForEach(PromptType.allCases) { type in
-                            Text(type.displayName).tag(type)
-                        }
-                    }
-                    .labelsHidden()
-                }
-
-                composerField("模型") {
-                    Picker("", selection: $modelId) {
-                        ForEach(modelOptions) { model in
-                            Text(model.name).tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
                 }
 
                 composerSection("标签") {
@@ -2062,22 +1994,6 @@ struct PromptComposerOverlay: View {
         return "拖拽或点击添加参考资产"
     }
 
-    private var activeModelName: String {
-        modelOptions.first(where: { $0.id == modelId })?.name ?? ""
-    }
-
-    private var activePromptFormat: PromptFormatOption {
-        promptFormatOptions.first(where: { $0.id == promptFormatID }) ?? promptFormatOptions[0]
-    }
-
-    private var activePromptFormatTitle: String {
-        activePromptFormat.title
-    }
-
-    private var promptFormatOptions: [PromptFormatOption] {
-        PromptFormatOption.options(for: type)
-    }
-
     private var previewTitle: String {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle
@@ -2090,10 +2006,12 @@ struct PromptComposerOverlay: View {
 
     private var previewMetadataChips: [String] {
         var chips: [String] = []
-        if !activeModelName.isEmpty {
-            chips.append(activeModelName)
+        if let resolvedType {
+            let metadata = currentMetadata(for: resolvedType)
+            if shouldDisplayModelMetadata(metadata.model) {
+                chips.append(metadata.model.name)
+            }
         }
-        chips.append(activePromptFormatTitle)
         if let resolution = previewResolutionText {
             chips.append(resolution)
         }
@@ -2104,6 +2022,12 @@ struct PromptComposerOverlay: View {
             chips.append(style)
         }
         return chips
+    }
+
+    private func shouldDisplayModelMetadata(_ model: ModelProfile) -> Bool {
+        let hiddenIDs: Set<String> = [PromptComposerMetadataPolicy.unspecifiedModelID, "local_asset"]
+        let hiddenNames: Set<String> = [PromptComposerMetadataPolicy.unspecifiedModelName.lowercased(), "local asset"]
+        return !hiddenIDs.contains(model.id.lowercased()) && !hiddenNames.contains(model.name.lowercased())
     }
 
     private var previewResolutionText: String? {
@@ -2151,14 +2075,6 @@ struct PromptComposerOverlay: View {
         isEditing ? "保存" : "创建"
     }
 
-    private var modelOptions: [ModelProfile] {
-        let matching = state.models.filter { $0.id != "all" && $0.type == type }
-        if !matching.isEmpty {
-            return matching
-        }
-        return [ModelProfile(id: "local_asset", name: "Local Asset", type: type, parameters: [])]
-    }
-
     private var estimatedTokenCount: Int {
         let text = [prompt, negativePrompt].joined(separator: " ")
         let latinWords = text.split { $0.isWhitespace || $0.isPunctuation }.count
@@ -2182,58 +2098,6 @@ struct PromptComposerOverlay: View {
     private var outputPreviewText: String {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "输出与输入相同" : trimmed
-    }
-
-    private var typeSegmentedControl: some View {
-        HStack(spacing: 4) {
-            ForEach(PromptType.allCases) { option in
-                Button {
-                    type = option
-                    ensureModelMatchesType()
-                } label: {
-                    Text(option.displayName.replacingOccurrences(of: " Prompt", with: ""))
-                        .font(StudioFont.font(12, weight: type == option ? .semibold : .regular))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28)
-                        .foregroundStyle(type == option ? Color.white : OPSColor.buttonText)
-                        .background(type == option ? Color(hex: 0x6C6C6C) : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-            }
-        }
-        .padding(4)
-        .background(OPSColor.buttonBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-    }
-
-    private var modelMenu: some View {
-        Menu {
-            ForEach(modelOptions) { model in
-                Button(model.name) {
-                    modelId = model.id
-                }
-            }
-        } label: {
-            HStack {
-                Text(modelOptions.first(where: { $0.id == modelId })?.name ?? "选择模型")
-                    .lineLimit(1)
-                Spacer()
-                Image(systemName: "chevron.down")
-                    .font(StudioFont.symbol(10))
-            }
-            .font(StudioFont.font(12))
-            .foregroundStyle(OPSColor.buttonText)
-            .padding(.horizontal, 10)
-            .frame(height: 36)
-            .background(OPSColor.buttonBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 
     private func opsIconTool(_ systemName: String, help: String, action: @escaping () -> Void = {}) -> some View {
@@ -2292,27 +2156,102 @@ struct PromptComposerOverlay: View {
         parameters = parameters.isEmpty ? line : "\(parameters)\n\(line)"
     }
 
-    private func ensureModelMatchesType() {
-        let options = modelOptions
-        if !options.contains(where: { $0.id == modelId }), let first = options.first {
-            modelId = first.id
+    private func typeTitle(_ type: PromptType) -> String {
+        switch type {
+        case .image: return "图片"
+        case .video: return "视频"
+        case .audio: return "音频"
+        case .text: return "文本"
         }
     }
 
-    private func ensurePromptFormatMatchesType() {
-        let options = promptFormatOptions
-        if !options.contains(where: { $0.id == promptFormatID }), let first = options.first {
-            promptFormatID = first.id
+    private func chooseTypeManually(_ type: PromptType) {
+        let previousType = resolvedType
+        typeMode = .manual(type)
+        typeDecision = .manual(type: type)
+        if previousType != type {
+            modelId = PromptComposerMetadataPolicy.unspecifiedModelID
+            modelHint = nil
+            formatHint = nil
+            if type == .text {
+                moveUnsavedPreviewImageToReferencesIfNeeded()
+            }
         }
+    }
+
+    private func moveUnsavedPreviewImageToReferencesIfNeeded() {
+        guard let previewImageURL else { return }
+        if !referenceURLs.contains(previewImageURL), editingItem?.assetPath != previewImageURL.path {
+            referenceURLs.append(previewImageURL)
+        }
+        self.previewImageURL = nil
+    }
+
+    private func updateAutomaticTypeDecision() {
+        guard case .automatic = typeMode else { return }
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            typeDecision = .unresolved(reason: "请输入 Prompt 后自动识别")
+            modelId = nil
+            return
+        }
+        let interpretation = PromptClipboardInterpreter.interpret(prompt)
+        typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if let nextModelHint = interpretation.modelHint {
+            modelHint = nextModelHint
+        } else if smartPasteInterpretation == nil {
+            modelHint = nil
+        }
+        if let nextFormatHint = interpretation.formatHint {
+            formatHint = nextFormatHint
+        } else if smartPasteInterpretation == nil {
+            formatHint = nil
+        }
+        modelId = resolvedType.map { currentMetadata(for: $0).model.id }
+    }
+
+    private func currentMetadata(for type: PromptType) -> PromptComposerMetadataDecision {
+        if let item = editingItem, item.type == type {
+            var preservedParameters = parsedParameters
+            let existingParameters = item.currentVersion?.parameters ?? [:]
+            if let formatID = existingParameters["prompt_format_id"] {
+                preservedParameters["prompt_format_id"] = formatID
+            }
+            if let format = existingParameters["prompt_format"] {
+                preservedParameters["prompt_format"] = format
+            }
+            return PromptComposerMetadataDecision(
+                model: ModelProfile(
+                    id: item.modelId,
+                    name: item.modelName,
+                    type: item.type,
+                    parameters: []
+                ),
+                promptFormatID: preservedParameters["prompt_format_id"],
+                promptFormat: preservedParameters["prompt_format"],
+                parameters: preservedParameters
+            )
+        }
+
+        let changingExistingType = editingItem.map { $0.type != type } ?? false
+        return PromptComposerMetadataPolicy.resolve(
+            type: type,
+            modelHint: modelHint,
+            formatHint: formatHint,
+            parameters: changingExistingType ? [:] : parsedParameters,
+            localModels: state.models
+        )
     }
 
     private func loadDraft() {
         switch mode {
         case .create:
             title = ""
-            type = .image
-            modelId = defaultModelID(for: .image)
-            promptFormatID = PromptFormatOption.options(for: .image)[0].id
+            typeMode = .automatic
+            typeDecision = .unresolved(reason: "请输入 Prompt 后自动识别")
+            modelId = nil
+            modelHint = nil
+            formatHint = nil
             prompt = ""
             negativePrompt = ""
             tags = []
@@ -2322,14 +2261,17 @@ struct PromptComposerOverlay: View {
             previewImageURL = nil
             referenceURLs = []
             smartPasteInterpretation = nil
+            smartPasteAppliedPrompt = nil
             pendingSmartPasteInterpretation = nil
             smartPasteSnapshot = nil
         case .edit:
             guard let item = editingItem else { return }
             title = item.title
-            type = item.type
+            typeMode = .manual(item.type)
+            typeDecision = .manual(type: item.type)
             modelId = item.modelId
-            promptFormatID = existingPromptFormatID(for: item)
+            modelHint = nil
+            formatHint = nil
             prompt = item.currentVersion?.prompt ?? ""
             negativePrompt = item.currentVersion?.negativePrompt ?? ""
             tags = item.tags
@@ -2346,11 +2288,10 @@ struct PromptComposerOverlay: View {
             }
             referenceURLs = []
             smartPasteInterpretation = nil
+            smartPasteAppliedPrompt = nil
             pendingSmartPasteInterpretation = nil
             smartPasteSnapshot = nil
         }
-        ensureModelMatchesType()
-        ensurePromptFormatMatchesType()
         // Capture the clean create/edit baseline before applying any smart-paste prefill.
         initialSignature = draftSignature
         if case .create(let prefill) = mode, let prefill {
@@ -2373,12 +2314,11 @@ struct PromptComposerOverlay: View {
     }
 
     private var smartPasteSuggestion: String {
-        guard let interpretation = smartPasteInterpretation else { return "" }
-        let tab = interpretation.suggestedType?.displayName.replacingOccurrences(of: " Prompt", with: "")
-            ?? state.filter.type?.displayName.replacingOccurrences(of: " Prompt", with: "")
-            ?? "图片"
-        let reason = interpretation.typeReason.isEmpty ? "按当前筛选保留类型" : interpretation.typeReason
-        return "建议 \(tab) · \(reason)"
+        guard smartPasteInterpretation != nil else { return "" }
+        if let resolvedType {
+            return "已识别 \(typeTitle(resolvedType)) · \(typeDecision.reason)"
+        }
+        return "类型待确认 · \(typeDecision.reason)"
     }
 
     private var isDraftBlankForSmartPaste: Bool {
@@ -2421,9 +2361,11 @@ struct PromptComposerOverlay: View {
     private func captureDraft() -> PromptComposerDraftSnapshot {
         PromptComposerDraftSnapshot(
             title: title,
-            type: type,
+            typeDecision: typeDecision,
+            typeMode: typeMode,
             modelId: modelId,
-            promptFormatID: promptFormatID,
+            modelHint: modelHint,
+            formatHint: formatHint,
             prompt: prompt,
             negativePrompt: negativePrompt,
             tags: tags,
@@ -2432,15 +2374,19 @@ struct PromptComposerOverlay: View {
             note: note,
             saveAsNewVersion: saveAsNewVersion,
             previewImageURL: previewImageURL,
-            referenceURLs: referenceURLs
+            referenceURLs: referenceURLs,
+            smartPasteInterpretation: smartPasteInterpretation,
+            smartPasteAppliedPrompt: smartPasteAppliedPrompt
         )
     }
 
     private func restoreDraft(_ snapshot: PromptComposerDraftSnapshot) {
         title = snapshot.title
-        type = snapshot.type
+        typeDecision = snapshot.typeDecision
+        typeMode = snapshot.typeMode
         modelId = snapshot.modelId
-        promptFormatID = snapshot.promptFormatID
+        modelHint = snapshot.modelHint
+        formatHint = snapshot.formatHint
         prompt = snapshot.prompt
         negativePrompt = snapshot.negativePrompt
         tags = snapshot.tags
@@ -2450,28 +2396,28 @@ struct PromptComposerOverlay: View {
         saveAsNewVersion = snapshot.saveAsNewVersion
         previewImageURL = snapshot.previewImageURL
         referenceURLs = snapshot.referenceURLs
-        ensureModelMatchesType()
-        ensurePromptFormatMatchesType()
+        smartPasteInterpretation = snapshot.smartPasteInterpretation
+        smartPasteAppliedPrompt = snapshot.smartPasteAppliedPrompt
     }
 
     private func applySmartPaste(_ interpretation: PromptClipboardInterpretation) {
         smartPasteSnapshot = captureDraft()
 
-        type = interpretation.suggestedType ?? state.filter.type ?? .image
-        ensureModelMatchesType()
-        if let modelHint = interpretation.modelHint,
-           let matchingModel = localModelMatchingHint(modelHint) {
-            modelId = matchingModel.id
+        modelHint = interpretation.modelHint
+        formatHint = interpretation.formatHint
+        typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if resolvedType == .text {
+            moveUnsavedPreviewImageToReferencesIfNeeded()
         }
-
-        ensurePromptFormatMatchesType()
-        if let formatHint = interpretation.formatHint,
-           let matchingFormat = localFormatMatchingHint(formatHint) {
-            promptFormatID = matchingFormat.id
+        if let resolvedType {
+            modelId = currentMetadata(for: resolvedType).model.id
+        } else {
+            modelId = nil
         }
 
         title = interpretation.title
         prompt = interpretation.prompt
+        smartPasteAppliedPrompt = interpretation.prompt
         negativePrompt = interpretation.negativePrompt
         tags = interpretation.tags
         parameters = visibleParameters(from: interpretation.parameters)
@@ -2486,7 +2432,6 @@ struct PromptComposerOverlay: View {
         guard let snapshot = smartPasteSnapshot else { return }
         restoreDraft(snapshot)
         smartPasteSnapshot = nil
-        smartPasteInterpretation = nil
         pendingSmartPasteInterpretation = nil
         showSmartPasteDetails = false
     }
@@ -2498,35 +2443,23 @@ struct PromptComposerOverlay: View {
             restoreDraft(snapshot)
         }
         smartPasteSnapshot = nil
-        smartPasteInterpretation = nil
         pendingSmartPasteInterpretation = nil
         showSmartPasteDetails = false
     }
 
-    private func localModelMatchingHint(_ hint: String) -> ModelProfile? {
-        let normalizedHint = hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedHint.isEmpty else { return nil }
-        return modelOptions.first {
-            $0.id.lowercased() == normalizedHint || $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedHint
-        }
-    }
-
-    private func localFormatMatchingHint(_ hint: String) -> PromptFormatOption? {
-        let normalizedHint = hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedHint.isEmpty else { return nil }
-        return promptFormatOptions.first {
-            $0.id.lowercased() == normalizedHint || $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedHint
-        }
-    }
-
     private func save() {
+        guard let resolvedType else {
+            state.showToast("请先选择 Prompt 类型")
+            return
+        }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let metadata = currentMetadata(for: resolvedType)
         switch mode {
         case .create(_):
             state.createPrompt(
                 title: cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle,
-                type: type,
-                modelId: modelId,
+                type: resolvedType,
+                modelId: metadata.model.id,
                 prompt: prompt,
                 negativePrompt: negativePrompt,
                 tags: tags,
@@ -2537,8 +2470,8 @@ struct PromptComposerOverlay: View {
         case .edit:
             state.savePrompt(
                 title: cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle,
-                type: type,
-                modelId: modelId,
+                type: resolvedType,
+                modelId: metadata.model.id,
                 prompt: prompt,
                 negativePrompt: negativePrompt,
                 tags: tags,
@@ -2563,9 +2496,11 @@ struct PromptComposerOverlay: View {
     private var draftSignature: String {
         [
             title,
-            type.rawValue,
-            modelId,
-            promptFormatID,
+            resolvedType?.rawValue ?? "unresolved",
+            typeModeSignature,
+            modelId ?? "",
+            modelHint ?? "",
+            formatHint ?? "",
             prompt,
             negativePrompt,
             tags.joined(separator: "\u{1f}"),
@@ -2589,26 +2524,8 @@ struct PromptComposerOverlay: View {
     }
 
     private var savedParameters: [String: String] {
-        var result = parsedParameters
-        result["prompt_format_id"] = activePromptFormat.id
-        result["prompt_format"] = activePromptFormat.title
-        return result
-    }
-
-    private func defaultModelID(for type: PromptType) -> String {
-        state.models.first(where: { $0.id != "all" && $0.type == type })?.id ?? "local_asset"
-    }
-
-    private func existingPromptFormatID(for item: PromptItem) -> String {
-        let options = PromptFormatOption.options(for: item.type)
-        let parameters = item.currentVersion?.parameters ?? [:]
-        if let id = parameters["prompt_format_id"], options.contains(where: { $0.id == id }) {
-            return id
-        }
-        if let title = parameters["prompt_format"], let match = options.first(where: { $0.title == title }) {
-            return match.id
-        }
-        return options[0].id
+        guard let resolvedType else { return parsedParameters }
+        return currentMetadata(for: resolvedType).parameters
     }
 
     private func visibleParameters(from parameters: [String: String]) -> [String: String] {
@@ -2982,53 +2899,10 @@ private enum CreateComposerColor {
     static let inputBackground = StudioColor.control
     static let fieldBackground = Color(hex: 0x2D2D2D)
     static let dropActive = StudioColor.panelRaised
-    static let tabHover = Color(hex: 0x2A2A2A)
     static let border = Color(hex: 0x3E3E3E)
     static let primaryText = StudioColor.text
     static let secondaryText = StudioColor.secondaryText.opacity(0.92)
     static let placeholderText = StudioColor.tertiaryText
-}
-
-private struct CreateComposerTypeTab: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let title: String
-    let active: Bool
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(StudioFont.font(12, weight: active ? .semibold : .medium))
-                .foregroundStyle(active ? StudioColor.primaryActionText : CreateComposerColor.secondaryText)
-                .frame(width: 66, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(
-                            active
-                                ? StudioColor.primaryAction
-                                : (isHovered ? CreateComposerColor.tabHover : Color.clear)
-                        )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(
-                            active ? Color.white.opacity(0.92) : StudioColor.hairline,
-                            lineWidth: 1
-                        )
-                        .opacity(active || isHovered ? 1 : 0)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .onHover { isHovered = $0 }
-        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: active)
-        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(active ? .isSelected : [])
-        .help(title)
-    }
 }
 
 private struct CreateComposerPrimaryButtonStyle: ButtonStyle {

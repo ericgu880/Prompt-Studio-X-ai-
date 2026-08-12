@@ -45,8 +45,8 @@ require_pattern "$OVERLAY_FILE" \
     'smartPasteBarHeight: CGFloat = 44' \
     "Prompt composer must reserve a compact 44pt smart-paste bar."
 require_pattern "$OVERLAY_FILE" \
-    'smartPastePromptHeightBudget: CGFloat = 266' \
-    "Prompt composer must use the 266pt prompt-height budget."
+    'smartPastePromptHeightBudget: CGFloat = 218' \
+    "Simplified Prompt composer must use the compact 218pt prompt-height budget."
 require_pattern "$OVERLAY_FILE" \
     '.popover(isPresented: $showSmartPasteDetails)' \
     "Smart-paste details must use a transient popover."

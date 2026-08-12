@@ -1241,6 +1241,7 @@ func testPromptClipboardInterpreterParsesJSON() throws {
     try expect(interpretation.negativePrompt == "watermark", "JSON negative prompt should be parsed")
     try expect(interpretation.tags.first == "portrait" && interpretation.tags.filter { $0 == "portrait" }.count == 1, "JSON tags should be normalized and deduplicated")
     try expect(interpretation.parameters["ar"] == "4:5", "JSON parameters should be retained")
+    try expect(interpretation.formatHint == "JSON", "a structured JSON clipboard payload should preserve a JSON format hint")
 }
 
 func testPromptClipboardInterpreterInfersFourPromptTypes() throws {
@@ -1453,6 +1454,21 @@ func testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown() 
     }
 }
 
+func testPromptClipboardInterpreterInfersExplicitTextOutputFormats() throws {
+    let cases: [(String, String)] = [
+        ("分析数据并输出 JSON", "JSON"),
+        ("整理配置并输出 YAML", "YAML"),
+        ("提取正文，保存为 TXT", "TXT"),
+        ("保存为 JSON", "JSON"),
+        ("save as Markdown", "Markdown")
+    ]
+    for (text, expectedFormat) in cases {
+        let interpretation = PromptClipboardInterpreter.interpret(text)
+        try expect(interpretation.suggestedType == .text, "explicit \(expectedFormat) output should infer a text Prompt")
+        try expect(interpretation.formatHint == expectedFormat, "explicit \(expectedFormat) output should preserve its format hint")
+    }
+}
+
 do {
     try testLibraryURLResolution()
     try testExistingLibraryValidationDoesNotCreateDatabase()
@@ -1522,6 +1538,7 @@ do {
     try testPromptComposerTypeDecisionDelegatesReferenceImageVideoSemantics()
     try testPromptComposerMetadataPolicyUsesExactSameTypeModels()
     try testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown()
+    try testPromptClipboardInterpreterInfersExplicitTextOutputFormats()
     try testPromptRepositoryBatchFolderUpdateRollsBack()
     try testPromptRepositoryFolderUpdatePreservesVersions()
     print("PromptStudioCoreUnitTests passed")

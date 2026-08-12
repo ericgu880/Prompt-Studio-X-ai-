@@ -1242,7 +1242,7 @@ final class AppState: ObservableObject {
     func savePrompt(
         title: String,
         type: PromptType,
-        modelId: String,
+        modelId: String?,
         prompt: String,
         negativePrompt: String,
         tags: [String],
@@ -1266,14 +1266,50 @@ final class AppState: ObservableObject {
                 )
             }
             item.referenceAssets.append(contentsOf: newReferences)
+            if type == .text, item.type != .text {
+                if !item.assetPath.isEmpty,
+                   !item.referenceAssets.contains(where: { $0.path == item.assetPath }) {
+                    item.referenceAssets.append(
+                        ReferenceAsset(
+                            type: item.format,
+                            path: item.assetPath,
+                            label: URL(fileURLWithPath: item.assetPath).deletingPathExtension().lastPathComponent
+                        )
+                    )
+                }
+                if let textAssetURL = try createTextPromptAssetIfNeeded(
+                    title: title,
+                    type: .text,
+                    prompt: prompt,
+                    parameters: parameters,
+                    hasPreviewImage: false
+                ) {
+                    let assetKind = AppKitBridge.assetKind(for: textAssetURL)
+                    let fileInfo = AppKitBridge.fileInfo(for: textAssetURL, assetKind: assetKind)
+                    item.assetKind = assetKind
+                    item.assetPath = textAssetURL.path
+                    item.thumbnailPath = textAssetURL.path
+                    item.aspectRatio = Self.normalizedAspectRatio(width: fileInfo.width, height: fileInfo.height)
+                    item.width = fileInfo.width
+                    item.height = fileInfo.height
+                    item.format = fileInfo.format
+                    item.fileSize = fileInfo.fileSize
+                }
+            }
         } catch {
             modal = .error(error.localizedDescription)
             return
         }
         item.title = title
         item.type = type
-        item.modelId = modelId
-        item.modelName = models.first(where: { $0.id == modelId })?.name ?? item.modelName
+        item.category = type.displayName
+        if let modelId {
+            item.modelId = modelId
+            item.modelName = models.first(where: { $0.id == modelId })?.name
+                ?? (modelId == PromptComposerMetadataPolicy.unspecifiedModelID
+                    ? PromptComposerMetadataPolicy.unspecifiedModelName
+                    : item.modelName)
+        }
         item.tags = tags
         item.updatedAt = Date()
         if filter.collection != .recent {
@@ -1344,7 +1380,7 @@ final class AppState: ObservableObject {
     func createPrompt(
         title: String,
         type: PromptType,
-        modelId: String,
+        modelId: String?,
         prompt: String,
         negativePrompt: String,
         tags: [String],
@@ -1353,8 +1389,14 @@ final class AppState: ObservableObject {
         referenceURLs: [URL] = []
     ) {
         guard requireFeature(.proCreatePrompt) else { return }
-        let model = models.first(where: { $0.id == modelId })
-            ?? ModelProfile(id: "local_asset", name: "Local Asset", type: type, parameters: [])
+        let model = modelId.flatMap { requestedID in
+            models.first(where: { $0.id == requestedID && $0.type == type })
+        } ?? ModelProfile(
+            id: PromptComposerMetadataPolicy.unspecifiedModelID,
+            name: PromptComposerMetadataPolicy.unspecifiedModelName,
+            type: type,
+            parameters: []
+        )
         let id = UUID().uuidString
         let version = PromptVersion(
             promptItemId: id,
