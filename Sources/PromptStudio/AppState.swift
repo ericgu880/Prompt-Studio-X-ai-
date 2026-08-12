@@ -345,6 +345,7 @@ final class AppState: ObservableObject {
     @Published var isListView = false
     @Published var isImporting = false
     @Published var isPreviewPresented = false
+    @Published var referenceLightbox: ReferenceAsset?
     @Published var promptComposerMode: PromptComposerMode?
     @Published var pendingSmartPasteRequest: PromptComposerPrefill?
     @Published var markdownEditorItemID: String?
@@ -758,6 +759,7 @@ final class AppState: ObservableObject {
         let normalizedPrimaryID = primaryID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
         let nextState = SelectionState(primaryID: normalizedPrimaryID, ids: ids)
         guard nextState != selectionState else { return }
+        referenceLightbox = nil
         if let normalizedPrimaryID {
             inspectorSelectionStartedAt = [normalizedPrimaryID: DebugPerformanceProbe.now()]
         } else {
@@ -767,6 +769,20 @@ final class AppState: ObservableObject {
         if let normalizedPrimaryID, let item = itemsByID[normalizedPrimaryID] {
             prioritizeReferenceThumbnails(for: item)
         }
+    }
+
+    func presentReferenceLightbox(_ reference: ReferenceAsset) {
+        let fileExtension = URL(fileURLWithPath: reference.path).pathExtension
+        guard AssetFormatCatalog.support(forFileExtension: fileExtension).assetKind == .image,
+              FileManager.default.fileExists(atPath: reference.path) else {
+            showToast("参考图文件不存在")
+            return
+        }
+        referenceLightbox = reference
+    }
+
+    func dismissReferenceLightbox() {
+        referenceLightbox = nil
     }
 
     func recordInspectorReady(itemID: String) {
@@ -794,6 +810,7 @@ final class AppState: ObservableObject {
 
     func openNewPromptComposer(prefill: PromptClipboardInterpretation? = nil) {
         guard requireFeature(.proCreatePrompt) else { return }
+        referenceLightbox = nil
         modal = nil
         isPreviewPresented = false
         markdownEditorItemID = nil
@@ -861,6 +878,7 @@ final class AppState: ObservableObject {
         if selectedID != target.id {
             select(target)
         }
+        referenceLightbox = nil
         modal = nil
         isPreviewPresented = false
         markdownEditorItemID = nil
@@ -1925,6 +1943,7 @@ final class AppState: ObservableObject {
             openEditPromptComposer(for: item)
             return
         }
+        referenceLightbox = nil
         modal = nil
         promptComposerMode = nil
         markdownEditorItemID = nil
@@ -1936,6 +1955,7 @@ final class AppState: ObservableObject {
         guard markdownEditorItemID == nil else { return }
 
         if isPreviewPresented {
+            referenceLightbox = nil
             isPreviewPresented = false
             return
         }

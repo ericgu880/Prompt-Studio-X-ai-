@@ -129,6 +129,7 @@ private struct SidePanelReferenceThumbnail: View {
                         isHovered = hovering
                     }
                 }
+                .modifier(ReferenceZoomCursorModifier(direction: .in))
                 .help("放大参考图")
                 .accessibilityLabel("放大参考图")
             } else {
@@ -145,16 +146,6 @@ private struct SidePanelReferenceThumbnail: View {
                 mode: usesPersistentThumbnail ? .thumbnail(libraryURL: libraryURL) : .original
             )
 
-            if showsPreviewControl {
-                Color.black.opacity(0.28)
-                Circle()
-                    .fill(Color.black.opacity(0.72))
-                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1))
-                    .frame(width: 24, height: 24)
-                Image(systemName: "plus")
-                    .font(StudioFont.symbol(11, weight: .semibold))
-                    .foregroundStyle(Color.white)
-            }
         }
         .frame(width: 62, height: 40)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

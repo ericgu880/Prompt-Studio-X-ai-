@@ -40,7 +40,6 @@ struct ImmersivePreviewOverlay: View {
     @State private var previewPromptHovered = false
     @State private var previewPromptCopyFeedback = false
     @State private var lastPreviewStepDirection: PreviewStepDirection?
-    @State private var previewedReference: ReferenceAsset?
     @GestureState private var imageDragTranslation: CGSize = .zero
 
     init(
@@ -118,7 +117,7 @@ struct ImmersivePreviewOverlay: View {
                         }
                 }
 
-                if item.assetKind == .image || previewedReference != nil {
+                if item.assetKind == .image {
                     PreviewZoomControl(
                         scale: imageScale,
                         onZoomOut: { adjustImageScale(by: -0.25) },
@@ -140,18 +139,21 @@ struct ImmersivePreviewOverlay: View {
             if !item.isTextDocumentLike {
                 PreviewInputMonitor(
                     onExit: {
-                        state.isPreviewPresented = false
+                        if state.referenceLightbox != nil {
+                            state.dismissReferenceLightbox()
+                        } else {
+                            state.isPreviewPresented = false
+                        }
                     },
                     onNavigateStep: navigatePreviewStep,
                     onZoom: { delta in
-                        guard item.assetKind == .image || previewedReference != nil else { return }
+                        guard item.assetKind == .image else { return }
                         adjustImageScale(by: delta)
                     }
                 )
             }
         }
         .onChange(of: item.id) { _, _ in
-            previewedReference = nil
             resetImageTransform()
         }
         .task(id: primaryAssetPreloadPaths(currentID: item.id)) {
@@ -229,17 +231,6 @@ struct ImmersivePreviewOverlay: View {
         if item.isMediaPromptPlaceholder {
             PromptVirtualCover(type: item.type)
                 .onTapGesture { state.openEditPromptComposer(for: item) }
-        } else if let path = previewedReference?.path {
-            OverlayImagePreview(path: path, scale: imageScale, offset: activeImageOffset)
-                .contentShape(Rectangle())
-                .gesture(imagePanGesture)
-                .onTapGesture {
-                    previewedReference = nil
-                    resetImageTransform()
-                }
-                .modifier(ReferenceZoomOutCursorModifier(isActive: true))
-                .accessibilityLabel("参考图预览")
-                .accessibilityHint("点击返回主图")
         } else if item.assetKind == .video {
             OverlayVideoPlayer(path: item.assetPath)
         } else if item.assetKind == .audio {
@@ -364,8 +355,7 @@ struct ImmersivePreviewOverlay: View {
             references: item.referenceAssets,
             libraryURL: state.libraryURL
         ) { reference in
-            previewedReference = reference
-            resetImageTransform()
+            state.presentReferenceLightbox(reference)
         }
     }
 
@@ -457,58 +447,6 @@ struct ImmersivePreviewOverlay: View {
             return "\(item.assetKind.displayName) 文件无可读取文本摘要。"
         }
     }
-}
-
-private struct ReferenceZoomOutCursorModifier: ViewModifier {
-    let isActive: Bool
-    @State private var isCursorPushed = false
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                if hovering, isActive, !isCursorPushed {
-                    ReferencePreviewCursor.zoomOut.push()
-                    isCursorPushed = true
-                } else if (!hovering || !isActive), isCursorPushed {
-                    NSCursor.pop()
-                    isCursorPushed = false
-                }
-            }
-            .onChange(of: isActive) { _, active in
-                guard !active, isCursorPushed else { return }
-                NSCursor.pop()
-                isCursorPushed = false
-            }
-            .onDisappear {
-                if isCursorPushed {
-                    NSCursor.pop()
-                    isCursorPushed = false
-                }
-            }
-    }
-}
-
-private enum ReferencePreviewCursor {
-    static let zoomOut: NSCursor = {
-        let size = NSSize(width: 28, height: 28)
-        let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.black.withAlphaComponent(0.76).setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 1.5, dy: 1.5)).fill()
-            NSColor.white.withAlphaComponent(0.72).setStroke()
-            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1.5, dy: 1.5))
-            circle.lineWidth = 1
-            circle.stroke()
-            NSColor.white.setStroke()
-            let minus = NSBezierPath()
-            minus.move(to: NSPoint(x: 9, y: 14))
-            minus.line(to: NSPoint(x: 19, y: 14))
-            minus.lineWidth = 2
-            minus.lineCapStyle = .round
-            minus.stroke()
-            return true
-        }
-        return NSCursor(image: image, hotSpot: NSPoint(x: 14, y: 14))
-    }()
 }
 
 private struct MarkdownDocumentPreviewContent: View {

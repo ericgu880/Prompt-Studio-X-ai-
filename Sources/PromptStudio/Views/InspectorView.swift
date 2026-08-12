@@ -823,7 +823,9 @@ struct InspectorView: View {
         SidePanelReferenceSection(
             references: item.referenceAssets,
             libraryURL: state.libraryURL
-        )
+        ) { reference in
+            state.presentReferenceLightbox(reference)
+        }
     }
 
     private func actionSection(_ item: PromptItem) -> some View {

@@ -237,6 +237,13 @@ struct PromptStudioView: View {
                     .zIndex(90)
             }
 
+            if let reference = state.referenceLightbox {
+                ReferenceAssetLightbox(reference: reference) {
+                    state.dismissReferenceLightbox()
+                }
+                .zIndex(110)
+            }
+
             if let toast = state.toast {
                 Text(toast)
                     .font(StudioFont.font(13))
