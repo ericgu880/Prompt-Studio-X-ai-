@@ -25,6 +25,7 @@ require_pattern "$OVERLAYS" 'case \.edit\(let itemID\)' "Composer edits must ret
 require_pattern "$APP_STATE" 'func savePrompt\([[:space:]]*$' "App state must expose an item-scoped edit save API."
 require_pattern "$APP_STATE" 'migratePromptPlaceholders' "Repository placeholder migration must run during app load."
 require_pattern "$APP_STATE" 'guard item\.hasAvailablePrimaryAsset' "File operations must guard missing primary assets."
+require_pattern "$APP_STATE" '!oldPrimaryIsAvailable' "A missing old primary file must not block changing a Prompt type."
 require_pattern "$BRIDGE" 'choosePrimaryAsset' "The picker must support one image, video, or audio primary asset."
 require_pattern "$OVERLAYS" 'primaryAssetURL' "The composer must use a generic primary asset URL."
 require_pattern "$OVERLAYS" '素材类型与当前类型不同' "Mismatched primary assets must ask whether to switch type or become references."

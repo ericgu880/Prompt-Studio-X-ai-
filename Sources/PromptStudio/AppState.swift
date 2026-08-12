@@ -1424,7 +1424,12 @@ final class AppState: ObservableObject {
         var primaryAssetChanged = false
 
         do {
-            guard item.type == type || primaryAssetUpdate != .unchanged || preserveExistingPrimaryAsReference || oldAssetPath.isEmpty else {
+            let oldPrimaryIsAvailable = oldAssetPath.isEmpty || FileManager.default.fileExists(atPath: oldAssetPath)
+            guard item.type == type
+                    || primaryAssetUpdate != .unchanged
+                    || preserveExistingPrimaryAsReference
+                    || oldAssetPath.isEmpty
+                    || !oldPrimaryIsAvailable else {
                 throw CocoaError(.validationMissingMandatoryProperty)
             }
 
