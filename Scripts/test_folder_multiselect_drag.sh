@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_FILE="$ROOT_DIR/Sources/PromptStudio/AppState.swift"
+VIEW_FILE="$ROOT_DIR/Sources/PromptStudio/Views/PromptStudioView.swift"
+
+require_pattern() {
+    local file="$1"
+    local pattern="$2"
+    local message="$3"
+    if ! /usr/bin/grep -Fq "$pattern" "$file"; then
+        echo "$message" >&2
+        exit 1
+    fi
+}
+
+require_pattern "$STATE_FILE" '@Published private(set) var selectedFolderIDs' \
+    "AppState must keep a dedicated multi-folder selection."
+require_pattern "$STATE_FILE" 'func selectFolders(ids:' \
+    "AppState must expose an ordered multi-folder selection update."
+require_pattern "$STATE_FILE" 'func moveFolders(' \
+    "Folder drag/drop must submit the full folder selection."
+require_pattern "$STATE_FILE" 'func beginDeleteSelectedFolders' \
+    "Command+Backspace and context menus must delete the selected folder group."
+
+require_pattern "$VIEW_FILE" 'static let promptStudioFolderIDs' \
+    "Folder drag/drop must use a dedicated pasteboard type."
+require_pattern "$VIEW_FILE" 'FolderDragPayload.pasteboardTypeIdentifier' \
+    "Folder drag/drop must encode a versioned folder payload."
+require_pattern "$VIEW_FILE" 'selectFolder: { [weak self] folderID, modifiers in' \
+    "Native masonry folder cards must forward Command and Shift modifiers."
+require_pattern "$VIEW_FILE" 'beginFolderDrag:' \
+    "Native masonry folder cards must start a multi-folder drag session."
+require_pattern "$VIEW_FILE" 'FolderDragPreviewPlan(' \
+    "Multi-folder drag must build the shared stacked-preview plan."
+require_pattern "$VIEW_FILE" 'case .folders' \
+    "Marquee selection must lock to a folder-only selection domain."
+require_pattern "$VIEW_FILE" 'UTType.promptStudioFolderIDs.identifier' \
+    "Folder rows must accept the dedicated folder payload."
+require_pattern "$VIEW_FILE" 'providers.first(where: {' \
+    "Drop targets must locate the payload owner instead of assuming the first stacked preview owns data."
+require_pattern "$VIEW_FILE" 'state.moveFolders(' \
+    "Both sidebar and masonry drop targets must move the full folder payload."
+require_pattern "$VIEW_FILE" 'event.modifierFlags.intersection([.command, .shift])' \
+    "Folder click capture must preserve Finder-style selection modifiers."
+require_pattern "$VIEW_FILE" 'FolderActionsContextMenu(folder: row.folder, usesMiddleFolderSelection: true)' \
+    "Only middle folder cards may preserve a multi-folder context-menu selection."
+require_pattern "$VIEW_FILE" 'primaryID: row.folder.id' \
+    "Right-clicking a selected folder must make the clicked folder primary without collapsing the group."
+require_pattern "$VIEW_FILE" 'animatesToStartingPositionsOnCancelOrFail = false' \
+    "Cancelled folder drags must disappear immediately without a return animation."
+
+echo "Folder multi-selection and drag regression tests passed"

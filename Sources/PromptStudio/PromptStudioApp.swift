@@ -113,10 +113,18 @@ struct PromptStudioApp: App {
                     .keyboardShortcut(shortcutStore.binding(for: .preview).keyEquivalent, modifiers: shortcutStore.binding(for: .preview).eventModifiers)
                 Button("移到回收站") {
                     guard !AppKitBridge.isTextInputActive() else { return }
-                    appState.moveSelectedToTrash()
+                    if appState.selectedFolderIDs.isEmpty {
+                        appState.moveSelectedToTrash()
+                    } else {
+                        appState.beginDeleteSelectedFolders()
+                    }
                 }
                     .keyboardShortcut(.delete, modifiers: .command)
-                    .disabled(appState.selectedItem == nil || appState.selectedItem?.isDeleted == true || AppKitBridge.isTextInputActive())
+                    .disabled(
+                        (appState.selectedFolderIDs.isEmpty
+                            && (appState.selectedItem == nil || appState.selectedItem?.isDeleted == true))
+                            || AppKitBridge.isTextInputActive()
+                    )
             }
 
             CommandGroup(after: .appSettings) {

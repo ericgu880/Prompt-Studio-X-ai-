@@ -1783,7 +1783,7 @@ struct FolderDeleteConfirmationSheet: View {
     var body: some View {
         PromptFormShell(title: "删除文件夹") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("确定删除「\(request.folderName)」？")
+                Text(request.folderCount > 1 ? "确定删除 \(request.folderCount) 个文件夹？" : "确定删除「\(request.folderName)」？")
                     .font(StudioFont.font(14, weight: .semibold))
                 Text("文件夹及其子文件夹内 \(request.itemCount) 个素材将移入回收站，可从回收站恢复。文件夹树会从侧栏中移除。")
                     .font(StudioFont.font(13))
@@ -1794,7 +1794,7 @@ struct FolderDeleteConfirmationSheet: View {
             Button("取消") { dismiss() }
                 .buttonStyle(TextHoverButtonStyle())
             Button("移入回收站并删除") {
-                state.deleteFolderMovingItemsToTrash(id: request.folderID)
+                state.deleteFoldersMovingItemsToTrash(ids: request.folderIDs)
                 dismiss()
             }
             .buttonStyle(CapsuleButtonStyle(filled: true))

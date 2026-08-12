@@ -22,11 +22,13 @@ for required in \
     fi
 done
 
+drag_session_count=$(/usr/bin/grep -Fc 'let session = collectionView.beginDraggingSession(' "$SOURCE_FILE")
+cancel_animation_count=$(/usr/bin/grep -A5 -F 'let session = collectionView.beginDraggingSession(' "$SOURCE_FILE" | \
+    /usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false')
 if [[ $(/usr/bin/grep -Fc 'endedAt screenPoint: NSPoint' "$SOURCE_FILE") -ne 1 ]] || \
-   [[ $(/usr/bin/grep -Fc 'let session = collectionView.beginDraggingSession(' "$SOURCE_FILE") -ne 1 ]] || \
-   [[ $(/usr/bin/grep -A5 -F 'let session = collectionView.beginDraggingSession(' "$SOURCE_FILE" | \
-        /usr/bin/grep -Fc 'session.animatesToStartingPositionsOnCancelOrFail = false') -ne 1 ]]; then
-    echo "The collection view must own one drag session and disable failed-drag return animation when it starts." >&2
+   [[ "$drag_session_count" -lt 1 ]] || \
+   [[ "$cancel_animation_count" -ne "$drag_session_count" ]]; then
+    echo "Every collection-view drag session must disable failed-drag return animation when it starts." >&2
     exit 1
 fi
 

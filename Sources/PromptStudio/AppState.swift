@@ -198,8 +198,9 @@ final class AppState: ObservableObject {
 
     struct FolderDeleteRequest: Identifiable, Equatable {
         let id = UUID()
-        let folderID: String
+        let folderIDs: [String]
         let folderName: String
+        let folderCount: Int
         let itemCount: Int
     }
 
@@ -308,6 +309,7 @@ final class AppState: ObservableObject {
     /// The folder currently shown in the inspector without changing the active collection.
     /// This is intentionally separate from `filter.collection`: a single click previews a
     /// folder, while double-click/arrow actions continue to enter it.
+    @Published private(set) var selectedFolderIDs: Set<String> = []
     @Published private(set) var selectedFolderID: String?
     var selectedID: String? { selectionState.primaryID }
     var selectedIDs: Set<String> { selectionState.ids }
@@ -326,6 +328,23 @@ final class AppState: ObservableObject {
             selectedItemIDs: selectedIDs,
             primaryID: selectedID,
             visualItemIDs: visualIDs
+        )
+    }
+
+    func folderSelectionActionContext(
+        clickedFolderID: String,
+        visualFolderIDs: [String]? = nil
+    ) -> FolderSelectionActionContext {
+        let visualIDs = visualFolderIDs ?? {
+            let currentChildren = childFolderRowsForCurrentCollection().map(\.id)
+            return currentChildren.isEmpty ? folderRows().map(\.id) : currentChildren
+        }()
+        return FolderSelectionActionContext.resolve(
+            clickedFolderID: clickedFolderID,
+            selectedFolderIDs: selectedFolderIDs,
+            primaryID: selectedFolderID,
+            visualFolderIDs: visualIDs,
+            folders: folders
         )
     }
 
@@ -625,6 +644,7 @@ final class AppState: ObservableObject {
         expandedFolderIDs = Set(data.folders.map(\.id))
         items = data.items
         tags = data.tags
+        clearSelectedFolder()
         updateSelection(ids: [], primaryID: nil)
         isBatchingFilterUpdate = true
         filter = PromptFilter()
@@ -671,6 +691,7 @@ final class AppState: ObservableObject {
         items = []
         folders = []
         tags = []
+        clearSelectedFolder()
         updateSelection(ids: [], primaryID: nil)
         refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
 
@@ -725,18 +746,24 @@ final class AppState: ObservableObject {
         updateSelection(ids: ids, primaryID: primaryID)
     }
 
-    /// Selects a folder for the right inspector without navigating away from the current view.
-    func selectFolderForPreview(_ folder: LibraryFolder) {
+    /// Selects folders for the right inspector without navigating away from the current view.
+    func selectFolders(ids: Set<String>, primaryID: String? = nil) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            selectedFolderID = folder.id
+            selectedFolderIDs = ids
+            selectedFolderID = primaryID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
             updateSelection(ids: [], primaryID: nil)
         }
     }
 
+    func selectFolderForPreview(_ folder: LibraryFolder) {
+        selectFolders(ids: [folder.id], primaryID: folder.id)
+    }
+
     func clearSelectedFolder() {
-        guard selectedFolderID != nil else { return }
+        guard selectedFolderID != nil || !selectedFolderIDs.isEmpty else { return }
+        selectedFolderIDs = []
         selectedFolderID = nil
     }
 
@@ -2333,33 +2360,34 @@ final class AppState: ObservableObject {
     }
 
     func moveFolder(_ folder: LibraryFolder, toParentID parentID: String?) {
+        moveFolders([folder.id], toParentID: parentID)
+    }
+
+    func moveFolders(_ folderIDs: [String], toParentID parentID: String?) {
         guard requireFeature(.proManageCollections) else { return }
-        guard folder.parentId != parentID else { return }
-        if let parentID, descendantFolderIDs(of: folder.id, includingSelf: true).contains(parentID) {
-            showToast("不能移动到自身或子文件夹")
+        guard let repository else {
+            modal = .error("资料库尚未连接")
             return
         }
-        guard !folders.contains(where: {
-            $0.id != folder.id
-                && $0.parentId == parentID
-                && $0.name.caseInsensitiveCompare(folder.name) == .orderedSame
-        }) else {
-            showToast("目标位置已有同名文件夹")
-            return
-        }
-
-        var movedFolder = folder
-        movedFolder.parentId = parentID
-        movedFolder.sortOrder = (folders.filter { $0.parentId == parentID }.map(\.sortOrder).max() ?? -1) + 1
-
         do {
-            try repository?.saveFolder(movedFolder)
-            folders = try repository?.loadFolders() ?? folders
+            let contextIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
+                selectedFolderIDs: folderIDs,
+                folders: folders
+            )
+            let plan = try FolderBatchMovePlanner.plan(
+                allFolders: folders,
+                sourceFolderIDs: contextIDs,
+                targetParentID: parentID
+            )
+            try repository.updateFolderParentsAndSort(plan.updates)
+            folders = try repository.loadFolders()
             if let parentID {
                 expandedFolderIDs.insert(parentID)
             }
-            selectFolder(movedFolder)
-            showToast("已移动文件夹")
+            clearSelectedFolder()
+            showToast(plan.sourceFolderIDs.count > 1 ? "已移动 \(plan.sourceFolderIDs.count) 个文件夹" : "已移动文件夹")
+        } catch let error as FolderBatchMoveError {
+            showToast(error.localizedDescription)
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -2379,12 +2407,30 @@ final class AppState: ObservableObject {
     }
 
     func beginDeleteFolder(_ folder: LibraryFolder) {
-        selectFolder(folder)
+        let context = folderSelectionActionContext(clickedFolderID: folder.id)
+        selectFolders(ids: Set(context.orderedFolderIDs), primaryID: context.primaryID)
+        beginDeleteSelectedFolders()
+    }
+
+    func beginDeleteSelectedFolders() {
+        beginDeleteFolders(Array(selectedFolderIDs))
+    }
+
+    func beginDeleteFolders(_ folderIDs: [String]) {
+        let normalizedIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
+            selectedFolderIDs: folderIDs,
+            folders: folders
+        )
+        guard !normalizedIDs.isEmpty else { return }
+        let selectedNames = normalizedIDs.compactMap { folder(withID: $0)?.name }
+        let allTreeIDs = Set(normalizedIDs.flatMap { Array(descendantFolderIDs(of: $0, includingSelf: true)) })
+        let count = items.filter { !$0.isDeleted && allTreeIDs.contains($0.folderId) }.count
         modal = .folderDeleteConfirmation(
             FolderDeleteRequest(
-                folderID: folder.id,
-                folderName: folder.name,
-                itemCount: itemCount(in: folder, includingDescendants: true)
+                folderIDs: normalizedIDs,
+                folderName: selectedNames.first ?? "所选文件夹",
+                folderCount: normalizedIDs.count,
+                itemCount: count
             )
         )
     }
@@ -2547,20 +2593,22 @@ final class AppState: ObservableObject {
     }
 
     func deleteFolderMovingItemsToTrash(id: String) {
-        guard let folder = folders.first(where: { $0.id == id }) else { return }
+        deleteFoldersMovingItemsToTrash(ids: [id])
+    }
+
+    func deleteFoldersMovingItemsToTrash(ids: [String]) {
+        guard let repository else { return }
         do {
             let deletedAt = Date()
-            let folderIDs = descendantFolderIDs(of: folder.id, includingSelf: true)
-            for item in items where !item.isDeleted && folderIDs.contains(item.folderId) {
-                try repository?.markDeleted(itemID: item.id, deletedAt: deletedAt)
-            }
-            try repository?.deleteFolders(ids: Array(folderIDs))
+            let folderIDs = Set(ids.flatMap { Array(descendantFolderIDs(of: $0, includingSelf: true)) })
+            try repository.deleteFolderSubtrees(sourceFolderIDs: ids, deletedAt: deletedAt)
             if case .folder(let activeFolderID) = filter.collection, folderIDs.contains(activeFolderID) {
                 filter.collection = .all
                 filter.type = nil
             }
+            clearSelectedFolder()
             reload()
-            showToast("文件夹已删除，素材已移入回收站")
+            showToast(ids.count > 1 ? "文件夹已批量删除，素材已移入回收站" : "文件夹已删除，素材已移入回收站")
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -2984,6 +3032,12 @@ final class AppState: ObservableObject {
     private func reload(selecting id: String? = nil) {
         do {
             folders = try repository?.loadFolders() ?? []
+            let validFolderIDs = selectedFolderIDs.intersection(Set(folders.map(\.id)))
+            if validFolderIDs.isEmpty {
+                clearSelectedFolder()
+            } else if validFolderIDs != selectedFolderIDs {
+                selectFolders(ids: validFolderIDs, primaryID: selectedFolderID)
+            }
             items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
             refreshFilteredItems(selecting: id)

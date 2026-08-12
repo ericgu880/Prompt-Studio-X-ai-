@@ -8,11 +8,13 @@ private let useNativeMasonryCollectionView = true
 
 private extension NSPasteboard.PasteboardType {
     static let promptStudioItemIDs = NSPasteboard.PasteboardType(PromptItemDragPayload.pasteboardTypeIdentifier)
+    static let promptStudioFolderIDs = NSPasteboard.PasteboardType(FolderDragPayload.pasteboardTypeIdentifier)
     static let promptStudioDragPreview = NSPasteboard.PasteboardType("com.promptstudio.internal.drag-preview")
 }
 
 private extension UTType {
     static let promptStudioItemIDs = UTType(importedAs: PromptItemDragPayload.pasteboardTypeIdentifier)
+    static let promptStudioFolderIDs = UTType(importedAs: FolderDragPayload.pasteboardTypeIdentifier)
 }
 
 private let promptStudioDragTextPrefix = "promptstudio-item-ids:"
@@ -45,6 +47,14 @@ private func promptStudioPasteboardItem(itemIDs: [String]) -> NSPasteboardItem? 
 private func promptStudioVisualPasteboardItem(itemID: String) -> NSPasteboardItem {
     let item = NSPasteboardItem()
     item.setString(itemID, forType: .promptStudioDragPreview)
+    return item
+}
+
+private func promptStudioFolderPasteboardItem(folderIDs: [String]) -> NSPasteboardItem? {
+    let payload = FolderDragPayload(folderIDs: folderIDs)
+    guard let data = try? payload.encoded() else { return nil }
+    let item = NSPasteboardItem()
+    item.setData(data, forType: .promptStudioFolderIDs)
     return item
 }
 
@@ -266,13 +276,18 @@ struct PromptStudioView: View {
                 }
                 DeleteSelectionKeyMonitor(
                     canDelete: {
+                        if !state.selectedFolderIDs.isEmpty { return true }
                         let selectedIDs = state.selectedIDs.isEmpty
                             ? state.selectedID.map { Set([$0]) } ?? []
                             : state.selectedIDs
                         return state.items.contains { selectedIDs.contains($0.id) && !$0.isDeleted }
                     },
                     onDelete: {
-                        state.moveSelectedToTrash()
+                        if state.selectedFolderIDs.isEmpty {
+                            state.moveSelectedToTrash()
+                        } else {
+                            state.beginDeleteSelectedFolders()
+                        }
                     }
                 )
                 AppShortcutKeyMonitor(
@@ -1525,6 +1540,7 @@ private struct FolderTreeRowFramePreferenceKey: PreferenceKey {
 private struct FolderActionsContextMenu: View {
     @EnvironmentObject private var state: AppState
     let folder: LibraryFolder
+    var usesMiddleFolderSelection = false
     let renameAction: () -> Void
 
     var body: some View {
@@ -1569,16 +1585,25 @@ private struct FolderActionsContextMenu: View {
         Divider()
 
         Button(role: .destructive) {
-            state.beginDeleteFolder(folder)
+            if usesMiddleFolderSelection {
+                state.beginDeleteFolder(folder)
+            } else {
+                state.beginDeleteFolders([folder.id])
+            }
         } label: {
-            Label("删除文件夹", systemImage: "trash")
+            Label(actionFolderIDs.count > 1 ? "删除 \(actionFolderIDs.count) 个文件夹" : "删除文件夹", systemImage: "trash")
         }
     }
 
+    private var actionFolderIDs: [String] {
+        guard usesMiddleFolderSelection else { return [folder.id] }
+        return state.folderSelectionActionContext(clickedFolderID: folder.id).orderedFolderIDs
+    }
+
     private var moveFolderMenu: some View {
-        Menu {
+        return Menu {
             Button {
-                state.moveFolder(folder, toParentID: nil)
+                state.moveFolders(actionFolderIDs, toParentID: nil)
             } label: {
                 if folder.parentId == nil {
                     Label("顶层", systemImage: "checkmark")
@@ -1592,7 +1617,7 @@ private struct FolderActionsContextMenu: View {
 
             ForEach(state.folderMoveDestinationRows(for: folder)) { row in
                 Button {
-                    state.moveFolder(folder, toParentID: row.folder.id)
+                    state.moveFolders(actionFolderIDs, toParentID: row.folder.id)
                 } label: {
                     let title = "\(String(repeating: "  ", count: row.level))\(row.folder.name)"
                     if folder.parentId == row.folder.id {
@@ -1604,7 +1629,7 @@ private struct FolderActionsContextMenu: View {
                 .disabled(folder.parentId == row.folder.id)
             }
         } label: {
-            Label("移动文件夹至", systemImage: "folder.badge.arrow.right")
+            Label(actionFolderIDs.count > 1 ? "移动 \(actionFolderIDs.count) 个文件夹至" : "移动文件夹至", systemImage: "folder.badge.arrow.right")
         }
     }
 }
@@ -1713,7 +1738,7 @@ private struct FolderTreeRowView: View {
                 }
         )
         .onDrop(
-            of: [UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier, UTType.fileURL.identifier],
+            of: [UTType.promptStudioFolderIDs.identifier, UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier, UTType.fileURL.identifier],
             isTargeted: $isDropTargeted,
             perform: handleDrop
         )
@@ -1795,6 +1820,16 @@ private struct FolderTreeRowView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        if let provider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(FolderDragPayload.pasteboardTypeIdentifier)
+        }) {
+            provider.loadDataRepresentation(forTypeIdentifier: FolderDragPayload.pasteboardTypeIdentifier) { data, _ in
+                guard let data, let payload = try? FolderDragPayload.decode(data) else { return }
+                Task { @MainActor in state.moveFolders(payload.folderIDs, toParentID: row.folder.id) }
+            }
+            return true
+        }
+
         if providers.contains(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
             Task { @MainActor in
                 let urls = await loadDroppedFileURLs(from: providers)
@@ -1974,9 +2009,20 @@ private struct SidebarRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
-        .onDrop(of: [UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
-            guard let dropFolderID, let provider = providers.first else { return false }
-            if provider.hasItemConformingToTypeIdentifier(UTType.promptStudioItemIDs.identifier) {
+        .onDrop(of: [UTType.promptStudioFolderIDs.identifier, UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
+            guard let dropFolderID else { return false }
+            if let provider = providers.first(where: {
+                $0.hasItemConformingToTypeIdentifier(UTType.promptStudioFolderIDs.identifier)
+            }) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.promptStudioFolderIDs.identifier) { data, _ in
+                    guard let data, let payload = try? FolderDragPayload.decode(data) else { return }
+                    Task { @MainActor in state.moveFolders(payload.folderIDs, toParentID: dropFolderID) }
+                }
+                return true
+            }
+            if let provider = providers.first(where: {
+                $0.hasItemConformingToTypeIdentifier(UTType.promptStudioItemIDs.identifier)
+            }) {
                 provider.loadDataRepresentation(forTypeIdentifier: UTType.promptStudioItemIDs.identifier) { data, _ in
                     guard let data, let payload = try? PromptItemDragPayload.decode(data) else { return }
                     Task { @MainActor in
@@ -1985,6 +2031,9 @@ private struct SidebarRow: View {
                 }
                 return true
             }
+            guard let provider = providers.first(where: {
+                $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+            }) else { return false }
             provider.loadObject(ofClass: NSString.self) { object, _ in
                 guard let text = object as? String,
                       let itemIDs = promptStudioItemIDs(fromDragText: text) else { return }
@@ -2826,8 +2875,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         collectionView.onBlankClick = { [weak coordinator = context.coordinator] in
             coordinator?.clearSelectionFromBlankClick()
         }
-        collectionView.onMarqueeBegin = { [weak coordinator = context.coordinator] _, additive in
-            coordinator?.beginMarquee(additive: additive)
+        collectionView.onMarqueeBegin = { [weak coordinator = context.coordinator] point, additive in
+            coordinator?.beginMarquee(at: point, additive: additive)
         }
         collectionView.onMarqueeChange = { [weak coordinator = context.coordinator] rect in
             coordinator?.updateMarquee(in: rect)
@@ -2868,6 +2917,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var state: AppState?
         private var entries: [MasonryGridEntry] = []
         private var itemWidth: CGFloat = 250
+        private var selectedFolderIDs: Set<String> = []
         private var selectedFolderID: String?
         private var lastLayoutInputKey: LayoutInputKey?
         private var lastEntryIDs: [String] = []
@@ -2884,12 +2934,21 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var isDatasetUpdateScheduled = false
         private var isInvalidated = false
         private var marqueeBaseItemIDs: Set<String> = []
+        private var marqueeBaseFolderIDs: Set<String> = []
         private var marqueeBaseFolderID: String?
         private var marqueeBasePrimaryID: String?
+        private var marqueeStartPoint: CGPoint?
+        private var marqueeDomain: MarqueeDomain?
         private var isMarqueeAdditive = false
         private var isMarqueeSelecting = false
         private var activeDragContext: PromptItemSelectionActionContext?
+        private var activeFolderDragContext: FolderSelectionActionContext?
         private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
+
+        private enum MarqueeDomain {
+            case items
+            case folders
+        }
 
         private struct PendingDatasetUpdate {
             let folders: [AppState.FolderRow]
@@ -2966,7 +3025,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             guard !isSplitResizing else {
                 pendingDatasetUpdate = nil
                 syncExternalSelectionChange(state.selectedIDs)
-                syncExternalFolderSelection(state.selectedFolderID)
+                syncExternalFolderSelection(state.selectedFolderIDs, primaryID: state.selectedFolderID)
                 return
             }
 
@@ -2984,7 +3043,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             guard layoutInputKey != lastLayoutInputKey else {
                 pendingDatasetUpdate = nil
                 syncExternalSelectionChange(state.selectedIDs)
-                syncExternalFolderSelection(state.selectedFolderID)
+                syncExternalFolderSelection(state.selectedFolderIDs, primaryID: state.selectedFolderID)
                 prepareVisibleThumbnails()
                 return
             }
@@ -3031,7 +3090,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             )
             guard layoutInputKey != lastLayoutInputKey else {
                 syncExternalSelectionChange(state.selectedIDs)
-                syncExternalFolderSelection(state.selectedFolderID)
+                syncExternalFolderSelection(state.selectedFolderIDs, primaryID: state.selectedFolderID)
                 prepareVisibleThumbnails()
                 return
             }
@@ -3048,9 +3107,10 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             reloadDataWithoutAnimation(collectionView)
             lastLayoutInputKey = layoutInputKey
             lastRenderedSelectedItemIDs = state.selectedIDs
-            syncCollectionSelection(state.selectedIDs)
+            selectedFolderIDs = state.selectedFolderIDs
+            selectedFolderID = state.selectedFolderID
+            syncCollectionSelection(state.selectedIDs, folderIDs: state.selectedFolderIDs)
             lastEntryIDs = nextEntryIDs
-            syncExternalFolderSelection(state.selectedFolderID)
 
             if shouldResetScroll {
                 update.scrollView.contentView.scroll(to: .zero)
@@ -3077,6 +3137,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             layout?.configure(entries: entries, columnCount: columnCount, itemWidth: itemWidth)
             lastLayoutInputKey = nil
             reloadDataWithoutAnimation(collectionView)
+            syncCollectionSelection(lastRenderedSelectedItemIDs, folderIDs: selectedFolderIDs)
             publishPreviewNavigationSnapshotIfNeeded()
         }
 
@@ -3108,30 +3169,33 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
 
         private func syncExternalSelectionChange(_ selectedItemIDs: Set<String>) {
             guard selectedItemIDs != lastRenderedSelectedItemIDs else { return }
-            let previousFolderID = selectedFolderID
+            let previousFolderIDs = selectedFolderIDs
             if !selectedItemIDs.isEmpty {
+                selectedFolderIDs = []
                 selectedFolderID = nil
             }
             reloadSelectionChanges(
                 previousItemIDs: lastRenderedSelectedItemIDs,
                 nextItemIDs: selectedItemIDs,
-                previousFolderID: previousFolderID,
-                nextFolderID: selectedFolderID
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: selectedFolderIDs
             )
             lastRenderedSelectedItemIDs = selectedItemIDs
             syncCollectionSelection(selectedItemIDs)
         }
 
-        private func syncExternalFolderSelection(_ nextFolderID: String?) {
-            guard nextFolderID != selectedFolderID else { return }
-            let previousFolderID = selectedFolderID
-            selectedFolderID = nextFolderID
+        private func syncExternalFolderSelection(_ nextFolderIDs: Set<String>, primaryID: String?) {
+            guard nextFolderIDs != selectedFolderIDs || primaryID != selectedFolderID else { return }
+            let previousFolderIDs = selectedFolderIDs
+            selectedFolderIDs = nextFolderIDs
+            selectedFolderID = primaryID
             reloadSelectionChanges(
                 previousItemIDs: lastRenderedSelectedItemIDs,
                 nextItemIDs: lastRenderedSelectedItemIDs,
-                previousFolderID: previousFolderID,
-                nextFolderID: nextFolderID
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: nextFolderIDs
             )
+            syncCollectionSelection(lastRenderedSelectedItemIDs, folderIDs: nextFolderIDs)
         }
 
         func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -3155,9 +3219,16 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 entry: entries[indexPath.item],
                 width: itemWidth,
                 state: state,
-                selectedFolderID: selectedFolderID,
-                selectFolder: { [weak self] folderID in
-                    self?.selectFolderCard(folderID)
+                selectedFolderIDs: selectedFolderIDs,
+                selectFolder: { [weak self] folderID, modifiers in
+                    self?.selectFolderCard(folderID, modifiers: modifiers)
+                },
+                folderActionContext: { [weak self] folderID in
+                    self?.folderActionContext(for: folderID)
+                        ?? FolderSelectionActionContext(orderedFolderIDs: [folderID], primaryID: folderID)
+                },
+                beginFolderDrag: { [weak self] folderID, event, sourceView in
+                    self?.beginFolderDrag(folderID: folderID, event: event, sourceView: sourceView)
                 },
                 selectItem: { [weak self] item, modifiers in
                     self?.selectItem(item, modifiers: modifiers)
@@ -3173,25 +3244,42 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             return masonryItem
         }
 
-        private func selectFolderCard(_ folderID: String) {
-            let previousFolderID = selectedFolderID
+        private func selectFolderCard(_ folderID: String, modifiers: NSEvent.ModifierFlags) {
+            let previousFolderIDs = selectedFolderIDs
             let previousItemIDs = state?.selectedIDs ?? []
-            selectedFolderID = folderID
-            if let folder = state?.folders.first(where: { $0.id == folderID }) {
-                state?.selectFolderForPreview(folder)
+            let visualFolderIDs = layout?.visualFolderIDs ?? entries.compactMap(\.folderRow?.id)
+            let isCommand = modifiers.contains(.command)
+            let isShift = modifiers.contains(.shift)
+            var nextIDs: Set<String>
+            if isShift,
+               let anchorID = selectedFolderID,
+               let anchorIndex = visualFolderIDs.firstIndex(of: anchorID),
+               let targetIndex = visualFolderIDs.firstIndex(of: folderID) {
+                let range = Set(visualFolderIDs[min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)])
+                nextIDs = isCommand ? selectedFolderIDs.union(range) : range
+            } else if isCommand {
+                nextIDs = selectedFolderIDs
+                if nextIDs.remove(folderID) == nil { nextIDs.insert(folderID) }
+            } else {
+                nextIDs = [folderID]
             }
+            selectedFolderIDs = nextIDs
+            selectedFolderID = nextIDs.contains(folderID) ? folderID : nextIDs.first
+            state?.selectFolders(ids: nextIDs, primaryID: selectedFolderID)
             reloadSelectionChanges(
                 previousItemIDs: previousItemIDs,
                 nextItemIDs: [],
-                previousFolderID: previousFolderID,
-                nextFolderID: folderID
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: nextIDs
             )
             lastRenderedSelectedItemIDs = []
+            syncCollectionSelection([], folderIDs: nextIDs)
         }
 
         private func selectItem(_ item: PromptItem, modifiers: NSEvent.ModifierFlags) {
-            let previousFolderID = selectedFolderID
+            let previousFolderIDs = selectedFolderIDs
             let previousItemIDs = state?.selectedIDs ?? []
+            selectedFolderIDs = []
             selectedFolderID = nil
             let visualItemIDs = layout?.visualItemIDs ?? entries.compactMap { entry in
                 guard case .item(let item) = entry else { return nil }
@@ -3213,8 +3301,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 reloadSelectionChanges(
                     previousItemIDs: previousItemIDs,
                     nextItemIDs: state?.selectedIDs ?? [],
-                    previousFolderID: previousFolderID,
-                    nextFolderID: nil
+                    previousFolderIDs: previousFolderIDs,
+                    nextFolderIDs: []
                 )
                 lastRenderedSelectedItemIDs = state?.selectedIDs ?? []
                 syncCollectionSelection(state?.selectedIDs ?? [])
@@ -3229,8 +3317,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             reloadSelectionChanges(
                 previousItemIDs: previousItemIDs,
                 nextItemIDs: state.selectedIDs,
-                previousFolderID: previousFolderID,
-                nextFolderID: nil
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: []
             )
             lastRenderedSelectedItemIDs = state.selectedIDs
             syncCollectionSelection(state.selectedIDs)
@@ -3242,9 +3330,16 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 ?? PromptItemSelectionActionContext(orderedItemIDs: [itemID], primaryID: itemID)
         }
 
-        private func syncCollectionSelection(_ itemIDs: Set<String>) {
+        private func folderActionContext(for folderID: String) -> FolderSelectionActionContext {
+            let visualIDs = layout?.visualFolderIDs ?? entries.compactMap(\.folderRow?.id)
+            return state?.folderSelectionActionContext(clickedFolderID: folderID, visualFolderIDs: visualIDs)
+                ?? FolderSelectionActionContext(orderedFolderIDs: [folderID], primaryID: folderID)
+        }
+
+        private func syncCollectionSelection(_ itemIDs: Set<String>, folderIDs: Set<String> = []) {
             guard let collectionView else { return }
             let indexPaths = Set(itemIDs.compactMap { itemIndexPathsByID[$0] })
+                .union(folderIDs.compactMap { folderIndexPathsByID[$0] })
             collectionView.selectionIndexPaths = indexPaths
         }
 
@@ -3312,6 +3407,90 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             } else {
                 session.draggingFormation = .none
             }
+        }
+
+        private func beginFolderDrag(folderID: String, event: NSEvent, sourceView: NSView) {
+            guard let collectionView else { return }
+            let context = folderActionContext(for: folderID)
+            let nextIDs = Set(context.orderedFolderIDs)
+            if nextIDs != state?.selectedFolderIDs {
+                state?.selectFolders(ids: nextIDs, primaryID: context.primaryID)
+                selectedFolderIDs = nextIDs
+                selectedFolderID = context.primaryID
+                syncCollectionSelection([], folderIDs: nextIDs)
+            }
+            let plan = FolderDragPreviewPlan(
+                orderedFolderIDs: context.orderedFolderIDs,
+                draggedFolderID: folderID
+            )
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let draggedSourceRect = sourceView.convert(sourceView.bounds, to: collectionView)
+            let draggingItems = plan.previewFolderIDs.compactMap { previewFolderID -> NSDraggingItem? in
+                let writer: NSPasteboardWriting
+                if plan.payloadOwnerID == previewFolderID {
+                    guard let payloadWriter = promptStudioFolderPasteboardItem(folderIDs: plan.completePayload.folderIDs) else { return nil }
+                    writer = payloadWriter
+                } else {
+                    writer = promptStudioVisualPasteboardItem(itemID: "folder-\(previewFolderID)")
+                }
+                let draggingItem = NSDraggingItem(pasteboardWriter: writer)
+                let frame = folderDragPreviewFrame(
+                    for: previewFolderID,
+                    draggedFolderID: folderID,
+                    draggedSourceRect: draggedSourceRect,
+                    reduceMotion: reduceMotion,
+                    plan: plan
+                )
+                var contents: NSImage
+                if let indexPath = folderIndexPathsByID[previewFolderID],
+                   let collectionItem = collectionView.item(at: indexPath) as? MasonryCollectionItem {
+                    contents = collectionItem.dragPreviewImage()
+                } else {
+                    contents = placeholderFolderDragPreviewImage(size: frame.size)
+                }
+                if plan.payloadOwnerID == previewFolderID, plan.totalFolderCount > 1 {
+                    contents = dragPreviewImage(contents, addingCountBadge: plan.totalFolderCount)
+                }
+                draggingItem.setDraggingFrame(frame, contents: contents)
+                return draggingItem
+            }
+            guard !draggingItems.isEmpty else { return }
+            activeFolderDragContext = context
+            let session = collectionView.beginDraggingSession(with: draggingItems, event: event, source: self)
+            session.animatesToStartingPositionsOnCancelOrFail = false
+            session.draggingFormation = draggingItems.count > 1 && !reduceMotion ? .stack : .none
+        }
+
+        private func folderDragPreviewFrame(
+            for folderID: String,
+            draggedFolderID: String,
+            draggedSourceRect: CGRect,
+            reduceMotion: Bool,
+            plan: FolderDragPreviewPlan
+        ) -> CGRect {
+            if reduceMotion, plan.previewFolderIDs.count > 1 {
+                let index = plan.previewFolderIDs.firstIndex(of: folderID) ?? 0
+                let depth = CGFloat(plan.previewFolderIDs.count - 1 - index)
+                return draggedSourceRect.offsetBy(dx: -depth * 3, dy: depth * 3)
+            }
+            guard folderID != draggedFolderID,
+                  let indexPath = folderIndexPathsByID[folderID],
+                  let frame = layout?.layoutAttributesForItem(at: indexPath)?.frame else {
+                return draggedSourceRect
+            }
+            return frame
+        }
+
+        private func placeholderFolderDragPreviewImage(size: CGSize) -> NSImage {
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor(calibratedWhite: 0.12, alpha: 0.96).setFill()
+            NSBezierPath(roundedRect: CGRect(origin: .zero, size: size), xRadius: 12, yRadius: 12).fill()
+            if let symbol = NSImage(systemSymbolName: "folder", accessibilityDescription: nil) {
+                symbol.draw(in: CGRect(x: (size.width - 32) / 2, y: (size.height - 32) / 2, width: 32, height: 32))
+            }
+            image.unlockFocus()
+            return image
         }
 
         private func dragPreviewFrame(
@@ -3416,108 +3595,176 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             operation: NSDragOperation
         ) {
             activeDragContext = nil
+            activeFolderDragContext = nil
         }
 
         func clearSelectionFromBlankClick() {
             let previousIDs = state?.selectedIDs ?? []
-            let previousFolderID = selectedFolderID
+            let previousFolderIDs = selectedFolderIDs
+            selectedFolderIDs = []
             selectedFolderID = nil
             state?.clearSelectedFolder()
             state?.selectItems(ids: [])
             reloadSelectionChanges(
                 previousItemIDs: previousIDs,
                 nextItemIDs: [],
-                previousFolderID: previousFolderID,
-                nextFolderID: nil
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: []
             )
             lastRenderedSelectedItemIDs = []
+            syncCollectionSelection([])
         }
 
-        func beginMarquee(additive: Bool) {
+        func beginMarquee(at point: CGPoint, additive: Bool) {
             marqueeBaseItemIDs = state?.selectedIDs ?? []
+            marqueeBaseFolderIDs = selectedFolderIDs
             marqueeBaseFolderID = selectedFolderID
             marqueeBasePrimaryID = state?.selectedID
+            marqueeStartPoint = point
+            marqueeDomain = nil
             isMarqueeAdditive = additive
             isMarqueeSelecting = true
-            selectedFolderID = nil
         }
 
         func updateMarquee(in rect: CGRect) {
             guard isMarqueeSelecting, let state, let layout else { return }
-            let hitIDs = Set(layout.indexPathsForItems(in: rect).compactMap { indexPath -> String? in
-                guard entries.indices.contains(indexPath.item),
-                      case .item(let item) = entries[indexPath.item] else { return nil }
-                return item.id
-            })
-            let nextIDs = MarqueeSelectionResolver.selection(
-                base: marqueeBaseItemIDs,
-                hits: hitIDs,
-                additive: isMarqueeAdditive
-            )
-            guard nextIDs != state.selectedIDs else { return }
-            let previousIDs = state.selectedIDs
-            let primaryID: String?
-            if isMarqueeAdditive,
-               let marqueeBasePrimaryID,
-               nextIDs.contains(marqueeBasePrimaryID) {
-                primaryID = marqueeBasePrimaryID
-            } else {
-                primaryID = layout.visualItemIDs.first(where: nextIDs.contains)
+            let hitIndexPaths = layout.indexPathsForItems(in: rect)
+            if marqueeDomain == nil {
+                let start = marqueeStartPoint ?? rect.origin
+                let firstHit = hitIndexPaths.min { lhs, rhs in
+                    let lhsFrame = layout.layoutAttributesForItem(at: lhs)?.frame ?? .zero
+                    let rhsFrame = layout.layoutAttributesForItem(at: rhs)?.frame ?? .zero
+                    return Self.distance(from: start, to: lhsFrame) < Self.distance(from: start, to: rhsFrame)
+                }
+                if let firstHit, entries.indices.contains(firstHit.item) {
+                    switch entries[firstHit.item] {
+                    case .folder: marqueeDomain = .folders
+                    case .item: marqueeDomain = .items
+                    }
+                }
             }
-            state.selectItems(ids: nextIDs, primaryID: primaryID)
-            reloadSelectionChanges(
-                previousItemIDs: previousIDs,
-                nextItemIDs: nextIDs,
-                previousFolderID: marqueeBaseFolderID,
-                nextFolderID: nil
-            )
-            lastRenderedSelectedItemIDs = nextIDs
+
+            switch marqueeDomain {
+            case .folders:
+                let previousItemIDs = state.selectedIDs
+                let hits = Set(hitIndexPaths.compactMap { indexPath -> String? in
+                    guard entries.indices.contains(indexPath.item), case .folder(let row) = entries[indexPath.item] else { return nil }
+                    return row.id
+                })
+                let nextIDs = MarqueeSelectionResolver.selection(
+                    base: marqueeBaseFolderIDs,
+                    hits: hits,
+                    additive: isMarqueeAdditive
+                )
+                let previousFolderIDs = selectedFolderIDs
+                let primaryID = selectedFolderID.flatMap { nextIDs.contains($0) ? $0 : nil }
+                    ?? layout.visualFolderIDs.first(where: nextIDs.contains)
+                selectedFolderIDs = nextIDs
+                selectedFolderID = primaryID
+                state.selectFolders(ids: nextIDs, primaryID: primaryID)
+                reloadSelectionChanges(
+                    previousItemIDs: previousItemIDs,
+                    nextItemIDs: [],
+                    previousFolderIDs: previousFolderIDs,
+                    nextFolderIDs: nextIDs
+                )
+                lastRenderedSelectedItemIDs = []
+                syncCollectionSelection([], folderIDs: nextIDs)
+            case .items:
+                let hitIDs = Set(hitIndexPaths.compactMap { indexPath -> String? in
+                    guard entries.indices.contains(indexPath.item), case .item(let item) = entries[indexPath.item] else { return nil }
+                    return item.id
+                })
+                let nextIDs = MarqueeSelectionResolver.selection(base: marqueeBaseItemIDs, hits: hitIDs, additive: isMarqueeAdditive)
+                let previousIDs = state.selectedIDs
+                let previousFolderIDs = selectedFolderIDs
+                let primaryID: String?
+                if isMarqueeAdditive, let marqueeBasePrimaryID, nextIDs.contains(marqueeBasePrimaryID) {
+                    primaryID = marqueeBasePrimaryID
+                } else {
+                    primaryID = layout.visualItemIDs.first(where: nextIDs.contains)
+                }
+                selectedFolderIDs = []
+                selectedFolderID = nil
+                state.selectItems(ids: nextIDs, primaryID: primaryID)
+                reloadSelectionChanges(
+                    previousItemIDs: previousIDs,
+                    nextItemIDs: nextIDs,
+                    previousFolderIDs: previousFolderIDs,
+                    nextFolderIDs: []
+                )
+                lastRenderedSelectedItemIDs = nextIDs
+                syncCollectionSelection(nextIDs)
+            case nil:
+                guard !isMarqueeAdditive else { return }
+                let previousItemIDs = state.selectedIDs
+                let previousFolderIDs = selectedFolderIDs
+                selectedFolderIDs = []
+                selectedFolderID = nil
+                state.selectItems(ids: [])
+                reloadSelectionChanges(
+                    previousItemIDs: previousItemIDs,
+                    nextItemIDs: [],
+                    previousFolderIDs: previousFolderIDs,
+                    nextFolderIDs: []
+                )
+                lastRenderedSelectedItemIDs = []
+                syncCollectionSelection([])
+            }
+        }
+
+        private static func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {
+            let x = min(max(point.x, rect.minX), rect.maxX)
+            let y = min(max(point.y, rect.minY), rect.maxY)
+            return hypot(point.x - x, point.y - y)
         }
 
         func endMarquee() {
             isMarqueeSelecting = false
             marqueeBaseItemIDs = []
+            marqueeBaseFolderIDs = []
             marqueeBaseFolderID = nil
             marqueeBasePrimaryID = nil
+            marqueeStartPoint = nil
+            marqueeDomain = nil
             isMarqueeAdditive = false
         }
 
         func cancelMarquee() {
             guard isMarqueeSelecting, let state else { return }
             let previousIDs = state.selectedIDs
-            let previousFolderID = selectedFolderID
+            let previousFolderIDs = selectedFolderIDs
+            selectedFolderIDs = marqueeBaseFolderIDs
             selectedFolderID = marqueeBaseFolderID
-            state.selectItems(ids: marqueeBaseItemIDs, primaryID: marqueeBasePrimaryID)
+            if !marqueeBaseFolderIDs.isEmpty {
+                state.selectFolders(ids: marqueeBaseFolderIDs, primaryID: marqueeBaseFolderID)
+            } else {
+                state.selectItems(ids: marqueeBaseItemIDs, primaryID: marqueeBasePrimaryID)
+            }
             reloadSelectionChanges(
                 previousItemIDs: previousIDs,
                 nextItemIDs: marqueeBaseItemIDs,
-                previousFolderID: previousFolderID,
-                nextFolderID: marqueeBaseFolderID
+                previousFolderIDs: previousFolderIDs,
+                nextFolderIDs: marqueeBaseFolderIDs
             )
             lastRenderedSelectedItemIDs = marqueeBaseItemIDs
+            syncCollectionSelection(marqueeBaseItemIDs, folderIDs: marqueeBaseFolderIDs)
             endMarquee()
         }
 
         private func reloadSelectionChanges(
             previousItemIDs: Set<String>,
             nextItemIDs: Set<String>,
-            previousFolderID: String?,
-            nextFolderID: String?
+            previousFolderIDs: Set<String>,
+            nextFolderIDs: Set<String>
         ) {
             let deselectedItemIDs = previousItemIDs.subtracting(nextItemIDs)
             let selectedItemIDs = nextItemIDs.subtracting(previousItemIDs)
             updateSelectionVisuals(itemIDs: deselectedItemIDs, isSelected: false)
             updateSelectionVisuals(itemIDs: selectedItemIDs, isSelected: true)
 
-            var folderIndexPaths = Set<IndexPath>()
-            if previousFolderID != nextFolderID {
-                if let previousFolderID, let indexPath = folderIndexPathsByID[previousFolderID] {
-                    folderIndexPaths.insert(indexPath)
-                }
-                if let nextFolderID, let indexPath = folderIndexPathsByID[nextFolderID] {
-                    folderIndexPaths.insert(indexPath)
-                }
-            }
+            let changedFolderIDs = previousFolderIDs.symmetricDifference(nextFolderIDs)
+            let folderIndexPaths = Set(changedFolderIDs.compactMap { folderIndexPathsByID[$0] })
 
             if !folderIndexPaths.isEmpty {
                 collectionView?.reloadItems(at: folderIndexPaths)
@@ -3690,11 +3937,13 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
     private var visibleIndexPaths: [(IndexPath, CGRect)] = []
     private var contentSize: CGSize = .zero
     private(set) var visualItemIDs: [String] = []
+    private(set) var visualFolderIDs: [String] = []
 
     func configure(entries: [MasonryGridEntry], columnCount: Int, itemWidth: CGFloat) {
         attributesByIndexPath = [:]
         visibleIndexPaths = []
         visualItemIDs = []
+        visualFolderIDs = []
         guard columnCount > 0 else {
             contentSize = .zero
             invalidateLayout()
@@ -3735,6 +3984,16 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
                 if abs(lhs.y - rhs.y) > 0.5 {
                     return lhs.y < rhs.y
                 }
+                return lhs.x < rhs.x
+            }
+            .map(\.id)
+        visualFolderIDs = placements
+            .compactMap { placement -> (id: String, x: CGFloat, y: CGFloat)? in
+                guard case .folder(let row) = placement.entry else { return nil }
+                return (row.id, placement.frame.minX, placement.frame.minY)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.y - rhs.y) > 0.5 { return lhs.y < rhs.y }
                 return lhs.x < rhs.x
             }
             .map(\.id)
@@ -3818,8 +4077,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         entry: MasonryGridEntry,
         width: CGFloat,
         state: AppState,
-        selectedFolderID: String?,
-        selectFolder: @escaping (String) -> Void,
+        selectedFolderIDs: Set<String>,
+        selectFolder: @escaping (String, NSEvent.ModifierFlags) -> Void,
+        folderActionContext: @escaping (String) -> FolderSelectionActionContext,
+        beginFolderDrag: @escaping (String, NSEvent, NSView) -> Void,
         selectItem: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void,
         actionContext: @escaping (String) -> PromptItemSelectionActionContext,
         beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void
@@ -3942,10 +4203,10 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 SubfolderCardView(
                     row: row,
                     width: width,
-                    isSelected: selectedFolderID == row.id,
-                    onSelect: {
-                        selectFolder(row.id)
-                    }
+                    isSelected: selectedFolderIDs.contains(row.id),
+                    onSelect: { modifiers in selectFolder(row.id, modifiers) },
+                    actionContext: { folderActionContext(row.id) },
+                    beginDrag: { event, sourceView in beginFolderDrag(row.id, event, sourceView) }
                 )
                 .environmentObject(state)
                 .frame(width: width, height: height)
@@ -5399,6 +5660,7 @@ private struct MasonryGridView: View {
             let _ = recordMasonryRenderSample(renderedPlacementsCount: renderedPlacements.count, thumbnailCandidateCount: visibleThumbnailCandidateIDs.count)
             let scrollContentHeight = max(layout.height + Self.contentBottomPadding, proxy.size.height)
             let gridContentHeight = max(1, scrollContentHeight - Self.contentBottomPadding)
+            let visualFolderIDs = layout.placements.compactMap { $0.entry.folderRow?.id }
             TransparentOverlayScrollView(
                 resetID: scrollResetID,
                 minimumContentHeight: scrollContentHeight,
@@ -5437,44 +5699,23 @@ private struct MasonryGridView: View {
                     ForEach(renderedPlacements) { placement in
                         switch placement.entry {
                         case .folder(let folder):
-                            SubfolderCardView(
-                                row: folder,
+                            fallbackFolderCard(
+                                folder,
+                                placement: placement,
                                 width: width,
-                                isSelected: state.selectedFolderID == folder.id,
-                                onSelect: {
-                                    state.selectFolderForPreview(folder.folder)
-                                }
+                                visualFolderIDs: visualFolderIDs
                             )
-                                .offset(x: placement.x, y: placement.y)
-                                .zIndex(state.selectedFolderID == folder.id ? 1 : 0)
                         case .item(let item):
-                            let reorderOffset = reorderPlacementOverrides[item.id]
-                            AssetCardView(
-                                state: state,
-                                item: item,
+                            fallbackItemCard(
+                                item,
+                                placement: placement,
                                 width: width,
-                                isReorderingEnabled: canReorderItems,
-                                isSelected: state.selectedIDs.contains(item.id),
-                                selectionAction: { item, modifiers in
-                                    selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
-                                },
-                                reorderDragChangedAction: { itemID, location in
-                                    updateItemReorder(draggedID: itemID, location: location, layout: layout, width: width, visualItemIDs: visualItemIDs)
-                                },
-                                reorderDragEndedAction: { draggedID in
-                                    finishItemReorder(draggedID: draggedID)
-                                }
+                                layout: layout,
+                                visualItemIDs: visualItemIDs,
+                                canReorderItems: canReorderItems,
+                                reorderOffset: reorderPlacementOverrides[item.id],
+                                itemReorderAnimation: itemReorderAnimation
                             )
-                            .modifier(MasonryPlacementOffsetModifier(
-                                x: reorderOffset?.x ?? placement.x,
-                                y: reorderOffset?.y ?? placement.y,
-                                animation: itemReorderAnimation
-                            ))
-                            .allowsHitTesting(settlingItemID != item.id)
-                            .simultaneousGesture(TapGesture().onEnded {
-                                state.clearSelectedFolder()
-                            })
-                            .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
                         }
                     }
 
@@ -5532,6 +5773,73 @@ private struct MasonryGridView: View {
                 }
             }
         }
+    }
+
+    private func fallbackFolderCard(
+        _ folder: AppState.FolderRow,
+        placement: MasonryPlacement,
+        width: CGFloat,
+        visualFolderIDs: [String]
+    ) -> some View {
+        SubfolderCardView(
+            row: folder,
+            width: width,
+            isSelected: state.selectedFolderIDs.contains(folder.id),
+            onSelect: { _ in state.selectFolderForPreview(folder.folder) },
+            actionContext: {
+                state.folderSelectionActionContext(
+                    clickedFolderID: folder.id,
+                    visualFolderIDs: visualFolderIDs
+                )
+            },
+            beginDrag: { _, _ in }
+        )
+        .offset(x: placement.x, y: placement.y)
+        .zIndex(state.selectedFolderIDs.contains(folder.id) ? 1 : 0)
+    }
+
+    private func fallbackItemCard(
+        _ item: PromptItem,
+        placement: MasonryPlacement,
+        width: CGFloat,
+        layout: MasonryLayoutResult,
+        visualItemIDs: [String],
+        canReorderItems: Bool,
+        reorderOffset: CGPoint?,
+        itemReorderAnimation: Animation?
+    ) -> some View {
+        AssetCardView(
+            state: state,
+            item: item,
+            width: width,
+            isReorderingEnabled: canReorderItems,
+            isSelected: state.selectedIDs.contains(item.id),
+            selectionAction: { item, modifiers in
+                selectItem(item, modifiers: modifiers, visualItemIDs: visualItemIDs)
+            },
+            reorderDragChangedAction: { itemID, location in
+                updateItemReorder(
+                    draggedID: itemID,
+                    location: location,
+                    layout: layout,
+                    width: width,
+                    visualItemIDs: visualItemIDs
+                )
+            },
+            reorderDragEndedAction: { draggedID in
+                finishItemReorder(draggedID: draggedID)
+            }
+        )
+        .modifier(MasonryPlacementOffsetModifier(
+            x: reorderOffset?.x ?? placement.x,
+            y: reorderOffset?.y ?? placement.y,
+            animation: itemReorderAnimation
+        ))
+        .allowsHitTesting(settlingItemID != item.id)
+        .simultaneousGesture(TapGesture().onEnded {
+            state.clearSelectedFolder()
+        })
+        .zIndex(state.selectedIDs.contains(item.id) ? 1 : 0)
     }
 
     private func computedColumnCount(for availableWidth: CGFloat) -> Int {
@@ -5985,6 +6293,11 @@ private enum MasonryGridEntry {
         return item
     }
 
+    var folderRow: AppState.FolderRow? {
+        guard case .folder(let row) = self else { return nil }
+        return row
+    }
+
     func totalHeight(width: CGFloat) -> CGFloat {
         switch self {
         case .folder:
@@ -6017,7 +6330,10 @@ private struct SubfolderCardView: View {
     let row: AppState.FolderRow
     let width: CGFloat
     let isSelected: Bool
-    let onSelect: () -> Void
+    let onSelect: (NSEvent.ModifierFlags) -> Void
+    let actionContext: () -> FolderSelectionActionContext
+    let beginDrag: (NSEvent, NSView) -> Void
+    @State private var isDropTargeted = false
 
     var body: some View {
         let contentWidth = SubfolderCardMetrics.contentWidth(for: width)
@@ -6067,16 +6383,26 @@ private struct SubfolderCardView: View {
             }
 
             ImmediateFolderClickCapture(
+                isSelected: isSelected,
+                selectedCount: actionContext().orderedFolderIDs.count,
                 onSingleClick: onSelect,
                 onDoubleClick: {
-                    onSelect()
+                    onSelect([])
                     state.selectFolder(row.folder)
-                }
+                },
+                onContextClick: {
+                    let context = actionContext()
+                    state.selectFolders(ids: Set(context.orderedFolderIDs), primaryID: row.folder.id)
+                },
+                onBeginDrag: beginDrag,
+                onDropFolders: { folderIDs in state.moveFolders(folderIDs, toParentID: row.folder.id) },
+                onDropItems: { itemIDs in state.moveItems(itemIDs, toFolderID: row.folder.id) },
+                onDropTargeted: { isDropTargeted = $0 }
             )
             .frame(width: contentWidth, height: height)
 
             Button {
-                onSelect()
+                onSelect([])
                 state.selectFolder(row.folder)
             } label: {
                 Image(systemName: "arrow.right")
@@ -6098,11 +6424,14 @@ private struct SubfolderCardView: View {
         .frame(width: width, height: height + AssetCardMetrics.selectionOutset * 2)
         .overlay(
             RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous)
-                .strokeBorder(isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear, lineWidth: 1.5)
+                .strokeBorder(
+                    isDropTargeted ? StudioColor.primaryAction : (isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear),
+                    lineWidth: isDropTargeted ? 2 : 1.5
+                )
         )
         .contentShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous))
         .contextMenu {
-            FolderActionsContextMenu(folder: row.folder) {
+            FolderActionsContextMenu(folder: row.folder, usesMiddleFolderSelection: true) {
                 state.beginRenameFolder(row.folder)
             }
         }
@@ -6159,33 +6488,127 @@ private struct SubfolderCardView: View {
 }
 
 private struct ImmediateFolderClickCapture: NSViewRepresentable {
-    let onSingleClick: () -> Void
+    let isSelected: Bool
+    let selectedCount: Int
+    let onSingleClick: (NSEvent.ModifierFlags) -> Void
     let onDoubleClick: () -> Void
+    let onContextClick: () -> Void
+    let onBeginDrag: (NSEvent, NSView) -> Void
+    let onDropFolders: ([String]) -> Void
+    let onDropItems: ([String]) -> Void
+    let onDropTargeted: (Bool) -> Void
 
     func makeNSView(context: Context) -> FolderClickCaptureView {
         let view = FolderClickCaptureView()
         view.onSingleClick = onSingleClick
         view.onDoubleClick = onDoubleClick
+        view.onContextClick = onContextClick
+        view.onBeginDrag = onBeginDrag
+        view.onDropFolders = onDropFolders
+        view.onDropItems = onDropItems
+        view.onDropTargeted = onDropTargeted
+        view.isSelected = isSelected
+        view.selectedCount = selectedCount
         return view
     }
 
     func updateNSView(_ view: FolderClickCaptureView, context: Context) {
         view.onSingleClick = onSingleClick
         view.onDoubleClick = onDoubleClick
+        view.onContextClick = onContextClick
+        view.onBeginDrag = onBeginDrag
+        view.onDropFolders = onDropFolders
+        view.onDropItems = onDropItems
+        view.onDropTargeted = onDropTargeted
+        view.isSelected = isSelected
+        view.selectedCount = selectedCount
     }
 
     final class FolderClickCaptureView: NSView {
-        var onSingleClick: () -> Void = {}
+        var isSelected = false
+        var selectedCount = 0
+        var onSingleClick: (NSEvent.ModifierFlags) -> Void = { _ in }
         var onDoubleClick: () -> Void = {}
+        var onContextClick: () -> Void = {}
+        var onBeginDrag: (NSEvent, NSView) -> Void = { _, _ in }
+        var onDropFolders: ([String]) -> Void = { _ in }
+        var onDropItems: ([String]) -> Void = { _ in }
+        var onDropTargeted: (Bool) -> Void = { _ in }
+        private var dragStartLocation: NSPoint?
+        private var hasStartedDragging = false
+        private var collapseSelectionOnMouseUp = false
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            registerForDraggedTypes([.promptStudioFolderIDs, .promptStudioItemIDs])
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            registerForDraggedTypes([.promptStudioFolderIDs, .promptStudioItemIDs])
+        }
 
         override var acceptsFirstResponder: Bool { true }
 
         override func mouseDown(with event: NSEvent) {
+            dragStartLocation = event.locationInWindow
+            hasStartedDragging = false
             if event.clickCount >= 2 {
                 onDoubleClick()
             } else {
-                onSingleClick()
+                let modifiers = event.modifierFlags.intersection([.command, .shift])
+                collapseSelectionOnMouseUp = modifiers.isEmpty && isSelected && selectedCount > 1
+                if !collapseSelectionOnMouseUp { onSingleClick(modifiers) }
             }
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard !hasStartedDragging, let dragStartLocation else { return }
+            let dx = event.locationInWindow.x - dragStartLocation.x
+            let dy = event.locationInWindow.y - dragStartLocation.y
+            guard hypot(dx, dy) >= 6 else { return }
+            collapseSelectionOnMouseUp = false
+            hasStartedDragging = true
+            onBeginDrag(event, self)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            if collapseSelectionOnMouseUp && !hasStartedDragging { onSingleClick([]) }
+            collapseSelectionOnMouseUp = false
+            dragStartLocation = nil
+            hasStartedDragging = false
+            super.mouseUp(with: event)
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            onContextClick()
+            super.rightMouseDown(with: event)
+        }
+
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            let supported = sender.draggingPasteboard.availableType(from: [.promptStudioFolderIDs, .promptStudioItemIDs]) != nil
+            onDropTargeted(supported)
+            return supported ? .move : []
+        }
+
+        override func draggingExited(_ sender: NSDraggingInfo?) {
+            onDropTargeted(false)
+        }
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            defer { onDropTargeted(false) }
+            let pasteboard = sender.draggingPasteboard
+            if let data = pasteboard.data(forType: .promptStudioFolderIDs),
+               let payload = try? FolderDragPayload.decode(data) {
+                onDropFolders(payload.folderIDs)
+                return true
+            }
+            if let data = pasteboard.data(forType: .promptStudioItemIDs),
+               let payload = try? PromptItemDragPayload.decode(data) {
+                onDropItems(payload.itemIDs)
+                return true
+            }
+            return false
         }
     }
 }

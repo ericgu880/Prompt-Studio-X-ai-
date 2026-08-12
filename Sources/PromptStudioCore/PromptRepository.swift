@@ -850,6 +850,7 @@ public final class PromptRepository: @unchecked Sendable {
                     )
                 }
             }
+            try refreshTags(from: loadItems())
         }
     }
 

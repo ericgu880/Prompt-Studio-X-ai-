@@ -553,11 +553,13 @@ func testPromptRepositoryBatchFolderMoveAndDeleteRollback() throws {
     childItem.versions = []
     childItem.folderId = sourceChild.id
     try repository.saveItems([firstItem, childItem])
+    try expect(try repository.loadTags().contains { $0.name == "风景" && $0.count == 2 }, "folder subtree fixtures should contribute to tag counts")
     let deletedAt = Date(timeIntervalSince1970: 1_700_000_000)
     try repository.deleteFolderSubtrees(sourceFolderIDs: [source.id], deletedAt: deletedAt)
     let deletedItems = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
     try expect(deletedItems[firstItem.id]?.deletedAt == deletedAt && deletedItems[childItem.id]?.deletedAt == deletedAt, "folder subtree deletion should mark every internal live item with one timestamp")
     try expect(try repository.loadFolders().contains { $0.id == source.id || $0.id == sourceChild.id } == false, "folder subtree deletion should remove every descendant folder")
+    try expect(try repository.loadTags().contains { $0.name == "风景" } == false, "folder subtree deletion should refresh tag counts in the same transaction")
 
     let rollbackURL = try temporaryLibraryURL()
     let rollbackRepository = try PromptRepository(libraryURL: rollbackURL)
