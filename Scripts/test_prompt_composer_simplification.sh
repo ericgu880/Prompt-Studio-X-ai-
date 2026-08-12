@@ -61,6 +61,9 @@ require_pattern "$OVERLAY_FILE" \
     'guard smartPasteInterpretation == nil || prompt != smartPasteAppliedPrompt else { return }' \
     "The debounce callback must explicitly preserve an unedited smart-paste interpretation."
 require_pattern "$OVERLAY_FILE" \
+    'private func restoreAutomaticTypeInference()' \
+    "Restoring automatic mode must support an unedited smart-paste interpretation."
+require_pattern "$OVERLAY_FILE" \
     'private func moveUnsavedPreviewImageToReferencesIfNeeded()' \
     "Text type selection must not retain an incompatible unsaved preview image."
 move_count="$(/usr/bin/grep -Fc 'moveUnsavedPreviewImageToReferencesIfNeeded()' "$OVERLAY_FILE")"
@@ -69,8 +72,14 @@ if [[ "$move_count" -lt 4 ]]; then
     exit 1
 fi
 require_pattern "$OVERLAY_FILE" \
-    'parameters: changingExistingType ? [:] : parsedParameters' \
+    'if let previousType, previousType != resolvedType {' \
     "Changing Prompt type must clear parameters from the old type."
+require_pattern "$OVERLAY_FILE" \
+    'if previousType != nil {' \
+    "Clearing a previously classified Prompt must not retain parameters from the old type."
+require_pattern "$OVERLAY_FILE" \
+    'guard shouldShowPreviewImage else {' \
+    "An asynchronous image picker/drop must not restore a hidden text preview image."
 require_pattern "$APP_STATE_FILE" \
     'modelId: String?' \
     "Prompt creation must accept an optional automatically resolved model."

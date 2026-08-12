@@ -1176,8 +1176,7 @@ struct PromptComposerOverlay: View {
             if case .manual = typeDecision {
                 Divider()
                 Button("恢复自动识别") {
-                    typeMode = .automatic
-                    updateAutomaticTypeDecision()
+                    restoreAutomaticTypeInference()
                 }
             }
         } label: {
@@ -2170,6 +2169,9 @@ struct PromptComposerOverlay: View {
         typeMode = .manual(type)
         typeDecision = .manual(type: type)
         if previousType != type {
+            if previousType != nil {
+                parameters = ""
+            }
             modelId = PromptComposerMetadataPolicy.unspecifiedModelID
             modelHint = nil
             formatHint = nil
@@ -2177,6 +2179,29 @@ struct PromptComposerOverlay: View {
                 moveUnsavedPreviewImageToReferencesIfNeeded()
             }
         }
+    }
+
+    private func restoreAutomaticTypeInference() {
+        let previousType = resolvedType
+        typeMode = .automatic
+        if let smartPasteInterpretation, prompt == smartPasteAppliedPrompt {
+            typeDecision = PromptComposerTypeDecision.resolve(
+                interpretation: smartPasteInterpretation,
+                mode: .automatic
+            )
+            if previousType != resolvedType {
+                parameters = visibleParameters(from: smartPasteInterpretation.parameters)
+                    .map { "\($0.key)=\($0.value)" }
+                    .sorted()
+                    .joined(separator: "\n")
+            }
+            if resolvedType == .text {
+                moveUnsavedPreviewImageToReferencesIfNeeded()
+            }
+            modelId = resolvedType.map { currentMetadata(for: $0).model.id }
+            return
+        }
+        updateAutomaticTypeDecision()
     }
 
     private func moveUnsavedPreviewImageToReferencesIfNeeded() {
@@ -2190,25 +2215,34 @@ struct PromptComposerOverlay: View {
     private func updateAutomaticTypeDecision() {
         guard case .automatic = typeMode else { return }
         guard smartPasteInterpretation == nil || prompt != smartPasteAppliedPrompt else { return }
+        let previousType = resolvedType
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else {
+            if previousType != nil {
+                parameters = ""
+            }
             typeDecision = .unresolved(reason: "请输入 Prompt 后自动识别")
             modelId = nil
+            modelHint = nil
+            formatHint = nil
             return
         }
         let interpretation = PromptClipboardInterpreter.interpret(prompt)
         typeDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        if let previousType, previousType != resolvedType {
+            parameters = ""
+        }
         if resolvedType == .text {
             moveUnsavedPreviewImageToReferencesIfNeeded()
         }
         if let nextModelHint = interpretation.modelHint {
             modelHint = nextModelHint
-        } else if smartPasteInterpretation == nil {
+        } else {
             modelHint = nil
         }
         if let nextFormatHint = interpretation.formatHint {
             formatHint = nextFormatHint
-        } else if smartPasteInterpretation == nil {
+        } else {
             formatHint = nil
         }
         modelId = resolvedType.map { currentMetadata(for: $0).model.id }
@@ -2558,7 +2592,12 @@ struct PromptComposerOverlay: View {
     private func setPreviewImage(_ urls: [URL]) {
         guard !isEditing else { return }
         let imageExtensions = Set(["png", "jpg", "jpeg", "webp"])
-        previewImageURL = urls.first { imageExtensions.contains($0.pathExtension.lowercased()) }
+        guard let imageURL = urls.first(where: { imageExtensions.contains($0.pathExtension.lowercased()) }) else { return }
+        guard shouldShowPreviewImage else {
+            appendReferenceImages([imageURL])
+            return
+        }
+        previewImageURL = imageURL
     }
 
     private func handlePreviewImageDrop(_ providers: [NSItemProvider]) -> Bool {
