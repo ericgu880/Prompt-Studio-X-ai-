@@ -142,27 +142,58 @@ enum ReferenceZoomDirection {
     case out
 }
 
-struct ReferenceZoomCursorModifier: ViewModifier {
+struct ReferenceZoomCursorArea: NSViewRepresentable {
     let direction: ReferenceZoomDirection
-    @State private var isCursorPushed = false
 
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                if hovering, !isCursorPushed {
-                    ReferenceZoomCursor.cursor(for: direction).push()
-                    isCursorPushed = true
-                } else if !hovering, isCursorPushed {
-                    NSCursor.pop()
-                    isCursorPushed = false
-                }
+    func makeNSView(context: Context) -> CursorRectView {
+        CursorRectView(cursor: ReferenceZoomCursor.cursor(for: direction))
+    }
+
+    func updateNSView(_ nsView: CursorRectView, context: Context) {
+        nsView.cursor = ReferenceZoomCursor.cursor(for: direction)
+    }
+
+    final class CursorRectView: NSView {
+        var cursor: NSCursor {
+            didSet {
+                window?.invalidateCursorRects(for: self)
             }
-            .onDisappear {
-                if isCursorPushed {
-                    NSCursor.pop()
-                    isCursorPushed = false
-                }
-            }
+        }
+
+        init(cursor: NSCursor) {
+            self.cursor = cursor
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: cursor)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+
+struct ReferenceVisualEffectBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .fullScreenUI
+        view.blendingMode = .withinWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = .fullScreenUI
+        view.blendingMode = .withinWindow
+        view.state = .active
     }
 }
 
@@ -173,27 +204,36 @@ struct ReferenceAssetLightbox: View {
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(.regularMaterial)
-                .blur(radius: 18, opaque: true)
+            ReferenceVisualEffectBlur()
                 .ignoresSafeArea()
 
-            Color.black.opacity(0.72)
+            Color.black.opacity(0.58)
                 .ignoresSafeArea()
 
             if let image = loader.image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(42)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .modifier(ReferenceZoomCursorModifier(direction: .out))
-                    .onTapGesture {
-                        onDismiss()
-                    }
-                    .accessibilityLabel("缩小参考图")
-                    .accessibilityHint("点击返回")
+                GeometryReader { proxy in
+                    let fittedSize = aspectFitSize(
+                        source: image.size,
+                        available: CGSize(
+                            width: max(1, proxy.size.width - 84),
+                            height: max(1, proxy.size.height - 84)
+                        )
+                    )
+
+                    Image(nsImage: image)
+                        .resizable()
+                        .frame(width: fittedSize.width, height: fittedSize.height)
+                        .background {
+                            ReferenceZoomCursorArea(direction: .out)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onDismiss()
+                        }
+                        .accessibilityLabel("缩小参考图")
+                        .accessibilityHint("点击返回")
+                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                }
             } else if loader.hasFinishedLoading {
                 VStack(spacing: 12) {
                     Image(systemName: "photo.badge.exclamationmark")
@@ -208,6 +248,7 @@ struct ReferenceAssetLightbox: View {
                     .tint(StudioColor.text)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             ReferenceLightboxEscapeMonitor(onEscape: onDismiss)
         }
@@ -215,6 +256,12 @@ struct ReferenceAssetLightbox: View {
             await loader.load(reference.path)
         }
         .transition(.opacity)
+    }
+
+    private func aspectFitSize(source: CGSize, available: CGSize) -> CGSize {
+        guard source.width > 0, source.height > 0 else { return available }
+        let scale = min(available.width / source.width, available.height / source.height)
+        return CGSize(width: source.width * scale, height: source.height * scale)
     }
 }
 

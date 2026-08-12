@@ -129,7 +129,9 @@ private struct SidePanelReferenceThumbnail: View {
                         isHovered = hovering
                     }
                 }
-                .modifier(ReferenceZoomCursorModifier(direction: .in))
+                .background {
+                    ReferenceZoomCursorArea(direction: .in)
+                }
                 .help("放大参考图")
                 .accessibilityLabel("放大参考图")
             } else {
