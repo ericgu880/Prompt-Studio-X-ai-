@@ -8,6 +8,7 @@ struct TransparentOverlayTextEditor: NSViewRepresentable {
     var insertionPointColor: NSColor
     var textContainerInset: NSSize
     var lineSpacing: CGFloat
+    var onPaste: ((String) -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -17,7 +18,10 @@ struct TransparentOverlayTextEditor: NSViewRepresentable {
         let scrollView = NSScrollView(frame: .zero)
         configure(scrollView)
 
-        let textView = NSTextView(frame: .zero)
+        let textView = PasteInterceptingTextView(frame: .zero)
+        textView.onPaste = { [weak coordinator = context.coordinator] text in
+            coordinator?.parent.onPaste?(text) ?? false
+        }
         textView.delegate = context.coordinator
         textView.string = text
         configure(textView)
@@ -29,6 +33,11 @@ struct TransparentOverlayTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         configure(scrollView)
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        if let textView = textView as? PasteInterceptingTextView {
+            textView.onPaste = { [weak coordinator = context.coordinator] text in
+                coordinator?.parent.onPaste?(text) ?? false
+            }
+        }
         configure(textView)
         if textView.string != text {
             textView.string = text
@@ -99,6 +108,20 @@ struct TransparentOverlayTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+        }
+    }
+}
+
+private final class PasteInterceptingTextView: NSTextView {
+    var onPaste: ((String) -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        let hasFiles = NSPasteboard.general.readObjects(forClasses: [NSURL.self])?.isEmpty == false
+        guard !hasFiles,
+              let text = NSPasteboard.general.string(forType: .string),
+              onPaste?(text) == true else {
+            super.paste(sender)
+            return
         }
     }
 }

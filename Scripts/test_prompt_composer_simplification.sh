@@ -46,12 +46,6 @@ require_pattern "$OVERLAY_FILE" \
     'Task.sleep(for: .milliseconds(500))' \
     "Manual typing inference must use the specified 500ms debounce."
 require_pattern "$OVERLAY_FILE" \
-    'private var smartPasteHeaderMenu' \
-    "Smart-paste secondary actions must be collected in the composer header."
-require_pattern "$OVERLAY_FILE" \
-    'Image(systemName: "ellipsis")' \
-    "Smart-paste secondary actions must use the compact ellipsis affordance."
-require_pattern "$OVERLAY_FILE" \
     '.disabled(!canSubmitPrompt)' \
     "Create/save must be disabled while the Prompt type is unresolved."
 require_pattern "$OVERLAY_FILE" \

@@ -1213,6 +1213,70 @@ func testPromptClipboardInterpreterPreservesPlainTextAndBuildsTitle() throws {
     try expect(interpretation.suggestedType == nil, "generic prose should keep the current prompt type")
 }
 
+func testPromptEditorPasteResolverKeepsPlainTextNative() throws {
+    let interpretation = PromptClipboardInterpreter.interpret("A normal paragraph copied from a web page.")
+    try expect(
+        PromptEditorPasteResolver.resolve(interpretation) == .nativeText,
+        "plain clipboard text should use native insertion at the current selection"
+    )
+}
+
+func testPromptEditorPasteResolverMatchesOnlyStructuredFields() throws {
+    let structured = PromptClipboardInterpreter.interpret(
+        "Prompt: cinematic portrait\nNegative Prompt: watermark\nTags: portrait, studio\nParameters: ar=4:5"
+    )
+    let decision = PromptEditorPasteResolver.resolve(structured)
+    guard case .structured(let summary) = decision else {
+        throw CoreUnitTestError.failure("structured clipboard text should request field matching")
+    }
+    try expect(summary.hasNegativePrompt, "summary should report a matched negative prompt")
+    try expect(summary.tagCount == 2, "summary should report only the two explicitly matched tags")
+    try expect(summary.parameterCount == 1, "summary should report the matched parameter count")
+
+    let promptOnly = PromptClipboardInterpreter.interpret("Prompt: cinematic portrait")
+    guard case .structured(let promptSummary) = PromptEditorPasteResolver.resolve(promptOnly) else {
+        throw CoreUnitTestError.failure("an explicit Prompt field should match title and Prompt")
+    }
+    try expect(promptSummary.hasPrompt, "prompt-only structured text should report its explicit Prompt field")
+
+    let metadataOnly = PromptClipboardInterpreter.interpret("Negative Prompt: watermark\nTags: clean, studio")
+    guard case .structured(let metadataSummary) = PromptEditorPasteResolver.resolve(metadataOnly) else {
+        throw CoreUnitTestError.failure("metadata-only clipboard text should match without replacing Prompt")
+    }
+    try expect(!metadataSummary.hasPrompt, "metadata-only matching must preserve the existing Prompt")
+
+    let unknownJSON = PromptClipboardInterpreter.interpret(#"{"unknown":"value"}"#)
+    try expect(PromptEditorPasteResolver.resolve(unknownJSON) == .nativeText, "unknown JSON keys should stay a native paste")
+
+    let duplicateNormalizedKeys = PromptClipboardInterpreter.interpret(#"{"prompt":"one","Prompt":"two"}"#)
+    guard case .structured(let duplicateSummary) = PromptEditorPasteResolver.resolve(duplicateNormalizedKeys) else {
+        throw CoreUnitTestError.failure("duplicate normalized JSON keys should match safely without crashing")
+    }
+    try expect(duplicateSummary.hasPrompt, "duplicate normalized JSON should retain the explicit Prompt match")
+
+    let inline = PromptClipboardInterpreter.interpret("cinematic portrait --ar 16:9 #studio")
+    guard case .structured(let inlineSummary) = PromptEditorPasteResolver.resolve(inline) else {
+        throw CoreUnitTestError.failure("inline Prompt syntax should match Prompt and its metadata")
+    }
+    try expect(inlineSummary.hasPrompt, "inline syntax must preserve and fill the residual Prompt text")
+    try expect(inlineSummary.tagCount == 1 && inlineSummary.parameterCount == 1, "inline syntax should match its explicit tag and parameter")
+
+    let inlineNegative = PromptClipboardInterpreter.interpret("cinematic portrait --no watermark")
+    guard case .structured(let inlineNegativeSummary) = PromptEditorPasteResolver.resolve(inlineNegative) else {
+        throw CoreUnitTestError.failure("inline negative syntax should match Prompt and Negative Prompt")
+    }
+    try expect(inlineNegativeSummary.hasPrompt && inlineNegativeSummary.hasNegativePrompt, "inline --no must not discard the residual Prompt")
+
+    let modelAndInlinePrompt = PromptClipboardInterpreter.interpret("Model: Flux\ncinematic portrait --ar 16:9")
+    guard case .structured(let modelAndInlineSummary) = PromptEditorPasteResolver.resolve(modelAndInlinePrompt) else {
+        throw CoreUnitTestError.failure("model metadata plus an inline Prompt should match both fields")
+    }
+    try expect(modelAndInlineSummary.hasPrompt && modelAndInlineSummary.hasExplicitModel, "model metadata must not swallow the following inline Prompt")
+
+    let invalidPromptJSON = PromptClipboardInterpreter.interpret(#"{"prompt":123}"#)
+    try expect(PromptEditorPasteResolver.resolve(invalidPromptJSON) == .nativeText, "a non-string JSON Prompt must not clear an existing draft")
+}
+
 func testPromptClipboardInterpreterTitleCapDoesNotTruncatePrompt() throws {
     let source = "A very long first sentence that should be shortened for the title while preserving the source prompt."
     let interpretation = PromptClipboardInterpreter.interpret(source)
@@ -1520,6 +1584,8 @@ do {
     try testAutomationServiceImportsRealDocxMetadata()
     try testAutomationServiceImportsImageMetadata()
     try testPromptClipboardInterpreterPreservesPlainTextAndBuildsTitle()
+    try testPromptEditorPasteResolverKeepsPlainTextNative()
+    try testPromptEditorPasteResolverMatchesOnlyStructuredFields()
     try testPromptClipboardInterpreterTitleCapDoesNotTruncatePrompt()
     try testPromptClipboardInterpreterParsesChineseStructuredFields()
     try testPromptClipboardInterpreterParsesJSON()

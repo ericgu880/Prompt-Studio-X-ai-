@@ -10,6 +10,31 @@ public enum PromptClipboardTypeConfidence: String, Codable, CaseIterable, Identi
 
 public typealias PromptClipboardConfidence = PromptClipboardTypeConfidence
 
+public struct PromptClipboardExplicitFields: Equatable, Sendable {
+    public var hasPrompt: Bool
+    public var hasNegativePrompt: Bool
+    public var tags: [String]
+    public var parameters: [String: String]
+    public var hasModel: Bool
+    public var hasFormat: Bool
+
+    public init(
+        hasPrompt: Bool = false,
+        hasNegativePrompt: Bool = false,
+        tags: [String] = [],
+        parameters: [String: String] = [:],
+        hasModel: Bool = false,
+        hasFormat: Bool = false
+    ) {
+        self.hasPrompt = hasPrompt
+        self.hasNegativePrompt = hasNegativePrompt
+        self.tags = tags
+        self.parameters = parameters
+        self.hasModel = hasModel
+        self.hasFormat = hasFormat
+    }
+}
+
 public struct PromptClipboardInterpretation: Equatable, Sendable {
     public var originalText: String
     public var title: String
@@ -23,6 +48,7 @@ public struct PromptClipboardInterpretation: Equatable, Sendable {
     public var warnings: [String]
     public var modelHint: String?
     public var formatHint: String?
+    public var explicitFields: PromptClipboardExplicitFields
 
     public init(
         originalText: String = "",
@@ -36,7 +62,8 @@ public struct PromptClipboardInterpretation: Equatable, Sendable {
         typeReason: String = "",
         warnings: [String] = [],
         modelHint: String? = nil,
-        formatHint: String? = nil
+        formatHint: String? = nil,
+        explicitFields: PromptClipboardExplicitFields = PromptClipboardExplicitFields()
     ) {
         self.originalText = originalText
         self.title = title
@@ -50,6 +77,7 @@ public struct PromptClipboardInterpretation: Equatable, Sendable {
         self.warnings = warnings
         self.modelHint = modelHint
         self.formatHint = formatHint
+        self.explicitFields = explicitFields
     }
 }
 
@@ -65,6 +93,7 @@ public enum PromptClipboardInterpreter {
         }
 
         let hints = extractHints(from: originalText)
+        let explicitFields = extractExplicitFields(from: originalText)
         let isJSON = jsonDictionary(from: originalText) != nil
         let formatHint = hints.format ?? (isJSON ? "JSON" : nil)
         let parsingText = isJSON ? originalText : removingMetadataLines(from: originalText)
@@ -98,7 +127,8 @@ public enum PromptClipboardInterpreter {
             typeReason: typeResult.reason,
             warnings: typeResult.warnings,
             modelHint: hints.model,
-            formatHint: formatHint
+            formatHint: formatHint,
+            explicitFields: explicitFields
         )
     }
 
@@ -116,6 +146,126 @@ public enum PromptClipboardInterpreter {
         var confidence: PromptClipboardTypeConfidence
         var reason: String
         var warnings: [String]
+    }
+
+    private static func extractExplicitFields(from text: String) -> PromptClipboardExplicitFields {
+        if let object = jsonDictionary(from: text) {
+            // Clipboard JSON is untrusted input. Build the normalized map without
+            // Dictionary(uniqueKeysWithValues:) so `prompt` + `Prompt` cannot crash.
+            var normalized: [String: Any] = [:]
+            for (key, value) in object where normalized[normalizedKey(key)] == nil {
+                normalized[normalizedKey(key)] = value
+            }
+            let promptKeys = ["prompt", "positiveprompt", "提示词", "正向提示词"]
+            let negativeKeys = ["negativeprompt", "negative", "no", "负面提示词", "反向提示词"]
+            let explicitTags = normalizedValues(normalized["tags"] ?? normalized["标签"])
+            var explicitParameters: [String: String] = [:]
+            if let dictionary = normalized["parameters"] as? [String: Any] ?? normalized["参数"] as? [String: Any] {
+                for (key, value) in dictionary {
+                    let rendered = "\(value)".trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !rendered.isEmpty {
+                        explicitParameters[key] = rendered
+                    }
+                }
+            }
+            return PromptClipboardExplicitFields(
+                hasPrompt: promptKeys.contains { hasMeaningfulString(normalized[$0]) },
+                hasNegativePrompt: negativeKeys.contains { hasMeaningfulString(normalized[$0]) },
+                tags: deduplicated(explicitTags),
+                parameters: explicitParameters,
+                hasModel: modelKeys.contains { hasMeaningfulString(normalized[$0]) },
+                hasFormat: formatKeys.contains { hasMeaningfulString(normalized[$0]) }
+            )
+        }
+
+        var result = PromptClipboardExplicitFields()
+        var sectionKey: String?
+        var hasBareContent = false
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let (key, value) = lineKeyAndValue(line), headingKeys.contains(key) || modelKeys.contains(key) || formatKeys.contains(key) {
+                // Model/format are single-line metadata rather than multiline
+                // sections; the next bare line may still be the Prompt body.
+                sectionKey = headingKeys.contains(key) ? key : nil
+                if !value.isEmpty {
+                    appendExplicit(value: value, key: key, result: &result)
+                }
+                continue
+            }
+            if let key = sectionKey, !line.isEmpty {
+                appendExplicit(value: line, key: key, result: &result)
+            } else if !line.isEmpty {
+                hasBareContent = true
+            }
+        }
+        let inline = PromptImportParser.parse(text: text)
+        if text.range(of: #"--no\s+"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            result.hasNegativePrompt = true
+        }
+        if text.range(of: #"--[A-Za-z][A-Za-z0-9_-]*\s+"#, options: .regularExpression) != nil {
+            for (key, value) in inline.parameters { result.parameters[key] = value }
+        }
+        if text.range(of: #"(?<!\w)#[\p{Han}A-Za-z0-9_-]+"#, options: .regularExpression) != nil {
+            result.tags.append(contentsOf: explicitHashTags(in: text))
+        }
+        let hasInlineSyntax = result.hasNegativePrompt || !result.parameters.isEmpty || !explicitHashTags(in: text).isEmpty
+        let residualPrompt = PromptImportParser.parse(text: removingMetadataLines(from: text)).prompt
+        if !result.hasPrompt,
+           hasBareContent,
+           hasInlineSyntax,
+           !residualPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result.hasPrompt = true
+        }
+        result.tags = deduplicated(result.tags)
+        return result
+    }
+
+    private static func appendExplicit(value: String, key: String, result: inout PromptClipboardExplicitFields) {
+        if ["prompt", "positiveprompt", "正向提示词", "提示词", "主提示词"].contains(key) {
+            result.hasPrompt = true
+        } else if ["negativeprompt", "negative", "no", "负面提示词", "反向提示词", "负提示词"].contains(key) {
+            result.hasNegativePrompt = true
+        } else if ["tags", "tag", "标签", "分类"].contains(key) {
+            result.tags.append(contentsOf: value.split(whereSeparator: { ",，、;；".contains($0) }).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        } else if ["parameters", "parameter", "params", "参数"].contains(key) {
+            let pair = value.split(separator: "=", maxSplits: 1).map(String.init)
+            if pair.count == 2 { result.parameters[pair[0].trimmingCharacters(in: .whitespaces)] = pair[1].trimmingCharacters(in: .whitespaces) }
+        } else if modelKeys.contains(key) {
+            result.hasModel = true
+        } else if formatKeys.contains(key) {
+            result.hasFormat = true
+        }
+    }
+
+    private static func explicitHashTags(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?<!\w)#([\p{Han}A-Za-z0-9_-]+)"#) else { return [] }
+        let nsText = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).compactMap { match in
+            guard match.numberOfRanges > 1 else { return nil }
+            return nsText.substring(with: match.range(at: 1))
+        }
+    }
+
+    private static func normalizedValues(_ value: Any?) -> [String] {
+        let values: [String]
+        if let strings = value as? [String] {
+            values = strings
+        } else if let string = value as? String {
+            values = string.split(whereSeparator: { ",，、;；".contains($0) }).map(String.init)
+        } else {
+            values = []
+        }
+        return values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    private static func hasMeaningfulString(_ value: Any?) -> Bool {
+        guard let string = value as? String else { return false }
+        return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func deduplicated(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.localizedLowercase).inserted }
     }
 
     private static let headingKeys: Set<String> = [

@@ -45,30 +45,33 @@ require_pattern "$OVERLAY_FILE" \
     'smartPastePromptHeightBudget: CGFloat = 218' \
     "Simplified Prompt composer must use the compact 218pt prompt-height budget."
 require_pattern "$OVERLAY_FILE" \
-    'private var shouldShowSmartPasteEntry: Bool' \
-    "Smart paste must expose an empty-draft-only entry state."
+    'onPaste: handlePromptEditorPaste' \
+    "The Prompt editor must route paste through structured field matching."
 require_pattern "$OVERLAY_FILE" \
-    '@State private var showSmartPasteSuccessNotice = false' \
-    "Successful smart paste must use transient notice state."
+    'private var matchedFieldsSummary' \
+    "Structured matches must expose an inline summary below the Prompt editor."
 require_pattern "$OVERLAY_FILE" \
     'Task.sleep(for: .seconds(4))' \
     "The smart-paste success notice must dismiss after four seconds."
 require_pattern "$OVERLAY_FILE" \
-    'Text("已自动填充标题和 Prompt")' \
+    'Text(smartPasteSuccessMessage)' \
     "The transient notice must clearly report the completed fill."
 require_pattern "$OVERLAY_FILE" \
     'Button("撤销") {' \
     "The transient notice must provide immediate undo."
 require_pattern "$OVERLAY_FILE" \
-    'private var smartPasteHeaderMenu' \
-    "Persistent smart-paste actions must live in the composer header."
+    'Text("已匹配：\(matchedFieldsSummary)")' \
+    "The Prompt editor must report matched fields inline."
 if /usr/bin/grep -Fq '已智能填充 ·' "$OVERLAY_FILE"; then
     echo "Smart paste must not render a persistent filled-state bar." >&2
     exit 1
 fi
-require_pattern "$OVERLAY_FILE" \
-    '.popover(isPresented: $showSmartPasteDetails)' \
-    "Smart-paste details must use a transient popover."
+for removed in 'private var smartPasteEntry' 'private var smartPasteDetails' '查看原文与识别详情'; do
+    if /usr/bin/grep -Fq "$removed" "$OVERLAY_FILE"; then
+        echo "Prompt composer must remove the separate smart-paste surface: $removed" >&2
+        exit 1
+    fi
+done
 require_pattern "$OVERLAY_FILE" \
     'initialSignature = draftSignature' \
     "Prompt composer must capture the clean initial draft signature."
@@ -84,15 +87,6 @@ require_pattern "$OVERLAY_FILE" \
 require_pattern "$OVERLAY_FILE" \
     '.onChange(of: state.pendingSmartPasteRequest?.token)' \
     "Prompt composer must observe queued smart-paste requests without rebuilding the draft."
-require_pattern "$OVERLAY_FILE" \
-    'ScrollView {' \
-    "Smart-paste details must offer complete, selectable original text in a bounded scroll view."
-require_pattern "$OVERLAY_FILE" \
-    'Text(interpretation.originalText)' \
-    "Smart-paste details must render the full original text."
-require_pattern "$OVERLAY_FILE" \
-    '.textSelection(.enabled)' \
-    "Smart-paste original text must be selectable."
 require_pattern "$OVERLAY_FILE" \
     'let promptHeight = max(240, contentHeight - promptHeightBudget)' \
     "Prompt composer must preserve the 240pt minimum prompt height."
