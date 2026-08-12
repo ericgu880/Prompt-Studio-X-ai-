@@ -32,6 +32,7 @@ final class PetCaptureSocketServer {
     private var createdSocketIdentity: SocketIdentity?
     private var pendingIDs = Set<String>()
     private var terminalOutcomes: [String: PetCaptureOutcome] = [:]
+    private var sourceClearCaptureIDs = Set<String>()
     private var pendingWaiters: [String: [UUID: CheckedContinuation<PetCaptureOutcome?, Never>]] = [:]
     private var outcomeObservers: [NSObjectProtocol] = []
 
@@ -92,6 +93,7 @@ final class PetCaptureSocketServer {
         let message: String?
         let code: String?
         let retryable: Bool?
+        let clearSource: Bool?
 
         init(
             type: String,
@@ -99,7 +101,8 @@ final class PetCaptureSocketServer {
             mouthScreenPoint: PetCaptureRequest.ScreenPoint? = nil,
             message: String? = nil,
             code: String? = nil,
-            retryable: Bool? = nil
+            retryable: Bool? = nil,
+            clearSource: Bool? = nil
         ) {
             self.type = type
             self.captureID = captureID
@@ -107,6 +110,7 @@ final class PetCaptureSocketServer {
             self.message = message
             self.code = code
             self.retryable = retryable
+            self.clearSource = clearSource
         }
     }
 
@@ -127,6 +131,9 @@ final class PetCaptureSocketServer {
             },
             NotificationCenter.default.addObserver(forName: .petCaptureFailed, object: nil, queue: .main) { [weak self] notification in
                 Task { @MainActor [weak self] in self?.receiveOutcome(notification.object) }
+            },
+            NotificationCenter.default.addObserver(forName: .petCaptureSourceShouldClear, object: nil, queue: .main) { [weak self] notification in
+                Task { @MainActor [weak self] in self?.receiveSourceClear(notification.object) }
             }
         ]
     }
@@ -181,6 +188,7 @@ final class PetCaptureSocketServer {
         pendingWaiters.removeAll()
         pendingIDs.removeAll()
         terminalOutcomes.removeAll()
+        sourceClearCaptureIDs.removeAll()
         continuations.forEach { $0.resume(returning: nil) }
         isRunning = false
     }
@@ -248,6 +256,11 @@ final class PetCaptureSocketServer {
             ?? [UUID: CheckedContinuation<PetCaptureOutcome?, Never>]()
         let waiters = waiterDictionary.values
         waiters.forEach { $0.resume(returning: outcome) }
+    }
+
+    private func receiveSourceClear(_ object: Any?) {
+        guard let outcome = object as? PetCaptureOutcome else { return }
+        sourceClearCaptureIDs.insert(outcome.captureID)
     }
 
     private func awaitTerminalOutcome(for captureID: String, descriptor: Int32) async -> PetCaptureOutcome? {
@@ -326,14 +339,26 @@ final class PetCaptureSocketServer {
         case .presented(let captureID):
             return WireResponse(type: "presented", captureID: captureID)
         case .saved(let captureID, let mouthPoint):
-            return WireResponse(type: "saved", captureID: captureID, mouthScreenPoint: mouthPoint)
+            return WireResponse(
+                type: "saved",
+                captureID: captureID,
+                mouthScreenPoint: mouthPoint,
+                clearSource: sourceClearCaptureIDs.remove(captureID) != nil ? true : nil
+            )
         case .alreadySaved(let captureID, let mouthPoint):
-            return WireResponse(type: "saved", captureID: captureID, mouthScreenPoint: mouthPoint)
+            return WireResponse(
+                type: "saved",
+                captureID: captureID,
+                mouthScreenPoint: mouthPoint,
+                clearSource: sourceClearCaptureIDs.remove(captureID) != nil ? true : nil
+            )
         case .animate(let captureID, let mouthPoint):
             return WireResponse(type: "animate", captureID: captureID, mouthScreenPoint: mouthPoint)
         case .cancelled(let captureID):
+            sourceClearCaptureIDs.remove(captureID)
             return WireResponse(type: "cancelled", captureID: captureID)
         case .failed(let captureID, let message, let code, let retryable):
+            sourceClearCaptureIDs.remove(captureID)
             return WireResponse(
                 type: "failed",
                 captureID: captureID,
@@ -487,6 +512,7 @@ final class PetCaptureSocketServer {
     private func disconnect(captureID: String) {
         pendingIDs.remove(captureID)
         terminalOutcomes.removeValue(forKey: captureID)
+        sourceClearCaptureIDs.remove(captureID)
         if let waiterDictionary = pendingWaiters.removeValue(forKey: captureID) {
             waiterDictionary.values.forEach { $0.resume(returning: nil) }
         }
