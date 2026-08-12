@@ -7,6 +7,7 @@ const {
   readSelectionAtClick,
   mapScreenPointToViewport,
   flightKeyframes,
+  shouldAnimateCaptureResponse,
   FEED_BUTTON_DELAY_MS,
   FEED_BUTTON_TTL_MS,
 } = require('../content-core.js');
@@ -97,6 +98,14 @@ test('text flight starts at the saved selection point and follows a shrinking ar
   assert.deepEqual(frames.at(-1).point, { x: 240, y: 180 });
   assert.ok(frames[1].point.y < 130);
   assert.ok(frames[0].scale > frames.at(-1).scale);
+});
+
+test('animate plus saved produces one text flight while saved alone remains a fallback', () => {
+  const animated = new Set();
+  assert.equal(shouldAnimateCaptureResponse('animate', 'capture-1', animated), true);
+  assert.equal(shouldAnimateCaptureResponse('saved', 'capture-1', animated), false);
+  assert.equal(shouldAnimateCaptureResponse('saved', 'capture-2', animated), true);
+  assert.equal(shouldAnimateCaptureResponse('failed', 'capture-3', animated), false);
 });
 
 test('scroll, resize, and outside pointer events clear transient selection UI', () => {
