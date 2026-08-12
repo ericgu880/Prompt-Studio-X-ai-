@@ -6,19 +6,25 @@ import Darwin
 
 public enum CaptureHostRuntimeError: Error, Equatable, CustomStringConvertible, Sendable {
     case invalidOrigin
+    case originMismatch
     case invalidRequest
     case selectionEmpty
     case selectionTooLarge
     case socketUnavailable
+    case connectionTimedOut
+    case responseTimedOut
     case appLaunchFailed
 
     public var description: String {
         switch self {
         case .invalidOrigin: return "origin is not allowlisted"
+        case .originMismatch: return "envelope origin does not match trusted argv origin"
         case .invalidRequest: return "request is invalid"
         case .selectionEmpty: return "selection is empty"
         case .selectionTooLarge: return "selection exceeds 50,000 characters"
         case .socketUnavailable: return "capture socket unavailable"
+        case .connectionTimedOut: return "capture socket connection timed out"
+        case .responseTimedOut: return "capture response timed out"
         case .appLaunchFailed: return "unable to launch PromptStudio"
         }
     }
@@ -40,9 +46,20 @@ public struct UnixCaptureSocket {
         self.path = path
     }
 
-    public static func defaultPath(homeDirectory: String = NSHomeDirectory()) -> String {
-        let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
-        return "\(home)/Library/Application Support/PromptStudio/web-capture.sock"
+    public static func defaultPath(homeDirectory: String? = nil) -> String {
+        let applicationSupportPath: String
+        if let homeDirectory {
+            let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
+            applicationSupportPath = "\(home)/Library/Application Support"
+        } else if let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            applicationSupportPath = url.path
+        } else {
+            applicationSupportPath = "\(NSHomeDirectory())/Library/Application Support"
+        }
+        return URL(fileURLWithPath: applicationSupportPath)
+            .appendingPathComponent("PromptStudio", isDirectory: true)
+            .appendingPathComponent("web-capture.sock")
+            .path
     }
 }
 
@@ -65,7 +82,7 @@ public struct PromptStudioLauncher {
 }
 
 public final class UnixSocketCaptureForwarder {
-    public typealias Exchange = (Data) throws -> Data
+    public typealias Exchange = (Data, Date, Date) throws -> Data
     private let socketPath: String
     private let launchApp: () throws -> Void
     private let exchange: Exchange
@@ -81,18 +98,22 @@ public final class UnixSocketCaptureForwarder {
     ) {
         self.socketPath = socketPath
         self.launchApp = launchApp
-        self.exchange = exchange ?? { payload in try UnixSocketCaptureForwarder.exchange(payload, socketPath: socketPath) }
+        self.exchange = exchange ?? { payload, connectDeadline, responseDeadline in
+            try UnixSocketCaptureForwarder.exchange(payload, socketPath: socketPath, connectDeadline: connectDeadline, responseDeadline: responseDeadline)
+        }
         self.clock = clock
         self.sleep = sleep
     }
 
     public func forward(_ payload: Data) throws -> Data {
-        let deadline = clock().addingTimeInterval(5)
+        let connectionDeadline = clock().addingTimeInterval(5)
         var launched = false
         var lastError: Error = CaptureHostRuntimeError.socketUnavailable
-        while clock() < deadline {
+        while clock() < connectionDeadline {
             do {
-                return try exchange(payload)
+                return try exchange(payload, connectionDeadline, clock().addingTimeInterval(60))
+            } catch CaptureHostRuntimeError.responseTimedOut {
+                throw CaptureHostRuntimeError.responseTimedOut
             } catch {
                 lastError = error
                 if !launched {
@@ -107,11 +128,11 @@ public final class UnixSocketCaptureForwarder {
                 sleep(100_000)
             }
         }
-        if lastError is CaptureHostRuntimeError { throw lastError }
-        throw CaptureHostRuntimeError.socketUnavailable
+        if lastError is CaptureHostRuntimeError { throw CaptureHostRuntimeError.connectionTimedOut }
+        throw CaptureHostRuntimeError.connectionTimedOut
     }
 
-    private static func exchange(_ payload: Data, socketPath: String) throws -> Data {
+    private static func exchange(_ payload: Data, socketPath: String, connectDeadline: Date, responseDeadline: Date) throws -> Data {
         #if canImport(Darwin)
         var socketInfo = stat()
         guard lstat(socketPath, &socketInfo) == 0,
@@ -137,18 +158,44 @@ public final class UnixSocketCaptureForwarder {
             }
         }
         let addressLength = socklen_t(MemoryLayout<sockaddr_un>.size)
+        _ = fcntl(descriptor, F_SETFL, O_NONBLOCK)
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { rebound in
                 Darwin.connect(descriptor, rebound, addressLength)
             }
         }
-        guard connected == 0 else { throw CaptureHostRuntimeError.socketUnavailable }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-        try NativeMessagingFramer.writeFrame(payload, to: handle)
-        guard let response = try NativeMessagingFramer.readFrame(from: handle) else {
-            throw CaptureHostRuntimeError.socketUnavailable
+        if connected != 0 {
+            guard errno == EINPROGRESS else { throw CaptureHostRuntimeError.socketUnavailable }
+            var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            while true {
+                let remaining = connectDeadline.timeIntervalSinceNow
+                guard remaining > 0 else { throw CaptureHostRuntimeError.connectionTimedOut }
+                let milliseconds = Int32(max(1, min(Double(Int32.max), ceil(remaining * 1_000))))
+                let pollResult = Darwin.poll(&pollDescriptor, 1, milliseconds)
+                if pollResult == 0 { throw CaptureHostRuntimeError.connectionTimedOut }
+                if pollResult < 0 {
+                    if errno == EINTR { continue }
+                    throw CaptureHostRuntimeError.socketUnavailable
+                }
+                var socketError: Int32 = 0
+                var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+                guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) == 0 else {
+                    throw CaptureHostRuntimeError.socketUnavailable
+                }
+                guard socketError == 0 else { throw CaptureHostRuntimeError.socketUnavailable }
+                break
+            }
         }
-        return response
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        do {
+            try NativeMessagingFramer.writeFrame(payload, to: handle, deadline: responseDeadline)
+            guard let response = try NativeMessagingFramer.readFrame(from: handle, deadline: responseDeadline) else {
+                throw CaptureHostRuntimeError.socketUnavailable
+            }
+            return response
+        } catch NativeMessagingError.deadlineExceeded {
+            throw CaptureHostRuntimeError.responseTimedOut
+        }
         #else
         throw CaptureHostRuntimeError.socketUnavailable
         #endif
@@ -160,10 +207,12 @@ public final class PromptStudioCaptureHost {
     private let output: FileHandle
     private let forwarder: UnixSocketCaptureForwarder
     private let allowlist: CaptureOriginAllowlist
+    private let trustedOrigin: String
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
+        trustedOrigin: String,
         input: FileHandle = .standardInput,
         output: FileHandle = .standardOutput,
         forwarder: UnixSocketCaptureForwarder = UnixSocketCaptureForwarder(),
@@ -173,6 +222,7 @@ public final class PromptStudioCaptureHost {
         self.output = output
         self.forwarder = forwarder
         self.allowlist = allowlist
+        self.trustedOrigin = trustedOrigin
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
     }
@@ -208,7 +258,13 @@ public final class PromptStudioCaptureHost {
 
     private func decodeAndValidate(_ frame: Data) throws -> CaptureEnvelope {
         let request = try decoder.decode(CaptureEnvelope.self, from: frame)
-        guard allowlist.contains(request.origin) else { throw CaptureHostRuntimeError.invalidOrigin }
+        do {
+            _ = try CaptureRequestValidator.validate(request, trustedOrigin: trustedOrigin, allowlist: allowlist)
+        } catch CaptureRequestValidationError.originMismatch {
+            throw CaptureHostRuntimeError.originMismatch
+        } catch {
+            throw CaptureHostRuntimeError.invalidOrigin
+        }
         guard request.type == "capture", !request.candidate.captureID.isEmpty else { throw CaptureHostRuntimeError.invalidRequest }
         guard !request.candidate.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CaptureHostRuntimeError.selectionEmpty }
         guard request.candidate.selectedText.count <= 50_000 else { throw CaptureHostRuntimeError.selectionTooLarge }
@@ -223,10 +279,13 @@ public final class PromptStudioCaptureHost {
     private func errorCode(_ error: CaptureHostRuntimeError) -> String {
         switch error {
         case .invalidOrigin: return "origin-not-allowed"
+        case .originMismatch: return "origin-mismatch"
         case .invalidRequest: return "invalid-request"
         case .selectionEmpty: return "empty-selection"
         case .selectionTooLarge: return "selection-too-large"
         case .socketUnavailable: return "app-unavailable"
+        case .connectionTimedOut: return "app-connection-timeout"
+        case .responseTimedOut: return "app-response-timeout"
         case .appLaunchFailed: return "app-launch-failed"
         }
     }

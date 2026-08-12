@@ -1,14 +1,18 @@
 import Foundation
 
 public struct CaptureOriginAllowlist: Equatable, Sendable {
-    // These IDs are deliberately fixed. A release extension must retain its ID; a development
-    // build uses the second ID. Neither value is a wildcard or a prefix match.
-    public static let productionOrigin = "chrome-extension://cnafjhfhjdmkknjgojhnkglgllliimjo/"
-    public static let developmentOrigin = "chrome-extension://pnafjhfhjdmkknjgojhnkglgllliimjo/"
+    // The development ID is deliberately fixed from the checked-in public manifest key. A
+    // production/Web Store ID is loaded only from an explicit signed build configuration.
+    public static let developmentOrigin = "chrome-extension://ejdemjnekbbpodkgfpngckkhghfeheng/"
+
+    public static func origin(forExtensionID extensionID: String) -> String? {
+        guard extensionID.count == 32, extensionID.allSatisfy({ $0 >= "a" && $0 <= "p" }) else { return nil }
+        return "chrome-extension://\(extensionID)/"
+    }
 
     public let origins: [String]
 
-    public static let `default` = CaptureOriginAllowlist(origins: [productionOrigin, developmentOrigin])
+    public static let `default` = CaptureOriginAllowlist(origins: [developmentOrigin])
 
     public init(origins: [String]) {
         self.origins = origins
@@ -16,6 +20,32 @@ public struct CaptureOriginAllowlist: Equatable, Sendable {
 
     public func contains(_ origin: String) -> Bool {
         origins.contains(origin)
+    }
+
+    public static func runtime(executablePath: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> CaptureOriginAllowlist {
+        var origins = Set(Self.default.origins)
+        let configPath = environment["PROMPTSTUDIO_CAPTURE_ALLOWED_ORIGINS_FILE"]
+            ?? URL(fileURLWithPath: executablePath).deletingLastPathComponent()
+                .appendingPathComponent("PromptStudioCaptureHost.allowed-origins.json").path
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+           let config = try? JSONDecoder().decode(AllowedOriginsConfiguration.self, from: data) {
+            origins.formUnion(config.allowedOrigins.filter { isExactOrigin($0) })
+        }
+        return CaptureOriginAllowlist(origins: origins.sorted())
+    }
+
+    private static func isExactOrigin(_ value: String) -> Bool {
+        guard value.hasPrefix("chrome-extension://"), value.hasSuffix("/") else { return false }
+        let id = value.dropFirst("chrome-extension://".count).dropLast()
+        return id.count == 32 && id.allSatisfy { ("a"..."p").contains(String($0)) }
+    }
+
+    private struct AllowedOriginsConfiguration: Decodable {
+        let allowedOrigins: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case allowedOrigins = "allowed_origins"
+        }
     }
 }
 
@@ -25,9 +55,10 @@ public enum ProcessOrigin: Equatable, Sendable {
     case rejected(String)
 
     public static func parse(arguments: [String], allowlist: CaptureOriginAllowlist = .default) -> ProcessOrigin {
-        let rawValue = arguments.first(where: { $0.hasPrefix("--origin=") }).map {
-            String($0.dropFirst("--origin=".count))
-        } ?? arguments.dropFirst().first
+        // Chromium supplies the extension origin as argv[1]. Do not accept a later
+        // flag or envelope field as an alternate authentication channel: direct
+        // invocations must have the exact browser-provided argument in this slot.
+        let rawValue = arguments.count > 1 ? arguments[1] : nil
         guard let rawValue, !rawValue.isEmpty else {
             return .missing
         }
@@ -85,6 +116,31 @@ public struct CaptureEnvelope: Codable, Equatable, Sendable {
         self.type = type
         self.origin = origin
         self.candidate = candidate
+    }
+}
+
+public enum CaptureRequestValidationError: Error, Equatable, CustomStringConvertible, Sendable {
+    case originNotAllowed
+    case originMismatch
+
+    public var description: String {
+        switch self {
+        case .originNotAllowed: return "origin is not allowlisted"
+        case .originMismatch: return "envelope origin does not match trusted argv origin"
+        }
+    }
+}
+
+public enum CaptureRequestValidator {
+    public static func validate(
+        _ envelope: CaptureEnvelope,
+        trustedOrigin: String,
+        allowlist: CaptureOriginAllowlist = .default
+    ) throws -> CaptureEnvelope {
+        guard allowlist.contains(trustedOrigin) else { throw CaptureRequestValidationError.originNotAllowed }
+        guard envelope.origin == trustedOrigin else { throw CaptureRequestValidationError.originMismatch }
+        guard allowlist.contains(envelope.origin) else { throw CaptureRequestValidationError.originNotAllowed }
+        return envelope
     }
 }
 

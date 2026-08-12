@@ -19,11 +19,17 @@
   }
 
   function mapScreenPointToViewport(screenPoint, windowMetrics) {
+    const coordinateScale = windowMetrics.screenCoordinatesArePhysicalPixels
+      ? (Number.isFinite(Number(windowMetrics.devicePixelRatio)) && Number(windowMetrics.devicePixelRatio) > 0 ? Number(windowMetrics.devicePixelRatio) : 1)
+      : (Number.isFinite(Number(windowMetrics.screenCoordinateScale)) && Number(windowMetrics.screenCoordinateScale) > 0 ? Number(windowMetrics.screenCoordinateScale) : 1);
+    const browserChromeHeight = Number.isFinite(Number(windowMetrics.browserChromeHeight))
+      ? Math.max(0, Number(windowMetrics.browserChromeHeight))
+      : Math.max(0, (Number(windowMetrics.outerHeight) || 0) - (Number(windowMetrics.innerHeight) || 0));
     const visualViewportOffsetX = Number(windowMetrics.visualViewportOffsetX) || 0;
     const visualViewportOffsetY = Number(windowMetrics.visualViewportOffsetY) || 0;
     return {
-      x: Math.round(Number(screenPoint.x) - Number(windowMetrics.screenX) - visualViewportOffsetX),
-      y: Math.round(Number(screenPoint.y) - Number(windowMetrics.screenY) - visualViewportOffsetY),
+      x: Math.round((Number(screenPoint.x) - Number(windowMetrics.screenX)) / coordinateScale - visualViewportOffsetX),
+      y: Math.round((Number(screenPoint.y) - Number(windowMetrics.screenY) - browserChromeHeight) / coordinateScale - visualViewportOffsetY),
     };
   }
 

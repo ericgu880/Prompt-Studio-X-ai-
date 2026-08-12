@@ -11,6 +11,7 @@ Native Messaging. The extension does not make network requests.
 2. In a terminal, run the explicit registration command (replace the path with the installed app):
 
    ```sh
+   export PROMPTSTUDIO_EXTENSION_ID='your-signed-32-character-a-p-extension-id'
    Scripts/register_browser_hosts.sh register \
      "/Applications/PromptStudio.app/Contents/Helpers/PromptStudioCaptureHost"
    ```
@@ -24,12 +25,21 @@ Native Messaging. The extension does not make network requests.
    Scripts/register_browser_hosts.sh remove
    ```
 
+   For the checked-in development extension, use the explicit development action instead (it
+   does not accept a guessed production/Web Store ID):
+
+   ```sh
+   Scripts/register_browser_hosts.sh register-dev \
+     "/Applications/PromptStudio.app/Contents/Helpers/PromptStudioCaptureHost"
+   ```
+
 3. Open `chrome://extensions`, `edge://extensions`, or Arc's extensions page, enable Developer
    mode, and choose **Load unpacked** for this `BrowserExtension` directory.
 
-The production and development extension origins are fixed in `CaptureOriginAllowlist` and the
-registration script. If an extension ID changes, update both locations together and ship a new
-manifest; do not replace an origin with `*`.
+The development extension origin is derived from the checked-in public manifest key. Production
+registration requires an explicit `PROMPTSTUDIO_EXTENSION_ID` (the 32-character a-p ID supplied by
+the signed/Web Store extension); the tooling never guesses or embeds a Web Store ID. Do not replace
+an exact origin with `*`.
 
 ## Capture behavior
 
