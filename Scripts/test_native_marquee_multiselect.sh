@@ -211,10 +211,18 @@ require_normalized_token "$MASONRY_GRID_NORMALIZED" 'collectionView.allowsMultip
     "The native collection view must allow multiple selection."
 require_normalized_token "$MASONRY_GRID_NORMALIZED" 'let context = actionContext(for: itemID)' \
     "The collection coordinator must resolve one shared action context."
-require_normalized_token "$MASONRY_GRID_NORMALIZED" 'promptStudioPasteboardItem(itemIDs: context.orderedItemIDs)' \
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'promptStudioPasteboardItem(itemIDs: plan.completePayload.itemIDs)' \
     "The collection coordinator must publish the complete ordered selection."
 require_normalized_token "$MASONRY_GRID_NORMALIZED" 'collectionView.beginDraggingSession' \
     "The collection view must own the shared drag session."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'PromptItemDragPreviewPlan(' \
+    "The collection coordinator must build a capped multi-card preview plan."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'plan.previewItemIDs.compactMap' \
+    "The collection coordinator must create a preview for each planned card."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'plan.payloadOwnerID == previewItemID' \
+    "Only the primary dragging item may publish the complete payload."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'session.draggingFormation = .stack' \
+    "Multi-card previews must use AppKit's native stack formation."
 
 SIDEBAR_DROP_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
     '^[[:space:]]*private[[:space:]]+func[[:space:]]+handleDrop\b' \

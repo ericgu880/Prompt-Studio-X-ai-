@@ -8,6 +8,7 @@ private let useNativeMasonryCollectionView = true
 
 private extension NSPasteboard.PasteboardType {
     static let promptStudioItemIDs = NSPasteboard.PasteboardType(PromptItemDragPayload.pasteboardTypeIdentifier)
+    static let promptStudioDragPreview = NSPasteboard.PasteboardType("com.promptstudio.internal.drag-preview")
 }
 
 private extension UTType {
@@ -38,6 +39,12 @@ private func promptStudioPasteboardItem(itemIDs: [String]) -> NSPasteboardItem? 
     let item = NSPasteboardItem()
     item.setData(data, forType: .promptStudioItemIDs)
     item.setString(dragText, forType: .string)
+    return item
+}
+
+private func promptStudioVisualPasteboardItem(itemID: String) -> NSPasteboardItem {
+    let item = NSPasteboardItem()
+    item.setString(itemID, forType: .promptStudioDragPreview)
     return item
 }
 
@@ -3235,16 +3242,147 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 state?.selectItems(ids: Set(context.orderedItemIDs), primaryID: context.primaryID)
                 syncCollectionSelection(Set(context.orderedItemIDs))
             }
-            guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: context.orderedItemIDs) else { return }
-            let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-            let sourceRect = sourceView.convert(sourceView.bounds, to: collectionView)
-            draggingItem.setDraggingFrame(sourceRect, contents: previewImage)
-            activeDragContext = context
-            let session = collectionView.beginDraggingSession(with: [draggingItem], event: event, source: self)
-            session.animatesToStartingPositionsOnCancelOrFail = false
-            if context.orderedItemIDs.count > 1 {
-                session.draggingFormation = .stack
+            let plan = PromptItemDragPreviewPlan(
+                orderedItemIDs: context.orderedItemIDs,
+                draggedItemID: itemID
+            )
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let draggedSourceRect = sourceView.convert(sourceView.bounds, to: collectionView)
+            let draggingItems = plan.previewItemIDs.compactMap { previewItemID -> NSDraggingItem? in
+                let writer: NSPasteboardWriting
+                if plan.payloadOwnerID == previewItemID {
+                    guard let payloadWriter = promptStudioPasteboardItem(itemIDs: plan.completePayload.itemIDs) else {
+                        return nil
+                    }
+                    writer = payloadWriter
+                } else {
+                    writer = promptStudioVisualPasteboardItem(itemID: previewItemID)
+                }
+
+                let draggingItem = NSDraggingItem(pasteboardWriter: writer)
+                let originalFrame = dragPreviewFrame(
+                    for: previewItemID,
+                    draggedItemID: itemID,
+                    draggedSourceRect: draggedSourceRect
+                )
+                let frame: CGRect
+                if reduceMotion, plan.previewItemIDs.count > 1 {
+                    let previewIndex = plan.previewItemIDs.firstIndex(of: previewItemID) ?? 0
+                    let depth = CGFloat(plan.previewItemIDs.count - 1 - previewIndex)
+                    frame = draggedSourceRect.offsetBy(dx: -depth * 3, dy: depth * 3)
+                } else {
+                    frame = originalFrame
+                }
+                var contents = dragPreviewImage(
+                    for: previewItemID,
+                    draggedItemID: itemID,
+                    draggedPreviewImage: previewImage,
+                    size: frame.size
+                )
+                if plan.payloadOwnerID == previewItemID, plan.totalItemCount > 1 {
+                    contents = dragPreviewImage(contents, addingCountBadge: plan.totalItemCount)
+                }
+                draggingItem.setDraggingFrame(frame, contents: contents)
+                return draggingItem
             }
+            guard !draggingItems.isEmpty else { return }
+            activeDragContext = context
+            let session = collectionView.beginDraggingSession(with: draggingItems, event: event, source: self)
+            session.animatesToStartingPositionsOnCancelOrFail = false
+            if draggingItems.count > 1, !reduceMotion {
+                session.draggingFormation = .stack
+            } else {
+                session.draggingFormation = .none
+            }
+        }
+
+        private func dragPreviewFrame(
+            for itemID: String,
+            draggedItemID: String,
+            draggedSourceRect: CGRect
+        ) -> CGRect {
+            guard itemID != draggedItemID,
+                  let indexPath = itemIndexPathsByID[itemID],
+                  let frame = layout?.layoutAttributesForItem(at: indexPath)?.frame else {
+                return draggedSourceRect
+            }
+            return frame
+        }
+
+        private func dragPreviewImage(
+            for itemID: String,
+            draggedItemID: String,
+            draggedPreviewImage: NSImage,
+            size: CGSize
+        ) -> NSImage {
+            if itemID == draggedItemID {
+                return draggedPreviewImage
+            }
+            if let indexPath = itemIndexPathsByID[itemID],
+               let collectionItem = collectionView?.item(at: indexPath) as? MasonryCollectionItem {
+                return collectionItem.dragPreviewImage()
+            }
+            let item = entries.compactMap(\.promptItem).first { $0.id == itemID }
+            return placeholderDragPreviewImage(for: item, size: size)
+        }
+
+        private func placeholderDragPreviewImage(for item: PromptItem?, size: CGSize) -> NSImage {
+            let canvasSize = CGSize(width: max(80, size.width), height: max(64, size.height))
+            let image = NSImage(size: canvasSize)
+            image.lockFocus()
+            NSColor(calibratedWhite: 0.12, alpha: 0.96).setFill()
+            NSBezierPath(roundedRect: CGRect(origin: .zero, size: canvasSize), xRadius: 12, yRadius: 12).fill()
+            let symbolName: String
+            switch item?.assetKind {
+            case .image: symbolName = "photo"
+            case .video: symbolName = "film"
+            case .audio: symbolName = "waveform"
+            case .markdown, .document, .text: symbolName = "doc.text"
+            default: symbolName = "doc"
+            }
+            if let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+                let symbolSize = CGSize(width: 30, height: 30)
+                symbol.draw(
+                    in: CGRect(
+                        x: (canvasSize.width - symbolSize.width) / 2,
+                        y: (canvasSize.height - symbolSize.height) / 2,
+                        width: symbolSize.width,
+                        height: symbolSize.height
+                    )
+                )
+            }
+            image.unlockFocus()
+            return image
+        }
+
+        private func dragPreviewImage(_ source: NSImage, addingCountBadge count: Int) -> NSImage {
+            let image = NSImage(size: source.size)
+            image.lockFocus()
+            source.draw(in: CGRect(origin: .zero, size: source.size))
+            let text = "\(count)" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            let badgeSize = CGSize(width: max(28, textSize.width + 14), height: 26)
+            let badgeRect = CGRect(
+                x: max(6, source.size.width - badgeSize.width - 8),
+                y: max(6, source.size.height - badgeSize.height - 8),
+                width: badgeSize.width,
+                height: badgeSize.height
+            )
+            NSColor.systemBlue.setFill()
+            NSBezierPath(roundedRect: badgeRect, xRadius: 13, yRadius: 13).fill()
+            text.draw(
+                at: CGPoint(
+                    x: badgeRect.midX - textSize.width / 2,
+                    y: badgeRect.midY - textSize.height / 2
+                ),
+                withAttributes: attributes
+            )
+            image.unlockFocus()
+            return image
         }
 
         func draggingSession(
@@ -3633,6 +3771,16 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             "transform": NSNull(),
             "opacity": NSNull()
         ]
+    }
+
+    func dragPreviewImage() -> NSImage {
+        guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return NSImage(size: view.bounds.size)
+        }
+        view.cacheDisplay(in: view.bounds, to: representation)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(representation)
+        return image
     }
 
     func setMarkdownSelected(_ isSelected: Bool) {

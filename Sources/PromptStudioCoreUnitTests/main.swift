@@ -341,6 +341,32 @@ func testSelectionActionContextBuildsCompleteDragPayload() throws {
     try expect(decoded.itemIDs == ["image", "audio", "markdown"], "drag payload should retain every selected item in visual order")
 }
 
+func testMultiItemDragPreviewPlanKeepsDraggedItemOnTop() throws {
+    let selection = (1...5).map { "item-\($0)" }
+    let plan = PromptItemDragPreviewPlan(
+        orderedItemIDs: selection,
+        draggedItemID: "item-3"
+    )
+    try expect(plan.previewItemIDs == ["item-1", "item-2", "item-4", "item-5", "item-3"], "dragged item should be the topmost preview")
+    try expect(plan.payloadOwnerID == "item-3", "only the dragged item should own the complete payload")
+    try expect(plan.totalItemCount == 5, "preview plan should retain the real selection count")
+}
+
+func testMultiItemDragPreviewPlanCapsVisualsWithoutTruncatingPayload() throws {
+    let selection = (1...13).map { "item-\($0)" }
+    let plan = PromptItemDragPreviewPlan(
+        orderedItemIDs: selection,
+        draggedItemID: "item-13"
+    )
+    try expect(plan.previewItemIDs.count == 12, "drag preview should render at most twelve cards")
+    try expect(plan.previewItemIDs.last == "item-13", "dragged item should remain visible and topmost beyond the cap")
+    try expect(plan.completePayload.itemIDs == selection, "visual cap must not truncate the move payload")
+    try expect(plan.totalItemCount == 13, "count badge should use the complete selection count")
+
+    let single = PromptItemDragPreviewPlan(orderedItemIDs: ["only"], draggedItemID: "only")
+    try expect(single.previewItemIDs == ["only"], "single selection should create exactly one preview")
+}
+
 func testPromptItemBatchMovePlanner() throws {
     let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
     var first = sampleItem(title: "First", assetKind: .image, prompt: "first")
@@ -1184,6 +1210,8 @@ do {
     try testPromptItemDragPayload()
     try testSelectionActionContextPreservesFinderStyleMultiSelection()
     try testSelectionActionContextBuildsCompleteDragPayload()
+    try testMultiItemDragPreviewPlanKeepsDraggedItemOnTop()
+    try testMultiItemDragPreviewPlanCapsVisualsWithoutTruncatingPayload()
     try testPromptItemBatchMovePlanner()
     try testPromptRepositoryBatchDeletedStateRollsBack()
     try testPromptRepositoryBatchPermanentDeleteRollsBack()

@@ -11,7 +11,7 @@ for contract in \
     'PromptItemSelectionActionContext.resolve' \
     'selectionActionContext(clickedItemID:' \
     'collectionView.beginDraggingSession' \
-    'promptStudioPasteboardItem(itemIDs: context.orderedItemIDs)' \
+    'promptStudioPasteboardItem(itemIDs: plan.completePayload.itemIDs)' \
     'session.draggingFormation = .stack'; do
     if ! grep -Fq "$contract" "$VIEW" "$APP_STATE" "$CONTEXT"; then
         echo "Missing unified multi-selection contract: $contract" >&2
