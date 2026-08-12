@@ -158,7 +158,7 @@ public struct WebImageCaptureCandidate: Codable, Equatable, Sendable {
             resourceURL: sanitizedWebResourceURL(resourceURL),
             imageDOMSourceKind: domSourceKind,
             imageAcquisitionMethod: acquisitionMethod,
-            isScreenshotCapture: isScreenshot
+            isScreenshotCapture: isScreenshot || acquisitionMethod == .screenshot
         )
     }
 }

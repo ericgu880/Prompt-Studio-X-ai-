@@ -268,42 +268,50 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         let inspection = try inspectStagedImage(candidate: candidate, stagedFileURL: stagedFileURL)
         let model = try defaultModel(for: .image)
         let folder = try ensureCaptureFolder()
-        let destination = try repository.copyAssetIntoLibrary(from: stagedFileURL, assetKind: .image)
-        let id = UUID().uuidString
-        let item = PromptItem(
-            id: id,
-            title: imageCaptureTitle(candidate),
-            type: .image,
-            assetKind: .image,
-            modelId: model.id,
-            modelName: model.name,
-            folderId: folder.id,
-            folderName: folder.name,
-            category: "图片",
-            assetPath: destination.path,
-            thumbnailPath: destination.path,
-            aspectRatio: normalizedAspectRatio(width: inspection.width, height: inspection.height),
-            width: inspection.width,
-            height: inspection.height,
-            format: inspection.format,
-            fileSize: inspection.fileSize,
-            sortOrder: try nextTopSortOrder(),
-            tags: imageCaptureTags(isScreenshot: candidate.isScreenshot),
-            description: "网页图片",
-            captureID: captureID,
-            capturedSource: candidate.capturedSource
-        )
-
+        let sortOrder = try nextTopSortOrder()
+        var destination: URL?
         do {
+            let asset = try repository.writeCapturedAsset(
+                data: inspection.data,
+                preferredFilename: candidate.originalFileName,
+                assetKind: .image
+            )
+            destination = asset
+            let id = UUID().uuidString
+            let item = PromptItem(
+                id: id,
+                title: imageCaptureTitle(candidate),
+                type: .image,
+                assetKind: .image,
+                modelId: model.id,
+                modelName: model.name,
+                folderId: folder.id,
+                folderName: folder.name,
+                category: "图片",
+                assetPath: asset.path,
+                thumbnailPath: asset.path,
+                aspectRatio: normalizedAspectRatio(width: inspection.width, height: inspection.height),
+                width: inspection.width,
+                height: inspection.height,
+                format: inspection.format,
+                fileSize: inspection.fileSize,
+                sortOrder: sortOrder,
+                tags: imageCaptureTags(isScreenshot: candidate.isScreenshot || candidate.acquisitionMethod == .screenshot),
+                description: "网页图片",
+                captureID: captureID,
+                capturedSource: candidate.capturedSource
+            )
             let saved = try repository.saveCapturedItem(item)
             // Concurrent retries can both copy bytes before SQLite chooses one winner. Remove
             // only the losing copy; never touch the row or asset selected by the winner.
-            if saved.id != item.id, saved.assetPath != destination.path {
-                try? FileManager.default.removeItem(at: destination)
+            if saved.id != item.id, saved.assetPath != asset.path {
+                try? FileManager.default.removeItem(at: asset)
             }
             return saved
         } catch {
-            try? FileManager.default.removeItem(at: destination)
+            if let destination {
+                try? FileManager.default.removeItem(at: destination)
+            }
             throw error
         }
     }
@@ -502,6 +510,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
     }
 
     private struct StagedImageInspection {
+        var data: Data
         var width: Int
         var height: Int
         var fileSize: Int64
@@ -572,7 +581,8 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
               let format = imageFormat(for: sourceType as String, data: data) else {
             throw AutomationServiceError.invalidInput("暂存文件不是受支持的真实图片")
         }
-        if candidate.isScreenshot, format != "PNG" {
+        let isScreenshot = candidate.isScreenshot || candidate.acquisitionMethod == .screenshot
+        if isScreenshot, format != "PNG" {
             throw AutomationServiceError.invalidInput("截图采集必须使用 PNG")
         }
 
@@ -612,7 +622,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             throw AutomationServiceError.invalidInput("图片像素尺寸无效")
         }
 
-        return StagedImageInspection(width: firstWidth, height: firstHeight, fileSize: fileSize, format: format)
+        return StagedImageInspection(data: data, width: firstWidth, height: firstHeight, fileSize: fileSize, format: format)
     }
 
     private func imageDimension(_ value: Any?) -> Int? {

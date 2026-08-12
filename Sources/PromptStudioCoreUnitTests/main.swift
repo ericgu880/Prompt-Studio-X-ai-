@@ -1103,7 +1103,39 @@ func testWebImageCaptureImportAndCompatibility() throws {
     )
     try expect(screenshot.tags.contains("截图采集"), "screenshot captures should receive the screenshot tag")
 
+    let screenshotByMethodURL = try writeFixture(bytes, fileExtension: "png")
+    let screenshotByMethod = try service.createCapturedImage(
+        imageCandidate(
+            data: bytes,
+            captureID: "image-screenshot-method-only",
+            acquisitionMethod: .screenshot,
+            isScreenshot: false
+        ),
+        stagedFileURL: screenshotByMethodURL
+    )
+    try expect(
+        screenshotByMethod.tags.contains("截图采集")
+            && screenshotByMethod.capturedSource?.isScreenshotCapture == true,
+        "screenshot acquisition should normalize screenshot tags and source metadata even when the flag is false"
+    )
+
     let animatedGIF = try generatedAnimatedGIFData()
+    let screenshotByMethodGIFURL = try writeFixture(animatedGIF, fileExtension: "gif")
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(
+                data: animatedGIF,
+                captureID: "image-screenshot-method-gif",
+                acquisitionMethod: .screenshot,
+                isScreenshot: false
+            ),
+            stagedFileURL: screenshotByMethodGIFURL
+        )
+        throw CoreUnitTestError.failure("screenshot acquisition should reject a non-PNG payload")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
     let animatedURL = try writeFixture(animatedGIF, fileExtension: "gif")
     let animatedItem = try service.createCapturedImage(
         imageCandidate(
@@ -1117,6 +1149,20 @@ func testWebImageCaptureImportAndCompatibility() throws {
     )
     try expect(animatedItem.format == "GIF", "animated GIF should retain its detected format")
     try expect(try Data(contentsOf: URL(fileURLWithPath: animatedItem.assetPath)) == animatedGIF, "animated image bytes should be copied without transcoding")
+}
+
+func testRepositoryWritesVerifiedCapturedBytes() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let original = Data("verified image bytes".utf8)
+    let destination = try repository.writeCapturedAsset(
+        data: original,
+        preferredFilename: "verified.png",
+        assetKind: .image
+    )
+    try expect(
+        try Data(contentsOf: destination) == original,
+        "captured asset persistence should retain the already-verified bytes"
+    )
 }
 
 func testWebImageCaptureValidationBoundaries() throws {
@@ -1484,6 +1530,7 @@ do {
     try testCaptureDefaultsRepairExistingResources()
     try testWebCaptureValidationAndTitleLimit()
     try testWebImageCaptureImportAndCompatibility()
+    try testRepositoryWritesVerifiedCapturedBytes()
     try testWebImageCaptureValidationBoundaries()
     try testWebCaptureSchemaMigrationAddsColumnsAndIndex()
     try testFolderSeedIsIdempotent()

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 
 public enum PromptRepositoryValidationError: Error, LocalizedError {
@@ -430,6 +431,52 @@ public final class PromptRepository: @unchecked Sendable {
         }
         try FileManager.default.copyItem(at: sourceURL, to: destination)
         return destination
+    }
+
+    /// Writes already-validated capture bytes into the generated library path without reading
+    /// the staging path again. The temporary file lives beside the destination so the final move
+    /// is atomic within the image asset directory.
+    public func writeCapturedAsset(data: Data, preferredFilename: String, assetKind: AssetKind) throws -> URL {
+        guard !data.isEmpty else {
+            throw NSError(domain: "PromptStudio.PromptRepository", code: 1, userInfo: [NSLocalizedDescriptionKey: "captured asset data is empty"])
+        }
+        let directoryName: String
+        switch assetKind {
+        case .image:
+            directoryName = "assets/images"
+        default:
+            throw CocoaError(.fileWriteUnsupportedScheme)
+        }
+        let directory = libraryURL.appendingPathComponent(directoryName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let basename = URL(fileURLWithPath: preferredFilename).lastPathComponent
+        let safeName = basename.isEmpty || basename == "." || basename == ".." ? "captured-image" : basename
+        let destination = directory.appendingPathComponent(UUID().uuidString + "-" + safeName)
+        let temporary = directory.appendingPathComponent(".capture-" + UUID().uuidString + ".tmp")
+        var createdTemporary = false
+        defer {
+            if createdTemporary {
+                try? FileManager.default.removeItem(at: temporary)
+            }
+        }
+
+        guard FileManager.default.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        createdTemporary = true
+        do {
+            let handle = try FileHandle(forWritingTo: temporary)
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            createdTemporary = false
+            _ = chmod(destination.path, mode_t(0o600))
+            return destination
+        } catch {
+            throw error
+        }
     }
 
     public func saveTag(_ tag: Tag) throws {
