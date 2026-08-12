@@ -139,36 +139,51 @@ final class PetCoordinator: ObservableObject {
 
     /// Entry point for the native messaging/socket layer. A visible pet asks
     /// first; hidden mode bypasses the confirmation UI and saves immediately.
-    func requestCapture(_ request: PetCaptureRequest) {
+    @discardableResult
+    func requestCapture(_ request: PetCaptureRequest) -> PetCaptureOutcome? {
         let request = requestWithCurrentPreferences(request)
+        let hidden = isSessionHidden || machine.state == .hidden
+        // Hidden mode intentionally bypasses the visible state machine and
+        // saves directly; visible requests must be the sole owner of idle →
+        // asking so a second browser request cannot replace the first card.
+        if PetCaptureAdmission.isBusy(
+            state: machine.state,
+            hasPendingRequest: pendingRequest != nil,
+            hidden: hidden
+        ) {
+            let outcome = PetCaptureAdmission.busyOutcome(captureID: request.id)
+            postFailure(outcome)
+            return outcome
+        }
         let text = request.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             postFailure(for: request, message: PetCaptureError.invalidSelection.localizedDescription)
-            return
+            return .failed(captureID: request.id, message: PetCaptureError.invalidSelection.localizedDescription)
         }
         guard preferences.captureEnabled else {
             postFailure(for: request, message: PetCaptureError.disabled.localizedDescription)
-            return
+            return .failed(captureID: request.id, message: PetCaptureError.disabled.localizedDescription)
         }
         if let pausedUntil, pausedUntil > Date() {
             postFailure(for: request, message: PetCaptureError.paused(until: pausedUntil).localizedDescription)
-            return
+            return .failed(captureID: request.id, message: PetCaptureError.paused(until: pausedUntil).localizedDescription)
         }
         if self.pausedUntil != nil {
             self.pausedUntil = nil
         }
 
-        if isSessionHidden || machine.state == .hidden {
+        if hidden {
             Task { @MainActor [weak self] in
                 _ = await self?.performCapture(request, silently: true)
             }
-            return
+            return nil
         }
 
         pendingRequest = request
         _ = machine.transition(.captureRequested)
         panelController.setAsking(true)
         NotificationCenter.default.post(name: .petCapturePresented, object: request)
+        return .presented(captureID: request.id)
     }
 
     func confirmPendingCapture() {
@@ -196,6 +211,15 @@ final class PetCoordinator: ObservableObject {
     func capture(_ request: PetCaptureRequest) async -> PetCaptureOutcome {
         let request = requestWithCurrentPreferences(request)
         let isHidden = isSessionHidden || machine.state == .hidden
+        if PetCaptureAdmission.isBusy(
+            state: machine.state,
+            hasPendingRequest: pendingRequest != nil,
+            hidden: isHidden
+        ) {
+            let outcome = PetCaptureAdmission.busyOutcome(captureID: request.id)
+            postFailure(outcome)
+            return outcome
+        }
         let text = request.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             return rejectedCapture(request, message: PetCaptureError.invalidSelection.localizedDescription, silently: isHidden)
@@ -207,8 +231,10 @@ final class PetCoordinator: ObservableObject {
             return rejectedCapture(request, message: PetCaptureError.paused(until: pausedUntil).localizedDescription, silently: isHidden)
         }
         guard isHidden else {
-            requestCapture(request)
-            return .presented(captureID: request.id)
+            return requestCapture(request) ?? .failed(
+                captureID: request.id,
+                message: PetCaptureError.unavailable.localizedDescription
+            )
         }
         return await performCapture(request, silently: true)
     }
@@ -264,7 +290,7 @@ final class PetCoordinator: ObservableObject {
     }
 
     private func sendHiddenNotification(outcome: PetCaptureOutcome) {
-        NotificationCenter.default.post(name: .petHiddenCaptureSaved, object: outcome)
+        PetCaptureNotifications.postHiddenCompletion(outcome)
         let notification = NSUserNotification()
         let didSave: Bool
         switch outcome {
@@ -304,9 +330,12 @@ final class PetCoordinator: ObservableObject {
         )
     }
 
-    private func postFailure(for request: PetCaptureRequest, message: String) {
-        let outcome = PetCaptureOutcome.failed(captureID: request.id, message: message)
+    private func postFailure(_ outcome: PetCaptureOutcome) {
         NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
+    }
+
+    private func postFailure(for request: PetCaptureRequest, message: String) {
+        postFailure(.failed(captureID: request.id, message: message))
     }
 
     private func rejectedCapture(_ request: PetCaptureRequest, message: String, silently: Bool) -> PetCaptureOutcome {

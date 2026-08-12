@@ -65,13 +65,20 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
     case alreadySaved(captureID: String, mouthPoint: PetCaptureRequest.ScreenPoint?)
     case animate(captureID: String, mouthPoint: PetCaptureRequest.ScreenPoint?)
     case cancelled(captureID: String)
-    case failed(captureID: String, message: String)
+    case failed(
+        captureID: String,
+        message: String,
+        code: String? = nil,
+        retryable: Bool = false
+    )
 
     private enum CodingKeys: String, CodingKey {
         case kind
         case captureID
         case mouthPoint
         case message
+        case code
+        case retryable
     }
 
     private enum Kind: String, Codable {
@@ -85,7 +92,7 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
 
     var captureID: String {
         switch self {
-        case .presented(let id), .saved(let id, _), .alreadySaved(let id, _), .animate(let id, _), .cancelled(let id), .failed(let id, _):
+        case .presented(let id), .saved(let id, _), .alreadySaved(let id, _), .animate(let id, _), .cancelled(let id), .failed(let id, _, _, _):
             return id
         }
     }
@@ -105,8 +112,18 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
     }
 
     var failureMessage: String? {
-        if case .failed(_, let message) = self { return message }
+        if case .failed(_, let message, _, _) = self { return message }
         return nil
+    }
+
+    var failureCode: String? {
+        if case .failed(_, _, let code, _) = self { return code }
+        return nil
+    }
+
+    var isRetryable: Bool {
+        if case .failed(_, _, _, let retryable) = self { return retryable }
+        return false
     }
 
     init(from decoder: Decoder) throws {
@@ -125,7 +142,12 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
         case .cancelled:
             self = .cancelled(captureID: captureID)
         case .failed:
-            self = .failed(captureID: captureID, message: try values.decode(String.self, forKey: .message))
+            self = .failed(
+                captureID: captureID,
+                message: try values.decode(String.self, forKey: .message),
+                code: try values.decodeIfPresent(String.self, forKey: .code),
+                retryable: try values.decodeIfPresent(Bool.self, forKey: .retryable) ?? false
+            )
         }
     }
 
@@ -150,16 +172,21 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
         case .cancelled(let captureID):
             try values.encode(Kind.cancelled, forKey: .kind)
             try values.encode(captureID, forKey: .captureID)
-        case .failed(let captureID, let message):
+        case .failed(let captureID, let message, let code, let retryable):
             try values.encode(Kind.failed, forKey: .kind)
             try values.encode(captureID, forKey: .captureID)
             try values.encode(message, forKey: .message)
+            try values.encodeIfPresent(code, forKey: .code)
+            if retryable {
+                try values.encode(retryable, forKey: .retryable)
+            }
         }
     }
 }
 
 enum PetCaptureError: LocalizedError, Equatable {
     case unavailable
+    case busy
     case disabled
     case paused(until: Date)
     case invalidSelection
@@ -168,6 +195,8 @@ enum PetCaptureError: LocalizedError, Equatable {
         switch self {
         case .unavailable:
             "网页采集服务暂不可用"
+        case .busy:
+            "桌宠正在处理上一条采集"
         case .disabled:
             "网页采集已关闭"
         case .paused(let until):
@@ -180,12 +209,34 @@ enum PetCaptureError: LocalizedError, Equatable {
 
 typealias PetCaptureHandler = (PetCaptureRequest) async throws -> PetCaptureOutcome
 
+enum PetCaptureAdmission {
+    static func isBusy(state: PetState, hasPendingRequest: Bool, hidden: Bool) -> Bool {
+        guard !hidden else { return false }
+        return state != .idle || hasPendingRequest
+    }
+
+    static func busyOutcome(captureID: String) -> PetCaptureOutcome {
+        .failed(
+            captureID: captureID,
+            message: PetCaptureError.busy.localizedDescription,
+            code: "pet-busy",
+            retryable: true
+        )
+    }
+}
+
+enum PetCaptureNotifications {
+    static func postHiddenCompletion(_ outcome: PetCaptureOutcome) {
+        NotificationCenter.default.post(name: .petHiddenCaptureCompleted, object: outcome)
+    }
+}
+
 extension Notification.Name {
     static let petCapturePresented = Notification.Name("PromptStudio.petCapturePresented")
     static let petCaptureCancelled = Notification.Name("PromptStudio.petCaptureCancelled")
     static let petCaptureSaved = Notification.Name("PromptStudio.petCaptureSaved")
     static let petCaptureFailed = Notification.Name("PromptStudio.petCaptureFailed")
-    static let petHiddenCaptureSaved = Notification.Name("PromptStudio.petHiddenCaptureSaved")
+    static let petHiddenCaptureCompleted = Notification.Name("PromptStudio.petHiddenCaptureCompleted")
     static let petCaptureSourceShouldClear = Notification.Name("PromptStudio.petCaptureSourceShouldClear")
     static let petPreferencesDidChange = Notification.Name("PromptStudio.petPreferencesDidChange")
 }
