@@ -1,4 +1,7 @@
+import CryptoKit
+import CoreGraphics
 import Foundation
+import ImageIO
 import PromptStudioCore
 
 @discardableResult
@@ -79,6 +82,119 @@ func temporaryLibraryURL() throws -> URL {
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+func fixturePNGData() -> Data {
+    Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")!
+}
+
+func fixturePNGData(width: Int, height: Int) -> Data {
+    var bytes = Array(fixturePNGData())
+    func setBigEndian(_ value: Int, at offset: Int) {
+        let number = UInt32(value)
+        bytes[offset] = UInt8((number >> 24) & 0xFF)
+        bytes[offset + 1] = UInt8((number >> 16) & 0xFF)
+        bytes[offset + 2] = UInt8((number >> 8) & 0xFF)
+        bytes[offset + 3] = UInt8(number & 0xFF)
+    }
+    setBigEndian(width, at: 16)
+    setBigEndian(height, at: 20)
+
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in bytes[12..<29] {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 {
+            crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1
+        }
+    }
+    crc ^= 0xFFFF_FFFF
+    setBigEndian(Int(crc), at: 29)
+    return Data(bytes)
+}
+
+func generatedPNGData(width: Int, height: Int) throws -> Data {
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width,
+        space: CGColorSpaceCreateDeviceGray(),
+        bitmapInfo: CGImageAlphaInfo.none.rawValue
+    ), let image = context.makeImage() else {
+        throw CoreUnitTestError.failure("could not create generated pixel-boundary fixture")
+    }
+    let output = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else {
+        throw CoreUnitTestError.failure("could not create generated PNG destination")
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        throw CoreUnitTestError.failure("could not finalize generated PNG fixture")
+    }
+    return output as Data
+}
+
+func generatedAnimatedGIFData() throws -> Data {
+    let source = CGImageSourceCreateWithData(fixturePNGData() as CFData, nil)
+    guard let image = source.flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) else {
+        throw CoreUnitTestError.failure("could not create animated GIF source image")
+    }
+    let output = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(output, "com.compuserve.gif" as CFString, 2, nil) else {
+        throw CoreUnitTestError.failure("could not create animated GIF destination")
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        throw CoreUnitTestError.failure("could not finalize animated GIF fixture")
+    }
+    return output as Data
+}
+
+func writeSparseFixture(prefix: Data, size: Int64, fileExtension: String = "png") throws -> URL {
+    let url = try writeFixture(prefix, fileExtension: fileExtension)
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.seek(toOffset: UInt64(size - 1))
+    try handle.write(contentsOf: Data([0]))
+    try handle.close()
+    return url
+}
+
+func writeFixture(_ data: Data, fileExtension: String = "png") throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension(fileExtension)
+    try data.write(to: url)
+    return url
+}
+
+func imageCandidate(
+    data: Data,
+    captureID: String = UUID().uuidString,
+    pageTitle: String = "",
+    pageURL: String = "",
+    resourceURL: String? = nil,
+    altText: String = "",
+    originalFileName: String = "",
+    domSourceKind: ImageDOMSourceKind = .image,
+    acquisitionMethod: ImageAcquisitionMethod = .pageContext,
+    isScreenshot: Bool = false
+) -> WebImageCaptureCandidate {
+    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    return WebImageCaptureCandidate(
+        captureID: captureID,
+        domSourceKind: domSourceKind,
+        acquisitionMethod: acquisitionMethod,
+        sha256: digest,
+        pageTitle: pageTitle,
+        pageURL: pageURL,
+        resourceURL: resourceURL,
+        altText: altText,
+        originalFileName: originalFileName,
+        isScreenshot: isScreenshot,
+        byteCount: Int64(data.count)
+    )
 }
 
 func testLibraryURLResolution() throws {
@@ -915,6 +1031,212 @@ func testWebCaptureValidationAndTitleLimit() throws {
     try expect(item.title == String(longTitle.prefix(40)), "capture title should truncate by Character, not UTF-16 units")
 }
 
+func testWebImageCaptureImportAndCompatibility() throws {
+    let legacyJSON = """
+    {"pageTitle":"Legacy page","pageURL":"https://example.test/legacy","siteName":"Example","capturedAt":"2026-08-12T00:00:00Z"}
+    """.data(using: .utf8)!
+    let isoDecoder = JSONDecoder()
+    isoDecoder.dateDecodingStrategy = .iso8601
+    let legacySource = try isoDecoder.decode(CapturedSource.self, from: legacyJSON)
+    try expect(
+        legacySource.pageTitle == "Legacy page"
+            && legacySource.resourceURL == nil
+            && legacySource.imageDOMSourceKind == nil
+            && legacySource.isScreenshotCapture == nil,
+        "legacy CapturedSource JSON should decode with optional image fields absent"
+    )
+
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let service = PromptStudioAutomationService(repository: repository)
+    let bytes = fixturePNGData()
+    let staged = try writeFixture(bytes, fileExtension: "jpg")
+    let candidate = imageCandidate(
+        data: bytes,
+        captureID: "image-import",
+        pageTitle: "Page fallback",
+        pageURL: "https://user:secret@example.test/image.png?size=large#private",
+        resourceURL: "https://user:secret@example.test/image.png?size=large#private",
+        altText: "Alt / title",
+        originalFileName: "original.png"
+    )
+    let item = try service.createCapturedImage(candidate, stagedFileURL: staged)
+    try expect(item.type == .image && item.assetKind == .image, "captured image should use the image prompt type")
+    try expect(item.title == "Alt / title", "image title should prefer alt text without path normalization")
+    try expect(item.format == "PNG", "image format should come from magic bytes, not the extension")
+    try expect(item.width == 1 && item.height == 1 && item.aspectRatio == "1:1", "image dimensions should come from ImageIO")
+    try expect(item.tags == ["网页采集", "图片采集", "待整理"], "captured image should receive inbox tags")
+    try expect(item.folderId == "folder-capture-inbox" && item.folderName == "待整理", "captured image should be saved to the capture inbox")
+    try expect(
+        item.capturedSource?.resourceURL == "https://example.test/image.png?size=large",
+        "resource URL should remove credentials and fragment while preserving query"
+    )
+
+    let retry = try service.createCapturedImage(candidate, stagedFileURL: URL(fileURLWithPath: "/tmp/image-capture-cleaned-up"))
+    let importedItems = try repository.loadItems()
+    try expect(retry.id == item.id && importedItems.count == 1, "capture ID retries should be idempotent")
+    try expect(try Data(contentsOf: URL(fileURLWithPath: item.assetPath)) == bytes, "copied image bytes should remain unchanged")
+
+    let filenameURL = try writeFixture(bytes, fileExtension: "png")
+    let filenameItem = try service.createCapturedImage(
+        imageCandidate(data: bytes, captureID: "image-filename", originalFileName: "saved-name.png"),
+        stagedFileURL: filenameURL
+    )
+    try expect(filenameItem.title == "saved-name.png", "image title should use the original filename after alt text")
+
+    let pageTitleURL = try writeFixture(bytes, fileExtension: "png")
+    let pageTitleItem = try service.createCapturedImage(
+        imageCandidate(data: bytes, captureID: "image-page-title", pageTitle: "Page title"),
+        stagedFileURL: pageTitleURL
+    )
+    try expect(pageTitleItem.title == "Page title", "image title should use the page title after metadata names")
+
+    let screenshotURL = try writeFixture(bytes, fileExtension: "jpg")
+    let screenshot = try service.createCapturedImage(
+        imageCandidate(
+            data: bytes,
+            captureID: "image-screenshot",
+            acquisitionMethod: .screenshot,
+            isScreenshot: true
+        ),
+        stagedFileURL: screenshotURL
+    )
+    try expect(screenshot.tags.contains("截图采集"), "screenshot captures should receive the screenshot tag")
+
+    let animatedGIF = try generatedAnimatedGIFData()
+    let animatedURL = try writeFixture(animatedGIF, fileExtension: "gif")
+    let animatedItem = try service.createCapturedImage(
+        imageCandidate(
+            data: animatedGIF,
+            captureID: "image-animated-gif",
+            originalFileName: "animated.gif",
+            domSourceKind: .srcset,
+            acquisitionMethod: .loadedBytes
+        ),
+        stagedFileURL: animatedURL
+    )
+    try expect(animatedItem.format == "GIF", "animated GIF should retain its detected format")
+    try expect(try Data(contentsOf: URL(fileURLWithPath: animatedItem.assetPath)) == animatedGIF, "animated image bytes should be copied without transcoding")
+}
+
+func testWebImageCaptureValidationBoundaries() throws {
+    let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
+    let service = PromptStudioAutomationService(repository: repository)
+    let bytes = fixturePNGData()
+
+    let badDigestURL = try writeFixture(bytes)
+    do {
+        _ = try service.createCapturedImage(
+            WebImageCaptureCandidate(
+                captureID: "image-bad-digest",
+                domSourceKind: .image,
+                acquisitionMethod: .pageContext,
+                sha256: String(repeating: "0", count: 64),
+                byteCount: Int64(bytes.count)
+            ),
+            stagedFileURL: badDigestURL
+        )
+        throw CoreUnitTestError.failure("a SHA-256 mismatch should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let fakeFormatURL = try writeFixture(Data("not an image".utf8), fileExtension: "png")
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(data: Data("not an image".utf8), captureID: "image-fake-format"),
+            stagedFileURL: fakeFormatURL
+        )
+        throw CoreUnitTestError.failure("a renamed non-image should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let gifBytes = Data(base64Encoded: "R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=")!
+    let nonPNGScreenURL = try writeFixture(gifBytes, fileExtension: "png")
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(data: gifBytes, captureID: "image-screenshot-format", isScreenshot: true),
+            stagedFileURL: nonPNGScreenURL
+        )
+        throw CoreUnitTestError.failure("a screenshot with a non-PNG payload should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let directoryURL = try temporaryLibraryURL()
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(data: bytes, captureID: "image-directory-path"),
+            stagedFileURL: directoryURL
+        )
+        throw CoreUnitTestError.failure("a staging directory should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    } catch AutomationServiceError.fileNotFound {
+        // Expected for a path that is not a regular file.
+    }
+
+    let symlinkTarget = try writeFixture(bytes)
+    let symlinkURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: symlinkTarget)
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(data: bytes, captureID: "image-symlink-path"),
+            stagedFileURL: symlinkURL
+        )
+        throw CoreUnitTestError.failure("a staging symlink should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let exactLimitSize: Int64 = 50 * 1024 * 1024
+    let exactLimitURL = try writeSparseFixture(prefix: bytes, size: exactLimitSize)
+    let exactLimitData = try Data(contentsOf: exactLimitURL)
+    let exactLimit = try service.createCapturedImage(
+        imageCandidate(data: exactLimitData, captureID: "image-50mb-boundary"),
+        stagedFileURL: exactLimitURL
+    )
+    try expect(exactLimit.fileSize == exactLimitSize, "an image exactly at 50 MB should be accepted")
+
+    let overLimitURL = try writeSparseFixture(prefix: bytes, size: exactLimitSize + 1)
+    do {
+        _ = try service.createCapturedImage(
+            WebImageCaptureCandidate(
+                captureID: "image-50mb-over",
+                domSourceKind: .image,
+                acquisitionMethod: .pageContext,
+                sha256: String(repeating: "0", count: 64),
+                byteCount: exactLimitSize + 1
+            ),
+            stagedFileURL: overLimitURL
+        )
+        throw CoreUnitTestError.failure("an image over 50 MB should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+
+    let exactPixels = try generatedPNGData(width: 10_000, height: 10_000)
+    let exactPixelsURL = try writeFixture(exactPixels)
+    let exactPixelsItem = try service.createCapturedImage(
+        imageCandidate(data: exactPixels, captureID: "image-100mp-boundary"),
+        stagedFileURL: exactPixelsURL
+    )
+    try expect(exactPixelsItem.width == 10_000 && exactPixelsItem.height == 10_000, "an image exactly at 100 MP should be accepted")
+
+    let overPixels = try generatedPNGData(width: 10_001, height: 10_000)
+    let overPixelsURL = try writeFixture(overPixels)
+    do {
+        _ = try service.createCapturedImage(
+            imageCandidate(data: overPixels, captureID: "image-100mp-over"),
+            stagedFileURL: overPixelsURL
+        )
+        throw CoreUnitTestError.failure("an image over 100 MP should be rejected")
+    } catch AutomationServiceError.invalidInput {
+        // Expected.
+    }
+}
+
 func testWebCaptureSchemaMigrationAddsColumnsAndIndex() throws {
     let oldLibraryURL = try temporaryLibraryURL()
     try PromptRepository.createLibraryDirectories(at: oldLibraryURL)
@@ -1161,6 +1483,8 @@ do {
     try testCapturedInsertSerializesAcrossRepositoryConnections()
     try testCaptureDefaultsRepairExistingResources()
     try testWebCaptureValidationAndTitleLimit()
+    try testWebImageCaptureImportAndCompatibility()
+    try testWebImageCaptureValidationBoundaries()
     try testWebCaptureSchemaMigrationAddsColumnsAndIndex()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()

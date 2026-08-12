@@ -21,6 +21,12 @@ func promptStudioCoreTestsTargetLoads() -> Bool {
         format: "PSD",
         fileSize: 1
     )
+    let imageCandidate = WebImageCaptureCandidate(
+        captureID: "core-test-image",
+        domSourceKind: .image,
+        acquisitionMethod: .pageContext,
+        sha256: String(repeating: "0", count: 64)
+    )
     return AssetKind.infer(fileExtension: "png") == .image
         && AssetFormatCatalog.support(forFileExtension: "psd").previewMode == .reference
         && AssetFormatCatalog.support(forFileExtension: "madeup").previewMode == .generic
@@ -33,5 +39,7 @@ func promptStudioCoreTestsTargetLoads() -> Bool {
         && ThumbnailDecodeSizing.bucket(for: 1) == 256
         && ThumbnailDecodeSizing.bucket(for: 257) == 512
         && ThumbnailDecodeSizing.reusableBuckets(for: 257) == [512, 1024]
+        && imageCandidate.captureID == "core-test-image"
+        && imageCandidate.capturedSource.imageDOMSourceKind == .image
         && PromptSelectionResolver.selectedID(preserving: "missing", in: [attachment], allowEmptySelection: false) == attachment.id
 }
