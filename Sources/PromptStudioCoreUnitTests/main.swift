@@ -1911,6 +1911,22 @@ func testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes() throws {
     )
 }
 
+func testHomepageSmartPasteAlwaysProducesASelectedComposerType() throws {
+    let vague = PromptClipboardInterpreter.interpret("一个关于夏日旅行的灵感")
+    let classification = PromptTypeClassifier.resolve(interpretation: vague)
+    try expect(classification.usedFallback, "vague homepage clipboard text should use the product fallback")
+    try expect(
+        classification.composerDecision.type == .image,
+        "homepage smart paste must visibly select the fallback image type"
+    )
+
+    let video = PromptClipboardInterpreter.interpret("生成一段 5 秒视频，镜头缓慢推进")
+    try expect(
+        PromptTypeClassifier.resolve(interpretation: video).composerDecision.type == .video,
+        "homepage smart paste must retain a confidently inferred media type"
+    )
+}
+
 func testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments() throws {
     let assetFixtureRoot = try temporaryLibraryURL()
     let realMarkdownPath = assetFixtureRoot.appendingPathComponent("real.md")
@@ -2140,6 +2156,7 @@ do {
     try testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown()
     try testPromptClipboardInterpreterInfersExplicitTextOutputFormats()
     try testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes()
+    try testHomepageSmartPasteAlwaysProducesASelectedComposerType()
     try testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments()
     try testCapturedPromptUsesUnifiedClassificationAndIsIdempotent()
     try testConcurrentTextCaptureLeavesOnlyWinningMarkdownAsset()

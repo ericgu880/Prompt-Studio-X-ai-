@@ -133,6 +133,17 @@ public struct PromptTypeClassification: Equatable, Sendable {
         self.decision = decision
         self.usedFallback = usedFallback
     }
+
+    /// A total decision for UI surfaces that must always display one selected
+    /// Prompt type. Conservative inference remains available in `decision`.
+    public var composerDecision: PromptComposerTypeDecision {
+        guard usedFallback else { return decision }
+        return .automatic(
+            type: type,
+            confidence: .low,
+            reason: "未识别到明确输出类型，已默认选择图片"
+        )
+    }
 }
 
 /// Shared seam for the app composer and automation capture paths.

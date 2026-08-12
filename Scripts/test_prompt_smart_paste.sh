@@ -85,6 +85,9 @@ require_pattern "$OVERLAY_FILE" \
     'handleIncomingSmartPaste' \
     "Incoming app-level smart-paste requests must share the bar replacement flow."
 require_pattern "$OVERLAY_FILE" \
+    ').composerDecision' \
+    "Homepage smart paste must convert low-confidence inference into a selected fallback type."
+require_pattern "$OVERLAY_FILE" \
     '.onChange(of: state.pendingSmartPasteRequest?.token)' \
     "Prompt composer must observe queued smart-paste requests without rebuilding the draft."
 require_pattern "$OVERLAY_FILE" \

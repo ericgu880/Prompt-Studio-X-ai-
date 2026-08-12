@@ -2395,7 +2395,10 @@ struct PromptComposerOverlay: View {
             return
         }
         let interpretation = PromptClipboardInterpreter.interpret(prompt)
-        let nextDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        let nextDecision = PromptComposerTypeDecision.resolve(
+            interpretation: interpretation,
+            mode: typeMode
+        )
         if let nextType = nextDecision.type, shouldConfirmTypeChange(to: nextType) {
             pendingTypeChoice = nextType
             return
@@ -2613,7 +2616,10 @@ struct PromptComposerOverlay: View {
 
         modelHint = interpretation.modelHint
         formatHint = interpretation.formatHint
-        let nextDecision = PromptComposerTypeDecision.resolve(interpretation: interpretation, mode: typeMode)
+        let nextDecision = PromptTypeClassifier.resolve(
+            interpretation: interpretation,
+            mode: typeMode
+        ).composerDecision
         if let nextType = nextDecision.type, shouldConfirmTypeChange(to: nextType) {
             pendingTypeChoice = nextType
         } else {
