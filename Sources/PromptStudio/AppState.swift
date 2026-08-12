@@ -1441,7 +1441,7 @@ final class AppState: ObservableObject {
                 )
             })
 
-            if (preserveExistingPrimaryAsReference || type == .text && item.type != .text),
+            if preserveExistingPrimaryAsReference,
                !oldAssetPath.isEmpty,
                !item.referenceAssets.contains(where: { $0.path == oldAssetPath }) {
                 item.referenceAssets.append(
@@ -1476,20 +1476,20 @@ final class AppState: ObservableObject {
                 item.format = fileInfo.format
                 item.fileSize = fileInfo.fileSize
                 primaryAssetChanged = oldAssetPath != item.assetPath
-            } else if item.type != type {
-                primaryAssetChanged = !oldAssetPath.isEmpty
-                item.assetKind = type == .image ? .image : (type == .video ? .video : .audio)
-                item.assetPath = ""
-                item.thumbnailPath = ""
-                item.aspectRatio = ""
-                item.width = 0
-                item.height = 0
-                item.format = ""
-                item.fileSize = 0
             } else {
                 switch primaryAssetUpdate {
                 case .unchanged:
-                    break
+                    if item.type != type {
+                        primaryAssetChanged = !oldAssetPath.isEmpty
+                        item.assetKind = type == .image ? .image : (type == .video ? .video : .audio)
+                        item.assetPath = ""
+                        item.thumbnailPath = ""
+                        item.aspectRatio = ""
+                        item.width = 0
+                        item.height = 0
+                        item.format = ""
+                        item.fileSize = 0
+                    }
                 case .replace(let source):
                     let sourceKind = AppKitBridge.assetKind(for: source)
                     guard sourceKind.promptType == type else {
@@ -3366,32 +3366,16 @@ final class AppState: ObservableObject {
         title: String,
         type: PromptType,
         prompt: String,
-        parameters: [String: String],
+        parameters _: [String: String],
         hasPrimaryAsset: Bool
     ) throws -> URL? {
         guard type == .text, !hasPrimaryAsset, let repository else { return nil }
-        let fileExtension = textPromptFileExtension(parameters: parameters)
         let directory = repository.libraryURL.appendingPathComponent("assets/documents")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let baseName = safeExportFileName(title.isEmpty ? "Untitled Prompt" : title)
-        let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(baseName).\(fileExtension)")
+        let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(baseName).md")
         try prompt.write(to: destination, atomically: true, encoding: .utf8)
         return destination
-    }
-
-    private func textPromptFileExtension(parameters: [String: String]) -> String {
-        let id = parameters["prompt_format_id"]?.lowercased() ?? ""
-        let title = parameters["prompt_format"]?.lowercased() ?? ""
-        if id.contains("json") || title.contains("json") {
-            return "json"
-        }
-        if id.contains("yaml") || title.contains("yaml") {
-            return "yaml"
-        }
-        if id.contains("txt") || title.contains("txt") {
-            return "txt"
-        }
-        return "md"
     }
 
     private func nextSortOrderForNewItem() -> Int {

@@ -553,17 +553,19 @@ struct InspectorView: View {
             ZStack(alignment: .leading) {
                 Color.clear
 
-                if item.isMediaPromptPlaceholder {
-                    PromptVirtualCover(type: item.type)
-                } else {
-                    AssetMediaView(item: item, contentMode: .fit)
+                Group {
+                    if item.isMediaPromptPlaceholder {
+                        PromptVirtualCover(type: item.type)
+                    } else {
+                        AssetMediaView(item: item, contentMode: .fit)
+                    }
                 }
-                    .frame(width: size.width, height: size.height)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(StudioColor.hairline, lineWidth: 1)
-                    )
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(StudioColor.hairline, lineWidth: 1)
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }

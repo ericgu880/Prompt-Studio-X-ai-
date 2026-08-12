@@ -827,6 +827,8 @@ struct PromptComposerOverlay: View {
     @State private var typeMode: PromptComposerTypeMode = .automatic
     @State private var pendingTypeChoice: PromptType?
     @State private var pendingDeleteType: PromptType?
+    @State private var pendingPrimaryAssetURL: URL?
+    @State private var stagedPrimaryAssetURL: URL?
     @State private var preserveExistingPrimaryAsReference = false
     @State private var showTypeDeleteConfirmation = false
     @State private var modelId: String?
@@ -987,6 +989,7 @@ struct PromptComposerOverlay: View {
             Button("转为参考资产") {
                 guard let pendingTypeChoice else { return }
                 applyTypeChoice(pendingTypeChoice, preservePrimary: true)
+                applyStagedPrimaryAssetIfNeeded()
             }
             Button("删除旧素材", role: .destructive) {
                 guard let pendingTypeChoice else { return }
@@ -994,7 +997,10 @@ struct PromptComposerOverlay: View {
                 self.pendingTypeChoice = nil
                 showTypeDeleteConfirmation = true
             }
-            Button("取消", role: .cancel) { pendingTypeChoice = nil }
+            Button("取消", role: .cancel) {
+                pendingTypeChoice = nil
+                stagedPrimaryAssetURL = nil
+            }
         } message: {
             Text("切换资源类型会改变主素材。你可以将旧素材转为参考资产，或删除旧素材。")
         }
@@ -1002,11 +1008,40 @@ struct PromptComposerOverlay: View {
             Button("删除旧素材", role: .destructive) {
                 guard let pendingDeleteType else { return }
                 applyTypeChoice(pendingDeleteType, preservePrimary: false)
+                applyStagedPrimaryAssetIfNeeded()
                 self.pendingDeleteType = nil
             }
-            Button("取消", role: .cancel) { pendingDeleteType = nil }
+            Button("取消", role: .cancel) {
+                pendingDeleteType = nil
+                stagedPrimaryAssetURL = nil
+            }
         } message: {
             Text("旧素材只会在保存成功后从资料库删除。")
+        }
+        .confirmationDialog("素材类型与当前类型不同", isPresented: Binding(
+            get: { pendingPrimaryAssetURL != nil },
+            set: { if !$0 { pendingPrimaryAssetURL = nil } }
+        )) {
+            Button("切换类型并设为主素材") {
+                guard let url = pendingPrimaryAssetURL else { return }
+                let nextType = AppKitBridge.assetKind(for: url).promptType
+                pendingPrimaryAssetURL = nil
+                stagedPrimaryAssetURL = url
+                if shouldConfirmTypeChange(to: nextType) {
+                    pendingTypeChoice = nextType
+                } else {
+                    applyTypeChoice(nextType, preservePrimary: false)
+                    applyStagedPrimaryAssetIfNeeded()
+                }
+            }
+            Button("添加为参考资产") {
+                guard let url = pendingPrimaryAssetURL else { return }
+                appendReferenceImages([url])
+                pendingPrimaryAssetURL = nil
+            }
+            Button("取消", role: .cancel) { pendingPrimaryAssetURL = nil }
+        } message: {
+            Text("你可以切换 Prompt 类型，或保持当前类型并把该文件作为参考资产。")
         }
         .overlay(alignment: .bottom) {
             if showSmartPasteSuccessNotice {
@@ -1348,19 +1383,21 @@ struct PromptComposerOverlay: View {
             if let primaryAssetURL {
                 GeometryReader { proxy in
                     ZStack(alignment: .topTrailing) {
-                        if AppKitBridge.assetKind(for: primaryAssetURL) == .image {
-                            ComposerPreviewImage(path: primaryAssetURL.path, contentMode: .fit)
-                        } else {
-                            VStack(spacing: 10) {
-                                Image(systemName: primaryAssetIcon(for: primaryAssetURL))
-                                    .font(.system(size: 28, weight: .medium))
-                                Text(primaryAssetURL.lastPathComponent)
-                                    .font(StudioFont.font(11))
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 10)
+                        Group {
+                            if AppKitBridge.assetKind(for: primaryAssetURL) == .image {
+                                ComposerPreviewImage(path: primaryAssetURL.path, contentMode: .fit)
+                            } else {
+                                VStack(spacing: 10) {
+                                    Image(systemName: primaryAssetIcon(for: primaryAssetURL))
+                                        .font(.system(size: 28, weight: .medium))
+                                    Text(primaryAssetURL.lastPathComponent)
+                                        .font(StudioFont.font(11))
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 10)
+                                }
+                                .foregroundStyle(CreateComposerColor.secondaryText)
                             }
-                            .foregroundStyle(CreateComposerColor.secondaryText)
                         }
                         .frame(
                             width: max(0, proxy.size.width - 36),
@@ -2305,6 +2342,12 @@ struct PromptComposerOverlay: View {
         }
     }
 
+    private func applyStagedPrimaryAssetIfNeeded() {
+        guard let stagedPrimaryAssetURL else { return }
+        primaryAssetURL = stagedPrimaryAssetURL
+        self.stagedPrimaryAssetURL = nil
+    }
+
     private func restoreAutomaticTypeInference() {
         let previousType = resolvedType
         typeMode = .automatic
@@ -2707,14 +2750,14 @@ struct PromptComposerOverlay: View {
             guard saved else { return }
         case .edit(let itemID):
             let primaryUpdate: PrimaryAssetUpdate
-            if primaryAssetRemovalRequested {
-                primaryUpdate = .remove
-            } else if let primaryAssetURL {
+            if let primaryAssetURL {
                 let oldPath = editingItem?.assetPath ?? ""
                 let oldURL = URL(fileURLWithPath: oldPath).standardizedFileURL.path
                 primaryUpdate = oldPath.isEmpty || oldURL != primaryAssetURL.standardizedFileURL.path
                     ? .replace(primaryAssetURL)
                     : .unchanged
+            } else if primaryAssetRemovalRequested {
+                primaryUpdate = .remove
             } else {
                 primaryUpdate = .unchanged
             }
@@ -2812,9 +2855,8 @@ struct PromptComposerOverlay: View {
             return
         }
         let candidateKind = AppKitBridge.assetKind(for: candidateURL)
-        guard let candidateType = candidateKind.promptType else { return }
+        let candidateType = candidateKind.promptType
         if let resolvedType, candidateType != resolvedType {
-            pendingTypeChoice = candidateType
             pendingPrimaryAssetURL = candidateURL
             return
         }

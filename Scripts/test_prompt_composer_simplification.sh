@@ -58,9 +58,9 @@ require_pattern "$OVERLAY_FILE" \
     'private func restoreAutomaticTypeInference()' \
     "Restoring automatic mode must support an unedited smart-paste interpretation."
 require_pattern "$OVERLAY_FILE" \
-    'private func moveUnsavedPreviewImageToReferencesIfNeeded()' \
-    "Text type selection must not retain an incompatible unsaved preview image."
-move_count="$(/usr/bin/grep -Fc 'moveUnsavedPreviewImageToReferencesIfNeeded()' "$OVERLAY_FILE")"
+    'private func moveUnsavedPrimaryAssetToReferencesIfNeeded()' \
+    "Text type selection must not retain an incompatible unsaved primary asset."
+move_count="$(/usr/bin/grep -Fc 'moveUnsavedPrimaryAssetToReferencesIfNeeded()' "$OVERLAY_FILE")"
 if [[ "$move_count" -lt 4 ]]; then
     echo "Manual, automatic, and smart-paste text resolution must all migrate an unsaved preview image." >&2
     exit 1
@@ -72,13 +72,13 @@ require_pattern "$OVERLAY_FILE" \
     'if previousType != nil {' \
     "Clearing a previously classified Prompt must not retain parameters from the old type."
 require_pattern "$OVERLAY_FILE" \
-    'guard shouldShowPreviewImage else {' \
-    "An asynchronous image picker/drop must not restore a hidden text preview image."
+    'guard shouldShowPrimaryAssetUpload else {' \
+    "An asynchronous file picker/drop must not restore a hidden text primary asset."
 require_pattern "$APP_STATE_FILE" \
     'modelId: String?' \
     "Prompt creation must accept an optional automatically resolved model."
 require_pattern "$APP_STATE_FILE" \
-    'if type == .text, item.type != .text {' \
+    'if type == .text {' \
     "Editing an existing asset to text must create a compatible text primary asset."
 
 echo "Prompt composer simplification regression tests passed"
