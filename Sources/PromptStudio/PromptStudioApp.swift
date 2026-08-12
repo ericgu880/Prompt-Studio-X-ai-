@@ -78,13 +78,7 @@ struct PromptStudioApp: App {
                     }
                 }
                     .keyboardShortcut(shortcutStore.binding(for: .copyContent).keyEquivalent, modifiers: shortcutStore.binding(for: .copyContent).eventModifiers)
-                Button("粘贴导入") {
-                    if AppKitBridge.isTextInputActive() {
-                        NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
-                    } else {
-                        appState.pasteFilesFromPasteboard()
-                    }
-                }
+                Button("粘贴") { appState.routePasteCommand() }
                     .keyboardShortcut("v", modifiers: .command)
                 Button("全选") {
                     NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)

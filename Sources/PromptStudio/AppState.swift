@@ -211,14 +211,26 @@ final class AppState: ObservableObject {
         var itemCount: Int { itemIDs.count }
     }
 
+    struct PromptComposerPrefill: Identifiable, Equatable {
+        let token: UUID
+        let interpretation: PromptClipboardInterpretation
+
+        init(interpretation: PromptClipboardInterpretation, token: UUID = UUID()) {
+            self.token = token
+            self.interpretation = interpretation
+        }
+
+        var id: UUID { token }
+    }
+
     enum PromptComposerMode: Identifiable, Equatable {
-        case create
+        case create(prefill: PromptComposerPrefill?)
         case edit(String)
 
         var id: String {
             switch self {
-            case .create:
-                "create"
+            case .create(let prefill):
+                prefill.map { "create-\($0.token.uuidString)" } ?? "create"
             case .edit(let itemID):
                 "edit-\(itemID)"
             }
@@ -665,12 +677,52 @@ final class AppState: ObservableObject {
         modal = .featureDenied(decision)
     }
 
-    func openNewPromptComposer() {
+    func openNewPromptComposer(prefill: PromptClipboardInterpretation? = nil) {
         guard requireFeature(.proCreatePrompt) else { return }
         modal = nil
         isPreviewPresented = false
         markdownEditorItemID = nil
-        promptComposerMode = .create
+        promptComposerMode = .create(prefill: prefill.map { PromptComposerPrefill(interpretation: $0) })
+    }
+
+    /// Routes the app-level paste command while preserving native text-field paste behavior.
+    @MainActor
+    func routePasteCommand() {
+        let textInputActive = AppKitBridge.isTextInputActive()
+        let fileURLs = AppKitBridge.pasteboardFileURLs()
+        // Finder file pasteboards may expose a string representation on some macOS versions;
+        // only consider plain text when no file payload is present outside a text editor.
+        let plainText = (!fileURLs.isEmpty && !textInputActive) ? nil : AppKitBridge.pasteboardPlainText()
+        switch PromptPasteRouteResolver.resolve(
+            isTextInputActive: textInputActive,
+            hasFileURLs: !fileURLs.isEmpty,
+            plainText: plainText
+        ) {
+        case .nativeTextPaste:
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+        case .importFiles:
+            importFiles(fileURLs)
+        case .smartPaste(let text):
+            openNewPromptComposer(prefill: PromptClipboardInterpreter.interpret(text))
+        case .unavailable:
+            showToast("剪贴板没有可粘贴内容")
+        }
+    }
+
+    /// Reads only the plain-text pasteboard payload for the explicit smart-paste UI action.
+    /// This intentionally bypasses the first responder and never imports Finder files.
+    @MainActor
+    func readSmartPasteFromPasteboard() -> PromptClipboardInterpretation? {
+        guard AppKitBridge.pasteboardFileURLs().isEmpty else {
+            showToast("剪贴板包含文件，请使用粘贴导入")
+            return nil
+        }
+        guard let text = AppKitBridge.pasteboardPlainText(),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showToast("剪贴板没有可识别的 Prompt 文本")
+            return nil
+        }
+        return PromptClipboardInterpreter.interpret(text)
     }
 
     func openEditPromptComposer(for item: PromptItem? = nil) {

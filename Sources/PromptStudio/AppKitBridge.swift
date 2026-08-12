@@ -42,6 +42,12 @@ enum AppKitBridge {
         return []
     }
 
+    /// Returns the pasteboard's raw plain-text representation without trimming or parsing it.
+    static func pasteboardPlainText() -> String? {
+        let pasteboard = NSPasteboard.general
+        return pasteboard.string(forType: .string)
+    }
+
     @MainActor
     static func chooseImportFiles(acceptedType: PromptType? = nil) -> [URL] {
         let panel = NSOpenPanel()

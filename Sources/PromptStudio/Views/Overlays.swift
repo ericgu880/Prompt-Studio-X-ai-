@@ -731,6 +731,12 @@ private enum CreateComposerInputField: Hashable {
     case prompt
 }
 
+private enum SmartPasteLayoutMetrics {
+    static let smartPasteBarHeight: CGFloat = 44
+    static let smartPastePromptHeightBudget: CGFloat = 266
+    static let regularPromptHeightBudget: CGFloat = 212
+}
+
 private struct PromptFormatOption: Identifiable, Equatable {
     let id: String
     let title: String
@@ -795,7 +801,28 @@ struct PromptComposerOverlay: View {
     @State private var isReferenceDropTarget = false
     @State private var isPreviewImageHovered = false
     @State private var isReferenceHovered = false
+    @State private var smartPasteInterpretation: PromptClipboardInterpretation?
+    @State private var pendingSmartPasteInterpretation: PromptClipboardInterpretation?
+    @State private var smartPasteSnapshot: PromptComposerDraftSnapshot?
+    @State private var showSmartPasteDetails = false
+    @State private var showSmartPasteReplaceConfirmation = false
     @FocusState private var focusedCreateInput: CreateComposerInputField?
+
+    private struct PromptComposerDraftSnapshot {
+        let title: String
+        let type: PromptType
+        let modelId: String
+        let promptFormatID: String
+        let prompt: String
+        let negativePrompt: String
+        let tags: [String]
+        let tagDraft: String
+        let parameters: String
+        let note: String
+        let saveAsNewVersion: Bool
+        let previewImageURL: URL?
+        let referenceURLs: [URL]
+    }
 
     private var editingItem: PromptItem? {
         if case .edit = mode {
@@ -820,6 +847,18 @@ struct PromptComposerOverlay: View {
                 state.closePromptComposer()
             }
             Button("继续编辑", role: .cancel) {}
+        }
+        .confirmationDialog("覆盖当前草稿？", isPresented: $showSmartPasteReplaceConfirmation) {
+            Button("覆盖并智能填充", role: .destructive) {
+                guard let pendingSmartPasteInterpretation else { return }
+                self.pendingSmartPasteInterpretation = nil
+                applySmartPaste(pendingSmartPasteInterpretation)
+            }
+            Button("取消", role: .cancel) {
+                pendingSmartPasteInterpretation = nil
+            }
+        } message: {
+            Text("当前草稿已有内容，覆盖前会保留完整快照，可用“撤销填充”恢复。")
         }
         .background {
             EscapeKeyMonitor {
@@ -861,7 +900,10 @@ struct PromptComposerOverlay: View {
             let showsUploadColumn = type != .text
             let uploadWidth = showsUploadColumn ? min(320, max(280, contentWidth * 0.28)) : 0
             let leftWidth = showsUploadColumn ? max(0, contentWidth - columnSpacing - uploadWidth) : contentWidth
-            let promptHeight = max(240, contentHeight - 212)
+            let promptHeightBudget = isEditing
+                ? SmartPasteLayoutMetrics.regularPromptHeightBudget
+                : SmartPasteLayoutMetrics.smartPastePromptHeightBudget
+            let promptHeight = max(180, contentHeight - promptHeightBudget)
 
             ZStack {
                 CreateComposerColor.workspace
@@ -920,7 +962,163 @@ struct PromptComposerOverlay: View {
                     .frame(maxWidth: .infinity)
             }
             .frame(width: width)
+
+            if !isEditing {
+                smartPasteBar
+                    .frame(width: width, height: SmartPasteLayoutMetrics.smartPasteBarHeight)
+            }
         }
+    }
+
+    private var smartPasteBar: some View {
+        HStack(spacing: 9) {
+            Image(systemName: smartPasteInterpretation == nil ? "doc.on.clipboard" : "wand.and.stars")
+                .font(StudioFont.symbol(14, weight: .medium))
+                .foregroundStyle(CreateComposerColor.primaryText)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(smartPasteInterpretation == nil
+                     ? "粘贴 Prompt 文本 ⌘V"
+                     : "已智能填充 · \(smartPasteFieldCount) 个字段")
+                    .font(StudioFont.font(12, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(smartPasteInterpretation == nil
+                     ? "从剪贴板识别标题、Prompt、标签和参数"
+                     : smartPasteSuggestion)
+                    .font(StudioFont.font(10))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(smartPasteInterpretation == nil ? "粘贴" : "重新粘贴") {
+                requestSmartPaste()
+            }
+            .buttonStyle(.plain)
+            .font(StudioFont.font(11, weight: .semibold))
+            .foregroundStyle(CreateComposerColor.primaryText)
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(CreateComposerColor.inputBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(CreateComposerColor.border, lineWidth: 1))
+            .accessibilityLabel(smartPasteInterpretation == nil ? "粘贴 Prompt 文本" : "重新粘贴 Prompt 文本")
+            .accessibilityHint("从剪贴板读取并解析 Prompt 文本")
+
+            if smartPasteInterpretation != nil {
+                Button("展开详情") {
+                    showSmartPasteDetails = true
+                }
+                .buttonStyle(.plain)
+                .font(StudioFont.font(11))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+                .accessibilityLabel("展开智能粘贴详情")
+                .accessibilityHint("编辑负面提示词、标签和参数")
+
+                Button("撤销填充") {
+                    undoSmartPaste()
+                }
+                .buttonStyle(.plain)
+                .font(StudioFont.font(11))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+                .accessibilityLabel("撤销智能填充")
+
+                Button("清除") {
+                    clearSmartPaste()
+                }
+                .buttonStyle(.plain)
+                .font(StudioFont.font(11))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+                .accessibilityLabel("清除智能填充")
+                .accessibilityHint("恢复智能填充前的草稿，不会删除预览图或参考资产")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CreateComposerColor.documentBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CreateComposerColor.border, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .popover(isPresented: $showSmartPasteDetails) {
+            smartPasteDetails
+        }
+    }
+
+    private var smartPasteDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("智能粘贴详情")
+                    .font(StudioFont.font(14, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                Spacer()
+                Button("关闭") {
+                    showSmartPasteDetails = false
+                }
+                .buttonStyle(.plain)
+                .font(StudioFont.font(11))
+                .foregroundStyle(CreateComposerColor.secondaryText)
+                .accessibilityLabel("关闭智能粘贴详情")
+            }
+
+            if let interpretation = smartPasteInterpretation {
+                Text("原始文本")
+                    .font(StudioFont.font(11, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+                Text(interpretation.originalText)
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                    .lineLimit(5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(CreateComposerColor.fieldBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityLabel("原始剪贴板文本")
+
+                Text("Negative Prompt")
+                    .font(StudioFont.font(11, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+                TextEditor(text: $negativePrompt)
+                    .font(StudioFont.font(11))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .frame(height: 72)
+                    .background(CreateComposerColor.fieldBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityLabel("负面提示词")
+                    .accessibilityHint("编辑智能粘贴识别出的负面提示词")
+
+                Text("标签")
+                    .font(StudioFont.font(11, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+                tagEditor
+                    .accessibilityElement(children: .contain)
+
+                Text("参数")
+                    .font(StudioFont.font(11, weight: .semibold))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+                TextEditor(text: $parameters)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(CreateComposerColor.primaryText)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .frame(height: 72)
+                    .background(CreateComposerColor.fieldBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityLabel("Prompt 参数")
+                    .accessibilityHint("每行编辑一个 key=value 参数")
+            } else {
+                Text("尚未进行智能粘贴")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(CreateComposerColor.secondaryText)
+            }
+        }
+        .padding(16)
+        .frame(width: 380)
+        .background(CreateComposerColor.workspace)
     }
 
     private func createPromptColumn(promptHeight: CGFloat) -> some View {
@@ -2117,6 +2315,9 @@ struct PromptComposerOverlay: View {
             saveAsNewVersion = true
             previewImageURL = nil
             referenceURLs = []
+            smartPasteInterpretation = nil
+            pendingSmartPasteInterpretation = nil
+            smartPasteSnapshot = nil
         case .edit:
             guard let item = editingItem else { return }
             title = item.title
@@ -2138,16 +2339,170 @@ struct PromptComposerOverlay: View {
                 previewImageURL = nil
             }
             referenceURLs = []
+            smartPasteInterpretation = nil
+            pendingSmartPasteInterpretation = nil
+            smartPasteSnapshot = nil
         }
         ensureModelMatchesType()
         ensurePromptFormatMatchesType()
+        // Capture the clean create/edit baseline before applying any smart-paste prefill.
         initialSignature = draftSignature
+        if case .create(let prefill) = mode, let prefill {
+            applySmartPaste(prefill.interpretation)
+        }
+    }
+
+    private var smartPasteFieldCount: Int {
+        [
+            title,
+            prompt,
+            negativePrompt,
+            tags.joined(separator: ", "),
+            parameters
+        ].reduce(into: 0) { count, value in
+            if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                count += 1
+            }
+        }
+    }
+
+    private var smartPasteSuggestion: String {
+        guard let interpretation = smartPasteInterpretation else { return "" }
+        let tab = interpretation.suggestedType?.displayName.replacingOccurrences(of: " Prompt", with: "")
+            ?? state.filter.type?.displayName.replacingOccurrences(of: " Prompt", with: "")
+            ?? "图片"
+        let reason = interpretation.typeReason.isEmpty ? "按当前筛选保留类型" : interpretation.typeReason
+        return "建议 \(tab) · \(reason)"
+    }
+
+    private var isDraftBlankForSmartPaste: Bool {
+        draftSignature == initialSignature &&
+            title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            tags.isEmpty &&
+            parameters.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            previewImageURL == nil &&
+            referenceURLs.isEmpty
+    }
+
+    private func requestSmartPaste() {
+        guard let interpretation = state.readSmartPasteFromPasteboard() else { return }
+        guard !isEditing else { return }
+        if isDraftBlankForSmartPaste {
+            applySmartPaste(interpretation)
+        } else {
+            pendingSmartPasteInterpretation = interpretation
+            showSmartPasteReplaceConfirmation = true
+        }
+    }
+
+    private func captureDraft() -> PromptComposerDraftSnapshot {
+        PromptComposerDraftSnapshot(
+            title: title,
+            type: type,
+            modelId: modelId,
+            promptFormatID: promptFormatID,
+            prompt: prompt,
+            negativePrompt: negativePrompt,
+            tags: tags,
+            tagDraft: tagDraft,
+            parameters: parameters,
+            note: note,
+            saveAsNewVersion: saveAsNewVersion,
+            previewImageURL: previewImageURL,
+            referenceURLs: referenceURLs
+        )
+    }
+
+    private func restoreDraft(_ snapshot: PromptComposerDraftSnapshot) {
+        title = snapshot.title
+        type = snapshot.type
+        modelId = snapshot.modelId
+        promptFormatID = snapshot.promptFormatID
+        prompt = snapshot.prompt
+        negativePrompt = snapshot.negativePrompt
+        tags = snapshot.tags
+        tagDraft = snapshot.tagDraft
+        parameters = snapshot.parameters
+        note = snapshot.note
+        saveAsNewVersion = snapshot.saveAsNewVersion
+        previewImageURL = snapshot.previewImageURL
+        referenceURLs = snapshot.referenceURLs
+        ensureModelMatchesType()
+        ensurePromptFormatMatchesType()
+    }
+
+    private func applySmartPaste(_ interpretation: PromptClipboardInterpretation) {
+        smartPasteSnapshot = captureDraft()
+
+        type = interpretation.suggestedType ?? state.filter.type ?? .image
+        ensureModelMatchesType()
+        if let modelHint = interpretation.modelHint,
+           let matchingModel = localModelMatchingHint(modelHint) {
+            modelId = matchingModel.id
+        }
+
+        ensurePromptFormatMatchesType()
+        if let formatHint = interpretation.formatHint,
+           let matchingFormat = localFormatMatchingHint(formatHint) {
+            promptFormatID = matchingFormat.id
+        }
+
+        title = interpretation.title
+        prompt = interpretation.prompt
+        negativePrompt = interpretation.negativePrompt
+        tags = interpretation.tags
+        parameters = visibleParameters(from: interpretation.parameters)
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+            .joined(separator: "\n")
+        smartPasteInterpretation = interpretation
+        showSmartPasteDetails = false
+    }
+
+    private func undoSmartPaste() {
+        guard let snapshot = smartPasteSnapshot else { return }
+        restoreDraft(snapshot)
+        smartPasteSnapshot = nil
+        smartPasteInterpretation = nil
+        pendingSmartPasteInterpretation = nil
+        showSmartPasteDetails = false
+    }
+
+    private func clearSmartPaste() {
+        // Clearing a session restores the complete pre-fill snapshot. In particular,
+        // preview and reference assets remain untouched when they existed beforehand.
+        if let snapshot = smartPasteSnapshot {
+            restoreDraft(snapshot)
+        }
+        smartPasteSnapshot = nil
+        smartPasteInterpretation = nil
+        pendingSmartPasteInterpretation = nil
+        showSmartPasteDetails = false
+    }
+
+    private func localModelMatchingHint(_ hint: String) -> ModelProfile? {
+        let normalizedHint = hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedHint.isEmpty else { return nil }
+        return modelOptions.first {
+            $0.id.lowercased() == normalizedHint || $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedHint
+        }
+    }
+
+    private func localFormatMatchingHint(_ hint: String) -> PromptFormatOption? {
+        let normalizedHint = hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedHint.isEmpty else { return nil }
+        return promptFormatOptions.first {
+            $0.id.lowercased() == normalizedHint || $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedHint
+        }
     }
 
     private func save() {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         switch mode {
-        case .create:
+        case .create(_):
             state.createPrompt(
                 title: cleanTitle.isEmpty ? "未命名 Prompt" : cleanTitle,
                 type: type,

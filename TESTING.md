@@ -21,6 +21,7 @@ bash Scripts/test_swift_toolchain.sh
 bash Scripts/test_license_keychain.sh
 bash Scripts/test_codesign_policy.sh
 bash Scripts/test_release_ui_copy.sh
+bash Scripts/test_prompt_smart_paste.sh
 ```
 
 - Debug build must compile `PromptStudio`, `promptstudioctl`, `PromptStudioMCP`, and `PromptStudioSmokeTests`; the explicit Release product build protects `#if DEBUG` production behavior.
