@@ -1364,6 +1364,95 @@ func testPromptClipboardInterpreterStripsModelAndFormatMetadataFromPrompt() thro
     try expect(interpretation.modelHint == "Nano Banana 2" && interpretation.formatHint == "JSON", "metadata lines should still produce hints")
 }
 
+func testPromptComposerTypeDecisionPreservesManualConfirmation() throws {
+    let video = PromptClipboardInterpreter.interpret("生成一个5秒人物转身视频，连续动作，镜头缓慢运镜。")
+    let manual = PromptComposerTypeDecision.resolve(
+        interpretation: video,
+        mode: .manual(.image)
+    )
+    try expect(manual == .manual(type: .image), "manual confirmation must not be overwritten by a new inference")
+
+    let automatic = PromptComposerTypeDecision.resolve(
+        interpretation: video,
+        mode: .automatic
+    )
+    try expect(
+        automatic == .automatic(type: .video, confidence: .high, reason: video.typeReason),
+        "automatic mode should apply a high-confidence video inference"
+    )
+}
+
+func testPromptComposerTypeDecisionReturnsPendingForLowConfidenceAndConflicts() throws {
+    let generic = PromptClipboardInterpreter.interpret("一段普通的说明文字")
+    let genericDecision = PromptComposerTypeDecision.decide(interpretation: generic, mode: .automatic)
+    try expect(genericDecision.isPendingSelection, "low-confidence prose should wait for a type selection")
+    try expect(genericDecision.type == nil, "pending type decisions must not expose a guessed type")
+
+    let conflict = PromptClipboardInterpreter.interpret("生成一张图片并制作一段5秒视频")
+    let conflictDecision = PromptComposerTypeDecision.resolve(interpretation: conflict, mode: .automatic)
+    try expect(conflictDecision.isPendingSelection, "conflicting output intents should wait for a type selection")
+
+    let resumed = PromptComposerTypeDecision.resolve(
+        text: "制作一段女声旁白，音色温暖，语速自然。",
+        mode: .automatic
+    )
+    try expect(resumed.type == .audio, "automatic mode should resume updating after a pending decision")
+}
+
+func testPromptComposerTypeDecisionDelegatesReferenceImageVideoSemantics() throws {
+    let interpretation = PromptClipboardInterpreter.interpret("图1是人物参考，生成一个5秒人物转身视频，镜头连续运镜。")
+    let decision = PromptComposerTypeDecision.resolve(interpretation: interpretation)
+    try expect(decision.type == .video, "reference image plus video output should resolve to video")
+    try expect(decision.confidence == .high, "explicit video output should retain high confidence")
+}
+
+func testPromptComposerMetadataPolicyUsesExactSameTypeModels() throws {
+    let localModels = [
+        ModelProfile(id: "nano_banana_2", name: "Nano Banana 2", type: .image, parameters: []),
+        ModelProfile(id: "seedance_2", name: "Seedance 2.0", type: .video, parameters: []),
+        ModelProfile(id: "wrong_type", name: "Video Banana", type: .video, parameters: [])
+    ]
+    let exact = PromptClipboardInterpretation(parameters: ["seed": "7"], modelHint: "Nano Banana 2", formatHint: "JSON")
+    let exactDecision = PromptComposerMetadataPolicy.resolve(type: .image, interpretation: exact, localModels: localModels)
+    try expect(exactDecision.model.id == "nano_banana_2", "an exact model name should resolve to a local same-type model")
+    try expect(exactDecision.model.type == .image, "resolved model should retain the determined prompt type")
+    try expect(exactDecision.promptFormatID == nil && exactDecision.promptFormat == nil, "non-text prompts must not persist text format metadata")
+    try expect(exactDecision.parameters == ["seed": "7"], "non-format parameters should be retained")
+
+    let unknown = PromptClipboardInterpretation(modelHint: "Nano Banana Ultra", formatHint: "JSON")
+    let unknownDecision = PromptComposerMetadataPolicy.resolve(type: .image, interpretation: unknown, localModels: localModels)
+    try expect(unknownDecision.model.id == PromptComposerMetadataPolicy.unspecifiedModelID, "unknown model hints should use the internal unspecified model")
+    try expect(unknownDecision.model.name == PromptComposerMetadataPolicy.unspecifiedModelName, "unspecified model should use the localized fallback name")
+    try expect(unknownDecision.model.type == .image, "unspecified model should use the determined prompt type")
+
+    let wrongType = PromptClipboardInterpretation(modelHint: "Nano Banana 2")
+    let wrongTypeDecision = PromptComposerMetadataPolicy.resolve(type: .video, interpretation: wrongType, localModels: localModels)
+    try expect(wrongTypeDecision.model.id == PromptComposerMetadataPolicy.unspecifiedModelID, "a model matching only another type must not be reused")
+}
+
+func testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown() throws {
+    let localModels = [ModelProfile(id: "chatgpt_gpt", name: "ChatGPT / GPT", type: .text, parameters: [])]
+    let formats: [(String, String, String)] = [
+        ("JSON", "text_json", "JSON"),
+        ("text_json", "text_json", "JSON"),
+        ("yaml", "text_yaml", "YAML"),
+        ("text_yaml", "text_yaml", "YAML"),
+        ("TXT", "text_txt", "TXT"),
+        ("text_txt", "text_txt", "TXT"),
+        ("", "text_markdown", "Markdown"),
+        ("text_markdown", "text_markdown", "Markdown"),
+        ("unsupported", "text_markdown", "Markdown")
+    ]
+    for (hint, expectedID, expectedName) in formats {
+        let interpretation = PromptClipboardInterpretation(parameters: ["prompt_format_id": "stale", "tone": "calm"], formatHint: hint.isEmpty ? nil : hint)
+        let decision = PromptComposerMetadataPolicy.resolve(type: .text, interpretation: interpretation, localModels: localModels)
+        try expect(decision.promptFormatID == expectedID, "text format \(hint) should resolve to \(expectedID)")
+        try expect(decision.promptFormat == expectedName, "text format \(hint) should display as \(expectedName)")
+        try expect(decision.parameters["prompt_format_id"] == expectedID && decision.parameters["prompt_format"] == expectedName, "text format metadata should be canonicalized")
+        try expect(decision.parameters["tone"] == "calm", "custom parameters should survive format canonicalization")
+    }
+}
+
 do {
     try testLibraryURLResolution()
     try testExistingLibraryValidationDoesNotCreateDatabase()
@@ -1428,6 +1517,11 @@ do {
     try testPromptClipboardInterpreterHandlesBlankInput()
     try testPromptPasteRouteResolverHonorsPastePriority()
     try testPromptClipboardInterpreterStripsModelAndFormatMetadataFromPrompt()
+    try testPromptComposerTypeDecisionPreservesManualConfirmation()
+    try testPromptComposerTypeDecisionReturnsPendingForLowConfidenceAndConflicts()
+    try testPromptComposerTypeDecisionDelegatesReferenceImageVideoSemantics()
+    try testPromptComposerMetadataPolicyUsesExactSameTypeModels()
+    try testPromptComposerMetadataPolicyNormalizesTextFormatsAndDefaultsMarkdown()
     try testPromptRepositoryBatchFolderUpdateRollsBack()
     try testPromptRepositoryFolderUpdatePreservesVersions()
     print("PromptStudioCoreUnitTests passed")
