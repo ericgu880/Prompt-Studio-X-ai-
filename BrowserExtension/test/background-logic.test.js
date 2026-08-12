@@ -21,6 +21,7 @@ test('presented and animate keep pending captures while terminal responses clear
 });
 
 test('disconnect replay retries pending captures by ID with TTL and a finite retry cap', () => {
+  assert.equal(CAPTURE_TTL_MS, 300_000);
   const ledger = new PendingCaptureLedger({ now: 0 });
   ledger.add({ captureID: 'one', selectedText: 'hello' }, 7);
   for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt += 1) {
