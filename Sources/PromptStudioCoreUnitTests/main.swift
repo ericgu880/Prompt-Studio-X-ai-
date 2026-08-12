@@ -385,6 +385,215 @@ func testMultiItemDragPreviewPlanCapsVisualsWithoutTruncatingPayload() throws {
     try expect(single.previewItemIDs == ["only"], "single selection should create exactly one preview")
 }
 
+func testFolderSelectionActionContextPreservesVisualOrderAndNormalizesNestedSelection() throws {
+    let folders = [
+        LibraryFolder(id: "folder-sibling", name: "Sibling", sortOrder: 0),
+        LibraryFolder(id: "folder-parent", name: "Parent", sortOrder: 1),
+        LibraryFolder(id: "folder-child", name: "Child", parentId: "folder-parent", sortOrder: 0)
+    ]
+    let selected = FolderSelectionActionContext.resolve(
+        clickedFolderID: "folder-child",
+        selectedFolderIDs: Set(["folder-parent", "folder-child", "folder-sibling"]),
+        primaryID: "folder-child",
+        visualFolderIDs: ["folder-sibling", "folder-parent", "folder-child"],
+        folders: folders
+    )
+    try expect(selected.orderedFolderIDs == ["folder-sibling", "folder-parent"], "folder selection should preserve visual order while removing selected descendants")
+    try expect(selected.primaryID == "folder-parent", "a primary child removed by parent normalization should resolve to the retained parent")
+
+    let unselected = FolderSelectionActionContext.resolve(
+        clickedFolderID: "folder-child",
+        selectedFolderIDs: Set(["folder-parent", "folder-sibling"]),
+        primaryID: "folder-parent",
+        visualFolderIDs: folders.map(\.id),
+        folders: folders
+    )
+    try expect(unselected.orderedFolderIDs == ["folder-child"], "clicking an unselected folder should collapse to one folder")
+    try expect(unselected.primaryID == "folder-child", "an unselected clicked folder should become primary")
+}
+
+func testFolderDragPayloadRoundTripAndPreviewCap() throws {
+    let payload = FolderDragPayload(folderIDs: ["folder-b", "folder-a", "folder-b", ""])
+    try expect(payload.folderIDs == ["folder-b", "folder-a"], "folder drag payload should remove empty and duplicate IDs")
+    try expect(FolderDragPayload.pasteboardTypeIdentifier == "com.promptstudio.internal.folder-ids", "folder drag payload should use its dedicated pasteboard type")
+    try expect(FolderDragPayload.decode(payload.encoded()) == payload, "folder drag payload should round-trip through JSON")
+
+    let unsupportedVersion = Data(#"{"version":2,"folderIDs":["folder-a"]}"#.utf8)
+    do {
+        _ = try FolderDragPayload.decode(unsupportedVersion)
+        throw CoreUnitTestError.failure("folder drag payload should reject unsupported versions")
+    } catch {
+        // Expected.
+    }
+
+    let two = FolderDragPreviewPlan(orderedFolderIDs: ["folder-a", "folder-b"], draggedFolderID: "folder-b")
+    try expect(two.previewFolderIDs == ["folder-a", "folder-b"] && two.totalFolderCount == 2, "two-folder preview should show both folders and the real count")
+
+    let twelveIDs = (1...12).map { "folder-\($0)" }
+    let twelve = FolderDragPreviewPlan(orderedFolderIDs: twelveIDs, draggedFolderID: "folder-6")
+    try expect(twelve.previewFolderIDs.count == 12 && twelve.completePayload.folderIDs == twelveIDs, "twelve-folder preview should cap visuals without truncating payload")
+
+    let thirteenIDs = (1...13).map { "folder-\($0)" }
+    let thirteen = FolderDragPreviewPlan(orderedFolderIDs: thirteenIDs, draggedFolderID: "folder-13")
+    try expect(thirteen.previewFolderIDs.count == 12 && thirteen.previewFolderIDs.last == "folder-13", "thirteen-folder preview should keep the dragged owner visible at the visual cap")
+    try expect(thirteen.totalFolderCount == 13 && thirteen.payloadOwnerID == "folder-13", "folder preview count and payload owner should describe the complete drag")
+}
+
+func folderMoveFixtures() -> [LibraryFolder] {
+    [
+        LibraryFolder(id: "move-root", name: "Root", sortOrder: 0),
+        LibraryFolder(id: "move-source", name: "Source", parentId: "move-root", sortOrder: 0),
+        LibraryFolder(id: "move-source-child", name: "Child", parentId: "move-source", sortOrder: 0),
+        LibraryFolder(id: "move-target", name: "Target", parentId: "move-root", sortOrder: 1),
+        LibraryFolder(id: "move-existing", name: "Existing", parentId: "move-target", sortOrder: 4),
+        LibraryFolder(id: "move-second", name: "Second", parentId: "move-root", sortOrder: 2)
+    ]
+}
+
+func testFolderBatchMovePlannerRejectsInvalidGroupsAndPreservesLegalOrder() throws {
+    let fixtures = folderMoveFixtures()
+    let normalized = try FolderBatchMovePlanner.plan(
+        allFolders: fixtures,
+        sourceFolderIDs: ["move-source", "move-source-child"],
+        targetParentID: "move-target"
+    )
+    try expect(normalized.sourceFolderIDs == ["move-source"], "batch planner should normalize selected parent/child overlap")
+    try expect(normalized.updates.map(\.folderID) == ["move-source"], "normalized move should update only the retained top-level source")
+    try expect(normalized.updates[0].parentID == "move-target" && normalized.updates[0].sortOrder == 5, "legal move should append after the target's existing child sort order")
+
+    let legal = try FolderBatchMovePlanner.plan(
+        allFolders: fixtures,
+        sourceFolderIDs: ["move-second", "move-source"],
+        targetParentID: "move-target"
+    )
+    try expect(legal.updates.map(\.folderID) == ["move-second", "move-source"], "legal batch move should keep visual source order")
+    try expect(legal.updates.map(\.sortOrder) == [5, 6], "legal batch move should append each source in visual order")
+
+    let invalidCases: [(String, [String], String?)] = [
+        ("missing", ["missing-source"], "move-target"),
+        ("self", ["move-source"], "move-source"),
+        ("descendant", ["move-source"], "move-source-child"),
+        ("already", ["move-existing"], "move-target")
+    ]
+    for (_, sourceIDs, targetID) in invalidCases {
+        do {
+            _ = try FolderBatchMovePlanner.plan(allFolders: fixtures, sourceFolderIDs: sourceIDs, targetParentID: targetID)
+            throw CoreUnitTestError.failure("batch planner should reject (label) move")
+        } catch is FolderBatchMoveError {
+            // Expected.
+        }
+    }
+
+    var duplicateFixtures = fixtures
+    duplicateFixtures.append(LibraryFolder(id: "move-duplicate", name: "Source", parentId: "move-target", sortOrder: 7))
+    do {
+        _ = try FolderBatchMovePlanner.plan(allFolders: duplicateFixtures, sourceFolderIDs: ["move-second", "move-source"], targetParentID: "move-target")
+        throw CoreUnitTestError.failure("batch planner should reject target name collisions")
+    } catch FolderBatchMoveError.targetContainsSameName {
+        // Expected.
+    }
+
+    do {
+        _ = try FolderBatchMovePlanner.plan(allFolders: fixtures, sourceFolderIDs: ["move-second", "move-source"], targetParentID: "move-source")
+        throw CoreUnitTestError.failure("mixed valid/invalid source groups should be rejected atomically")
+    } catch is FolderBatchMoveError {
+        // Expected.
+    }
+}
+
+func testPromptRepositoryBatchFolderMoveAndDeleteRollback() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let root = LibraryFolder(id: "repo-root", name: "Root", sortOrder: 0)
+    let source = LibraryFolder(id: "repo-source", name: "Source", parentId: root.id, sortOrder: 0)
+    let sourceChild = LibraryFolder(id: "repo-source-child", name: "Child", parentId: source.id, sortOrder: 0)
+    let target = LibraryFolder(id: "repo-target", name: "Target", parentId: root.id, sortOrder: 1)
+    let first = LibraryFolder(id: "repo-first", name: "First", parentId: root.id, sortOrder: 2)
+    let second = LibraryFolder(id: "repo-second", name: "Second", parentId: root.id, sortOrder: 3)
+    try repository.seedFoldersIfNeeded([root, source, sourceChild, target, first, second])
+
+    let updates = [
+        FolderParentSortUpdate(folderID: first.id, parentID: target.id, sortOrder: 3),
+        FolderParentSortUpdate(folderID: second.id, parentID: target.id, sortOrder: 4)
+    ]
+    try repository.updateFolderParentsAndSort(updates)
+    let moved = Dictionary(uniqueKeysWithValues: try repository.loadFolders().map { ($0.id, $0) })
+    try expect(moved[first.id]?.parentId == target.id && moved[first.id]?.sortOrder == 3, "batch folder move should persist parent and sort updates")
+    try expect(moved[second.id]?.parentId == target.id && moved[second.id]?.sortOrder == 4, "batch folder move should persist every row")
+
+    let db = try SQLiteDatabase(path: repository.databaseURL.path, mode: .existingReadWrite)
+    try db.execute(
+        """
+        CREATE TRIGGER abort_batch_folder_parent_update
+        BEFORE UPDATE OF parentId ON library_folders
+        WHEN NEW.id = 'repo-second' AND NEW.parentId = 'repo-root'
+        BEGIN SELECT RAISE(ABORT, 'forced folder parent rollback'); END;
+        """
+    )
+    var caughtError: Error?
+    do {
+        try repository.updateFolderParentsAndSort([
+            FolderParentSortUpdate(folderID: first.id, parentID: root.id, sortOrder: 8),
+            FolderParentSortUpdate(folderID: second.id, parentID: root.id, sortOrder: 9)
+        ])
+    } catch {
+        caughtError = error
+    }
+    try expect(caughtError?.localizedDescription.contains("forced folder parent rollback") == true, "batch folder move should expose trigger errors")
+    let rolledBack = Dictionary(uniqueKeysWithValues: try repository.loadFolders().map { ($0.id, $0) })
+    try expect(rolledBack[first.id]?.parentId == target.id && rolledBack[first.id]?.sortOrder == 3, "folder move rollback should restore earlier rows")
+    try expect(rolledBack[second.id]?.parentId == target.id && rolledBack[second.id]?.sortOrder == 4, "folder move rollback should retain later rows")
+
+    var firstItem = sampleItem(title: "Source prompt", prompt: "source")
+    firstItem.id = "repo-delete-item-first"
+    firstItem.versions = []
+    firstItem.folderId = source.id
+    var childItem = sampleItem(title: "Child prompt", prompt: "child")
+    childItem.id = "repo-delete-item-child"
+    childItem.versions = []
+    childItem.folderId = sourceChild.id
+    try repository.saveItems([firstItem, childItem])
+    let deletedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    try repository.deleteFolderSubtrees(sourceFolderIDs: [source.id], deletedAt: deletedAt)
+    let deletedItems = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
+    try expect(deletedItems[firstItem.id]?.deletedAt == deletedAt && deletedItems[childItem.id]?.deletedAt == deletedAt, "folder subtree deletion should mark every internal live item with one timestamp")
+    try expect(try repository.loadFolders().contains { $0.id == source.id || $0.id == sourceChild.id } == false, "folder subtree deletion should remove every descendant folder")
+
+    let rollbackURL = try temporaryLibraryURL()
+    let rollbackRepository = try PromptRepository(libraryURL: rollbackURL)
+    let rollbackSource = LibraryFolder(id: "rollback-source", name: "Rollback", sortOrder: 0)
+    let rollbackChild = LibraryFolder(id: "rollback-child", name: "Rollback child", parentId: rollbackSource.id, sortOrder: 0)
+    var rollbackItemOne = sampleItem(title: "Rollback one", prompt: "one")
+    rollbackItemOne.id = "rollback-folder-item-one"
+    rollbackItemOne.versions = []
+    rollbackItemOne.folderId = rollbackSource.id
+    var rollbackItemTwo = sampleItem(title: "Rollback two", prompt: "two")
+    rollbackItemTwo.id = "rollback-folder-item-two"
+    rollbackItemTwo.versions = []
+    rollbackItemTwo.folderId = rollbackChild.id
+    try rollbackRepository.seedFoldersIfNeeded([rollbackSource, rollbackChild])
+    try rollbackRepository.saveItems([rollbackItemOne, rollbackItemTwo])
+    let rollbackDB = try SQLiteDatabase(path: rollbackRepository.databaseURL.path, mode: .existingReadWrite)
+    try rollbackDB.execute(
+        """
+        CREATE TRIGGER abort_folder_subtree_delete
+        BEFORE DELETE ON library_folders
+        WHEN OLD.id = 'rollback-child'
+        BEGIN SELECT RAISE(ABORT, 'forced folder subtree rollback'); END;
+        """
+    )
+    var deleteError: Error?
+    do {
+        try rollbackRepository.deleteFolderSubtrees(sourceFolderIDs: [rollbackSource.id], deletedAt: deletedAt)
+    } catch {
+        deleteError = error
+    }
+    try expect(deleteError?.localizedDescription.contains("forced folder subtree rollback") == true, "folder subtree deletion should expose trigger errors")
+    try expect(try rollbackRepository.loadFolders().count == 2, "folder subtree deletion rollback should restore every folder")
+    let restoredItems = Dictionary(uniqueKeysWithValues: try rollbackRepository.loadItems().map { ($0.id, $0) })
+    try expect(restoredItems[rollbackItemOne.id]?.deletedAt == nil && restoredItems[rollbackItemTwo.id]?.deletedAt == nil, "folder subtree deletion rollback should restore item deletion state")
+}
+
 func testPromptItemBatchMovePlanner() throws {
     let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
     var first = sampleItem(title: "First", assetKind: .image, prompt: "first")
@@ -2087,6 +2296,10 @@ do {
     try testSelectionActionContextBuildsCompleteDragPayload()
     try testMultiItemDragPreviewPlanKeepsDraggedItemOnTop()
     try testMultiItemDragPreviewPlanCapsVisualsWithoutTruncatingPayload()
+    try testFolderSelectionActionContextPreservesVisualOrderAndNormalizesNestedSelection()
+    try testFolderDragPayloadRoundTripAndPreviewCap()
+    try testFolderBatchMovePlannerRejectsInvalidGroupsAndPreservesLegalOrder()
+    try testPromptRepositoryBatchFolderMoveAndDeleteRollback()
     try testPromptItemBatchMovePlanner()
     try testPromptRepositoryBatchDeletedStateRollsBack()
     try testPromptRepositoryBatchPermanentDeleteRollsBack()

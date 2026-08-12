@@ -18,6 +18,29 @@ public enum PromptRepositoryValidationError: Error, LocalizedError {
     }
 }
 
+public enum PromptRepositoryFolderMutationError: Error, LocalizedError, Equatable, Sendable {
+    case folderNotFound(String)
+    case affectedRowsMismatch(folderID: String, expected: Int, actual: Int)
+
+    public var code: String {
+        switch self {
+        case .folderNotFound:
+            "folder_mutation.folder_missing"
+        case .affectedRowsMismatch:
+            "folder_mutation.affected_rows_mismatch"
+        }
+    }
+
+    public var errorDescription: String? {
+        switch self {
+        case .folderNotFound(let folderID):
+            "文件夹不存在：\(folderID)"
+        case .affectedRowsMismatch(let folderID, let expected, let actual):
+            "文件夹更新行数异常（\(folderID)：应为 \(expected)，实际为 \(actual)）"
+        }
+    }
+}
+
 /// A single candidate that could not be migrated. The migration continues
 /// with later candidates after isolating this item's file/database changes.
 public struct PromptPlaceholderMigrationFailure: Equatable, Sendable {
@@ -736,6 +759,118 @@ public final class PromptRepository: @unchecked Sendable {
                 sortOrder: int(row, "sortOrder")
             )
         }
+    }
+
+    /// Updates folder parents and sibling ordering as one transaction.  Every
+    /// row is updated separately so SQLite triggers and affected-row checks can
+    /// identify the exact failing folder; any failure rolls back the complete
+    /// batch.
+    public func updateFolderParentsAndSort(_ updates: [FolderParentSortUpdate]) throws {
+        guard !updates.isEmpty else { return }
+        try database.transaction {
+            for update in updates {
+                let changed = try database.runAndReturnChanges(
+                    "UPDATE library_folders SET parentId = ?, sortOrder = ? WHERE id = ?;",
+                    values: [
+                        update.parentID.map { .text($0) } ?? .null,
+                        .int(Int64(update.sortOrder)),
+                        .text(update.folderID)
+                    ]
+                )
+                guard changed == 1 else {
+                    throw PromptRepositoryFolderMutationError.affectedRowsMismatch(
+                        folderID: update.folderID,
+                        expected: 1,
+                        actual: changed
+                    )
+                }
+            }
+        }
+    }
+
+    public func updateFolderParents(_ updates: [FolderParentSortUpdate]) throws {
+        try updateFolderParentsAndSort(updates)
+    }
+
+    public func updateFolderParentAndSort(_ updates: [FolderParentSortUpdate]) throws {
+        try updateFolderParentsAndSort(updates)
+    }
+
+    /// Soft-deletes every live prompt inside the selected folder subtrees and
+    /// then removes the folders in the same SQLite transaction.  Source IDs
+    /// that overlap through a parent/child relationship are normalized before
+    /// descendants are expanded.
+    public func deleteFolderSubtrees(
+        sourceFolderIDs: [String],
+        deletedAt: Date = Date()
+    ) throws {
+        let requestedIDs = FolderDragPayload(folderIDs: sourceFolderIDs).folderIDs
+        guard !requestedIDs.isEmpty else { return }
+        try database.transaction {
+            let folders = try loadFolders()
+            let foldersByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
+            for folderID in requestedIDs where foldersByID[folderID] == nil {
+                throw PromptRepositoryFolderMutationError.folderNotFound(folderID)
+            }
+            let topLevelIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
+                selectedFolderIDs: requestedIDs,
+                folders: folders
+            )
+            let childrenByParent = Dictionary(grouping: folders, by: { $0.parentId })
+            var subtreeIDs: [String] = []
+            var pending = topLevelIDs
+            var visited = Set<String>()
+            while let folderID = pending.first {
+                pending.removeFirst()
+                guard visited.insert(folderID).inserted else { continue }
+                subtreeIDs.append(folderID)
+                pending.append(contentsOf: (childrenByParent[folderID] ?? []).map(\.id))
+            }
+
+            guard !subtreeIDs.isEmpty else { return }
+            let placeholders = Array(repeating: "?", count: subtreeIDs.count).joined(separator: ",")
+            let updatedAt = Self.string(from: Date())
+            try database.run(
+                "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE deletedAt IS NULL AND folderId IN (\(placeholders));",
+                values: [.text(Self.string(from: deletedAt)), .text(updatedAt)] + subtreeIDs.map { .text($0) }
+            )
+
+            // Delete descendants after parents so a trigger can abort at any
+            // point and the enclosing transaction restores all earlier work.
+            for folderID in subtreeIDs.reversed() {
+                let changed = try database.runAndReturnChanges(
+                    "DELETE FROM library_folders WHERE id = ?;",
+                    values: [.text(folderID)]
+                )
+                guard changed == 1 else {
+                    throw PromptRepositoryFolderMutationError.affectedRowsMismatch(
+                        folderID: folderID,
+                        expected: 1,
+                        actual: changed
+                    )
+                }
+            }
+        }
+    }
+
+    public func deleteFolderTrees(
+        sourceFolderIDs: [String],
+        deletedAt: Date = Date()
+    ) throws {
+        try deleteFolderSubtrees(sourceFolderIDs: sourceFolderIDs, deletedAt: deletedAt)
+    }
+
+    public func deleteFoldersRecursively(
+        ids: [String],
+        deletedAt: Date = Date()
+    ) throws {
+        try deleteFolderSubtrees(sourceFolderIDs: ids, deletedAt: deletedAt)
+    }
+
+    /// New batch-delete spelling while retaining the original hard-delete
+    /// `deleteFolders(ids:)` API for existing callers.
+    public func deleteFolders(ids: [String], deletedAt: Date) throws {
+        try deleteFolderSubtrees(sourceFolderIDs: ids, deletedAt: deletedAt)
     }
 
     public func renameFolder(id: String, name: String) throws {
