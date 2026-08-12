@@ -63,6 +63,15 @@ mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resource
 cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
 
+BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+    BUILD_COMMIT="${BUILD_COMMIT}-dirty"
+fi
+BUILD_TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+/usr/libexec/PlistBuddy -c "Add :PromptStudioBuildCommit string $BUILD_COMMIT" "$STAGING_APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :PromptStudioBuildTimestamp string $BUILD_TIMESTAMP" "$STAGING_APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :PromptStudioBuildExecutablePath string $APP_PATH/Contents/MacOS/PromptStudio" "$STAGING_APP_PATH/Contents/Info.plist"
+
 if [[ -n "$LICENSE_PUBLIC_KEY" && -n "$LICENSE_KEY_ID" ]]; then
     /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys dict" "$STAGING_APP_PATH/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Add :PromptStudioLicensePublicKeys:$LICENSE_KEY_ID string $LICENSE_PUBLIC_KEY" "$STAGING_APP_PATH/Contents/Info.plist"

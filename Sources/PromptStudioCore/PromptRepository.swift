@@ -315,20 +315,41 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func markDeleted(itemID: String, deletedAt: Date?) throws {
-        try database.run(
-            "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE id = ?;",
-            values: [
-                deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                .text(Self.string(from: Date())),
-                .text(itemID)
-            ]
-        )
-        try refreshTags(from: try loadItems())
+        try markDeleted(itemIDs: [itemID], deletedAt: deletedAt)
+    }
+
+    public func markDeleted(itemIDs: [String], deletedAt: Date?) throws {
+        let ids = PromptItemDragPayload(itemIDs: itemIDs).itemIDs
+        guard !ids.isEmpty else { return }
+        try database.transaction {
+            let updatedAt = Self.string(from: Date())
+            for itemID in ids {
+                try database.run(
+                    "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE id = ?;",
+                    values: [
+                        deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
+                        .text(updatedAt),
+                        .text(itemID)
+                    ]
+                )
+            }
+            try refreshTags(from: try loadItems())
+        }
     }
 
     public func permanentlyDelete(itemID: String) throws {
-        try database.run("DELETE FROM prompt_items WHERE id = ?;", values: [.text(itemID)])
-        try refreshTags(from: try loadItems())
+        try permanentlyDelete(itemIDs: [itemID])
+    }
+
+    public func permanentlyDelete(itemIDs: [String]) throws {
+        let ids = PromptItemDragPayload(itemIDs: itemIDs).itemIDs
+        guard !ids.isEmpty else { return }
+        try database.transaction {
+            for itemID in ids {
+                try database.run("DELETE FROM prompt_items WHERE id = ?;", values: [.text(itemID)])
+            }
+            try refreshTags(from: try loadItems())
+        }
     }
 
     public func updateLastUsed(itemID: String, at date: Date = Date()) throws {

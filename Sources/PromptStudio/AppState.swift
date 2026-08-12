@@ -299,6 +299,34 @@ final class AppState: ObservableObject {
     @Published private(set) var selectedFolderID: String?
     var selectedID: String? { selectionState.primaryID }
     var selectedIDs: Set<String> { selectionState.ids }
+
+    func selectedItemIDsOrFallback(_ itemID: String) -> [String] {
+        selectionActionContext(clickedItemID: itemID).orderedItemIDs
+    }
+
+    func selectionActionContext(
+        clickedItemID: String,
+        visualItemIDs: [String]? = nil
+    ) -> PromptItemSelectionActionContext {
+        let visualIDs = visualItemIDs ?? filteredItems.map(\.id)
+        return PromptItemSelectionActionContext.resolve(
+            clickedItemID: clickedItemID,
+            selectedItemIDs: selectedIDs,
+            primaryID: selectedID,
+            visualItemIDs: visualIDs
+        )
+    }
+
+    func selectedItemsAreInFolder(_ folderID: String, fallbackItemID: String) -> Bool {
+        let itemIDs = selectedItemIDsOrFallback(fallbackItemID)
+        return selectedItemsAreInFolder(folderID, itemIDs: itemIDs)
+    }
+
+    func selectedItemsAreInFolder(_ folderID: String, itemIDs: [String]) -> Bool {
+        let itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        return itemIDs.allSatisfy { itemsByID[$0]?.folderId == folderID }
+    }
+
     @Published private(set) var filteredItems: [PromptItem] = []
     @Published var modal: Modal?
     @Published var toast: String?
@@ -620,21 +648,7 @@ final class AppState: ObservableObject {
     }
 
     func orderedItemIDsForDrag(startingWith itemID: String) -> [String] {
-        if !selectedIDs.contains(itemID), let item = itemsByID[itemID] {
-            select(item)
-        }
-
-        let requestedIDs = selectedIDs.isEmpty ? Set([itemID]) : selectedIDs
-        var orderedIDs: [String] = []
-        var seenIDs = Set<String>()
-
-        for item in filteredItems where requestedIDs.contains(item.id) && seenIDs.insert(item.id).inserted {
-            orderedIDs.append(item.id)
-        }
-        for item in items where requestedIDs.contains(item.id) && seenIDs.insert(item.id).inserted {
-            orderedIDs.append(item.id)
-        }
-        return orderedIDs
+        selectionActionContext(clickedItemID: itemID).orderedItemIDs
     }
 
     @discardableResult
@@ -995,13 +1009,14 @@ final class AppState: ObservableObject {
     }
 
     func copySelectedFileForPasteboard() {
-        guard let item = selectedItem else { return }
-        guard AppKitBridge.copyFileToPasteboard(path: item.assetPath) else {
+        let selectedItems = orderedSelectedItems()
+        guard !selectedItems.isEmpty else { return }
+        guard AppKitBridge.copyFilesToPasteboard(paths: selectedItems.map(\.assetPath)) else {
             showToast("源文件不存在")
             return
         }
-        markRecentlyUsed(itemID: item.id)
-        showToast("已复制文件")
+        for item in selectedItems { markRecentlyUsed(itemID: item.id) }
+        showToast(selectedItems.count > 1 ? "已复制 \(selectedItems.count) 个文件" : "已复制文件")
     }
 
     func pasteFilesFromPasteboard() {
@@ -1022,13 +1037,18 @@ final class AppState: ObservableObject {
     }
 
     func moveSelectedToTrash() {
-        let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
+        let ids = selectedItemIDsOrFallback(selectedID ?? "")
+        moveItemsToTrash(ids)
+    }
+
+    /// Moves an explicit interaction snapshot to the trash. Context menus and drag
+    /// sessions use this so AppKit selection changes after mouse-down cannot reduce
+    /// a multi-selection to a single item before the action executes.
+    func moveItemsToTrash(_ itemIDs: [String]) {
+        let ids = Set(PromptItemDragPayload(itemIDs: itemIDs).itemIDs)
         guard !ids.isEmpty else { return }
         do {
-            let deletedAt = Date()
-            for id in ids {
-                try repository?.markDeleted(itemID: id, deletedAt: deletedAt)
-            }
+            try repository?.markDeleted(itemIDs: Array(ids), deletedAt: Date())
             reload(selecting: filteredItems.first(where: { !ids.contains($0.id) })?.id)
             showToast(ids.count > 1 ? "已移入回收站 \(ids.count) 个项目" : "已移入回收站")
         } catch {
@@ -1040,9 +1060,7 @@ final class AppState: ObservableObject {
         let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
         guard !ids.isEmpty else { return }
         do {
-            for id in ids {
-                try repository?.markDeleted(itemID: id, deletedAt: nil)
-            }
+            try repository?.markDeleted(itemIDs: Array(ids), deletedAt: nil)
             reload(selecting: selectedID ?? ids.first)
             showToast(ids.count > 1 ? "已恢复 \(ids.count) 个项目" : "已恢复")
         } catch {
@@ -1057,9 +1075,7 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            for item in deletedItems {
-                try repository?.markDeleted(itemID: item.id, deletedAt: nil)
-            }
+            try repository?.markDeleted(itemIDs: deletedItems.map(\.id), deletedAt: nil)
             reload(selecting: deletedItems.first?.id)
             showToast("已还原全部项目")
         } catch {
@@ -1108,9 +1124,9 @@ final class AppState: ObservableObject {
                     failures.append("\(item.title)：\(error.localizedDescription)")
                     continue
                 }
-                try repository?.permanentlyDelete(itemID: item.id)
                 deletedIDs.insert(item.id)
             }
+            try repository?.permanentlyDelete(itemIDs: Array(deletedIDs))
         } catch {
             modal = .error(error.localizedDescription)
             return
@@ -1423,47 +1439,43 @@ final class AppState: ObservableObject {
         if options.pngImage || options.jpegImage {
             guard requireFeature(.proAdvancedExport) else { return }
         }
-        guard let item = selectedItem, let directory = AppKitBridge.chooseExportDirectory() else { return }
+        let selectedItems = orderedSelectedItems()
+        guard !selectedItems.isEmpty, let directory = AppKitBridge.chooseExportDirectory() else { return }
         do {
-            let source = URL(fileURLWithPath: item.assetPath)
-            let baseName = safeExportFileName(item.title)
             var exportedCount = 0
-
-            if options.promptMarkdown {
-                let promptTarget = uniqueExportURL(in: directory, baseName: "\(baseName)-提示词", extension: "md")
-                try overwriteText(markdownPrompt(for: item), to: promptTarget)
-                exportedCount += 1
+            for item in selectedItems {
+                let source = URL(fileURLWithPath: item.assetPath)
+                let baseName = safeExportFileName(item.title)
+                if options.promptMarkdown {
+                    let promptTarget = uniqueExportURL(in: directory, baseName: "\(baseName)-提示词", extension: "md")
+                    try overwriteText(markdownPrompt(for: item), to: promptTarget)
+                    exportedCount += 1
+                }
+                if options.pngImage, item.assetKind == .image {
+                    guard FileManager.default.fileExists(atPath: source.path) else { throw CocoaError(.fileNoSuchFile) }
+                    let target = uniqueExportURL(in: directory, baseName: baseName, extension: "png")
+                    try overwriteImage(from: source, to: target, format: .png)
+                    exportedCount += 1
+                }
+                if options.jpegImage, item.assetKind == .image {
+                    guard FileManager.default.fileExists(atPath: source.path) else { throw CocoaError(.fileNoSuchFile) }
+                    let target = uniqueExportURL(in: directory, baseName: baseName, extension: "jpg")
+                    try overwriteImage(from: source, to: target, format: .jpeg)
+                    exportedCount += 1
+                }
+                markRecentlyUsed(itemID: item.id)
             }
-
-            if options.pngImage {
-                guard item.assetKind == .image else {
-                    throw CocoaError(.fileReadUnsupportedScheme)
-                }
-                guard FileManager.default.fileExists(atPath: source.path) else {
-                    throw CocoaError(.fileNoSuchFile)
-                }
-                let target = uniqueExportURL(in: directory, baseName: baseName, extension: "png")
-                try overwriteImage(from: source, to: target, format: .png)
-                exportedCount += 1
-            }
-
-            if options.jpegImage {
-                guard item.assetKind == .image else {
-                    throw CocoaError(.fileReadUnsupportedScheme)
-                }
-                guard FileManager.default.fileExists(atPath: source.path) else {
-                    throw CocoaError(.fileNoSuchFile)
-                }
-                let target = uniqueExportURL(in: directory, baseName: baseName, extension: "jpg")
-                try overwriteImage(from: source, to: target, format: .jpeg)
-                exportedCount += 1
-            }
-
-            markRecentlyUsed(itemID: item.id)
             showToast(exportedCount > 1 ? "已导出 \(exportedCount) 个文件" : "导出完成")
         } catch {
             modal = .error(error.localizedDescription)
         }
+    }
+
+    private func orderedSelectedItems() -> [PromptItem] {
+        let requested = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
+        let visible = filteredItems.filter { requested.contains($0.id) }
+        let visibleIDs = Set(visible.map(\.id))
+        return visible + items.filter { requested.contains($0.id) && !visibleIDs.contains($0.id) }
     }
 
     func exportSelected(format: PromptStudioExportFormat) {

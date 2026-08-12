@@ -205,13 +205,16 @@ NATIVE_MARQUEE_NORMALIZED="$(printf '%s' "$NATIVE_MARQUEE_REGION" | normalize_sw
 require_normalized_token "$NATIVE_MARQUEE_NORMALIZED" 'onMarqueeChange' \
     "Native marquee collection view must expose marquee callbacks."
 
-NATIVE_CARD_DRAG_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
-    '^[[:space:]]*private[[:space:]]+final[[:space:]]+class[[:space:]]+NativeImageCardView\b' \
-    '^[[:space:]]*private[[:space:]]+final[[:space:]]+class[[:space:]]+NativeMarkdownIconButton\b' \
-    'native card drag sources')"
-NATIVE_CARD_DRAG_NORMALIZED="$(printf '%s' "$NATIVE_CARD_DRAG_REGION" | normalize_swift)"
-require_normalized_token "$NATIVE_CARD_DRAG_NORMALIZED" 'promptStudioPasteboardItem(itemIDs:' \
-    "Native card drag sources must publish the multi-item payload."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'collectionView.isSelectable = true' \
+    "The native collection view must own a selectable multi-selection surface."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'collectionView.allowsMultipleSelection = true' \
+    "The native collection view must allow multiple selection."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'let context = actionContext(for: itemID)' \
+    "The collection coordinator must resolve one shared action context."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'promptStudioPasteboardItem(itemIDs: context.orderedItemIDs)' \
+    "The collection coordinator must publish the complete ordered selection."
+require_normalized_token "$MASONRY_GRID_NORMALIZED" 'collectionView.beginDraggingSession' \
+    "The collection view must own the shared drag session."
 
 SIDEBAR_DROP_REGION="$(extract_scoped_region "$PROMPT_STUDIO_VIEW_FILE" \
     '^[[:space:]]*private[[:space:]]+func[[:space:]]+handleDrop\b' \

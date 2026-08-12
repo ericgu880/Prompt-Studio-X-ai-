@@ -15,7 +15,7 @@ menu_body="$(sed -n '/override func menu(for event: NSEvent) -> NSMenu? {/,/priv
 if ! grep -q 'if representedItemIsDeleted' <<<"$menu_body" || \
    ! grep -q 'state.restoreSelected()' <<<"$menu_body" || \
    ! grep -q 'state.beginPermanentDeleteSelectedTrashItems()' <<<"$menu_body" || \
-   ! grep -q 'action: trashAction' <<<"$menu_body"; then
+   ! grep -q 'moveItemsToTrash(actionItemIDs)' <<<"$menu_body"; then
     echo "Markdown trash context menu must distinguish restore/permanent-delete from move-to-trash." >&2
     exit 1
 fi

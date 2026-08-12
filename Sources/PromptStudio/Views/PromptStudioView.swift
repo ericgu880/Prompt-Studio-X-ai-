@@ -14,12 +14,30 @@ private extension UTType {
     static let promptStudioItemIDs = UTType(importedAs: PromptItemDragPayload.pasteboardTypeIdentifier)
 }
 
+private let promptStudioDragTextPrefix = "promptstudio-item-ids:"
+
+private func promptStudioDragText(itemIDs: [String]) -> String? {
+    guard let data = try? PromptItemDragPayload(itemIDs: itemIDs).encoded() else { return nil }
+    return promptStudioDragTextPrefix + data.base64EncodedString()
+}
+
+private func promptStudioItemIDs(fromDragText text: String) -> [String]? {
+    guard text.hasPrefix(promptStudioDragTextPrefix) else {
+        return text.isEmpty ? nil : [text]
+    }
+    let encoded = String(text.dropFirst(promptStudioDragTextPrefix.count))
+    guard let data = Data(base64Encoded: encoded),
+          let payload = try? PromptItemDragPayload.decode(data) else { return nil }
+    return payload.itemIDs
+}
+
 private func promptStudioPasteboardItem(itemIDs: [String]) -> NSPasteboardItem? {
     let payload = PromptItemDragPayload(itemIDs: itemIDs)
-    guard let primaryID = payload.itemIDs.first, let data = try? payload.encoded() else { return nil }
+    guard let data = try? payload.encoded(),
+          let dragText = promptStudioDragText(itemIDs: payload.itemIDs) else { return nil }
     let item = NSPasteboardItem()
     item.setData(data, forType: .promptStudioItemIDs)
-    item.setString(primaryID, forType: .string)
+    item.setString(dragText, forType: .string)
     return item
 }
 
@@ -33,8 +51,8 @@ private func promptStudioItemProvider(itemIDs: [String]) -> NSItemProvider {
         completion(try? payload.encoded(), nil)
         return nil
     }
-    if let primaryID = payload.itemIDs.first {
-        provider.registerObject(primaryID as NSString, visibility: .ownProcess)
+    if let dragText = promptStudioDragText(itemIDs: payload.itemIDs) {
+        provider.registerObject(dragText as NSString, visibility: .ownProcess)
     }
     return provider
 }
@@ -1787,12 +1805,13 @@ private struct FolderTreeRowView: View {
         }
 
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
-        provider.loadObject(ofClass: NSString.self) { object, _ in
-            guard let itemID = object as? String else { return }
-            Task { @MainActor in
-                state.moveItems([itemID], toFolderID: row.folder.id)
+            provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let text = object as? String,
+                      let itemIDs = promptStudioItemIDs(fromDragText: text) else { return }
+                Task { @MainActor in
+                    state.moveItems(itemIDs, toFolderID: row.folder.id)
+                }
             }
-        }
         return true
     }
 
@@ -1857,7 +1876,7 @@ private struct SidebarDisclosure: View {
                         collection: row.collection,
                         tint: StudioColor.text,
                         folder: row.folder,
-                        dropFolderName: row.folder.name,
+                        dropFolderID: row.folder.id,
                         acceptedDropType: acceptedDropType
                     )
                         .padding(.leading, 16)
@@ -1901,7 +1920,7 @@ private struct SidebarRow: View {
     var isActive = false
     var tint: Color = StudioColor.secondaryText
     var folder: LibraryFolder?
-    var dropFolderName: String?
+    var dropFolderID: String?
     var acceptedDropType: PromptType?
     @State private var isHovered = false
     @State private var isDropTargeted = false
@@ -1941,12 +1960,22 @@ private struct SidebarRow: View {
         .buttonStyle(.plain)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
-        .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
-            guard let dropFolderName, let provider = providers.first else { return false }
+        .onDrop(of: [UTType.promptStudioItemIDs.identifier, UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers in
+            guard let dropFolderID, let provider = providers.first else { return false }
+            if provider.hasItemConformingToTypeIdentifier(UTType.promptStudioItemIDs.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.promptStudioItemIDs.identifier) { data, _ in
+                    guard let data, let payload = try? PromptItemDragPayload.decode(data) else { return }
+                    Task { @MainActor in
+                        state.moveItems(payload.itemIDs, toFolderID: dropFolderID)
+                    }
+                }
+                return true
+            }
             provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let itemID = object as? String else { return }
+                guard let text = object as? String,
+                      let itemIDs = promptStudioItemIDs(fromDragText: text) else { return }
                 Task { @MainActor in
-                    state.moveItem(itemID, toFolder: dropFolderName, acceptedType: acceptedDropType)
+                    state.moveItems(itemIDs, toFolderID: dropFolderID)
                 }
             }
             return true
@@ -2751,7 +2780,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             forItemWithIdentifier: MasonryCollectionItem.reuseIdentifier
         )
         collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = false
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = true
         collectionView.allowsEmptySelection = true
         collectionView.wantsLayer = true
         collectionView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -2814,7 +2844,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
+    final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate, NSDraggingSource {
         weak var collectionView: NSCollectionView?
         weak var layout: MasonryCollectionLayout?
         private weak var observedContentView: NSClipView?
@@ -2842,6 +2872,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private var marqueeBasePrimaryID: String?
         private var isMarqueeAdditive = false
         private var isMarqueeSelecting = false
+        private var activeDragContext: PromptItemSelectionActionContext?
         private var onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void = { _ in }
 
         private struct PendingDatasetUpdate {
@@ -2992,6 +3023,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             reloadDataWithoutAnimation(collectionView)
             lastLayoutInputKey = layoutInputKey
             lastRenderedSelectedItemIDs = state.selectedIDs
+            syncCollectionSelection(state.selectedIDs)
             lastEntryIDs = nextEntryIDs
             syncExternalFolderSelection(state.selectedFolderID)
 
@@ -3062,6 +3094,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 nextFolderID: selectedFolderID
             )
             lastRenderedSelectedItemIDs = selectedItemIDs
+            syncCollectionSelection(selectedItemIDs)
         }
 
         private func syncExternalFolderSelection(_ nextFolderID: String?) {
@@ -3103,6 +3136,13 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 },
                 selectItem: { [weak self] item, modifiers in
                     self?.selectItem(item, modifiers: modifiers)
+                },
+                actionContext: { [weak self] itemID in
+                    self?.actionContext(for: itemID)
+                        ?? PromptItemSelectionActionContext(orderedItemIDs: [itemID], primaryID: itemID)
+                },
+                beginDrag: { [weak self] itemID, event, sourceView, previewImage in
+                    self?.beginDrag(itemID: itemID, event: event, sourceView: sourceView, previewImage: previewImage)
                 }
             )
             return masonryItem
@@ -3152,6 +3192,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                     nextFolderID: nil
                 )
                 lastRenderedSelectedItemIDs = state?.selectedIDs ?? []
+                syncCollectionSelection(state?.selectedIDs ?? [])
                 return
             }
 
@@ -3167,6 +3208,58 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 nextFolderID: nil
             )
             lastRenderedSelectedItemIDs = state.selectedIDs
+            syncCollectionSelection(state.selectedIDs)
+        }
+
+        private func actionContext(for itemID: String) -> PromptItemSelectionActionContext {
+            let visualIDs = layout?.visualItemIDs ?? entries.compactMap(\.promptItem?.id)
+            return state?.selectionActionContext(clickedItemID: itemID, visualItemIDs: visualIDs)
+                ?? PromptItemSelectionActionContext(orderedItemIDs: [itemID], primaryID: itemID)
+        }
+
+        private func syncCollectionSelection(_ itemIDs: Set<String>) {
+            guard let collectionView else { return }
+            let indexPaths = Set(itemIDs.compactMap { itemIndexPathsByID[$0] })
+            collectionView.selectionIndexPaths = indexPaths
+        }
+
+        private func beginDrag(
+            itemID: String,
+            event: NSEvent,
+            sourceView: NSView,
+            previewImage: NSImage
+        ) {
+            guard let collectionView else { return }
+            let context = actionContext(for: itemID)
+            if Set(context.orderedItemIDs) != state?.selectedIDs {
+                state?.selectItems(ids: Set(context.orderedItemIDs), primaryID: context.primaryID)
+                syncCollectionSelection(Set(context.orderedItemIDs))
+            }
+            guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: context.orderedItemIDs) else { return }
+            let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+            let sourceRect = sourceView.convert(sourceView.bounds, to: collectionView)
+            draggingItem.setDraggingFrame(sourceRect, contents: previewImage)
+            activeDragContext = context
+            let session = collectionView.beginDraggingSession(with: [draggingItem], event: event, source: self)
+            session.animatesToStartingPositionsOnCancelOrFail = false
+            if context.orderedItemIDs.count > 1 {
+                session.draggingFormation = .stack
+            }
+        }
+
+        func draggingSession(
+            _ session: NSDraggingSession,
+            sourceOperationMaskFor context: NSDraggingContext
+        ) -> NSDragOperation {
+            context == .withinApplication ? .move : []
+        }
+
+        func draggingSession(
+            _ session: NSDraggingSession,
+            endedAt screenPoint: NSPoint,
+            operation: NSDragOperation
+        ) {
+            activeDragContext = nil
         }
 
         func clearSelectionFromBlankClick() {
@@ -3560,7 +3653,9 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         state: AppState,
         selectedFolderID: String?,
         selectFolder: @escaping (String) -> Void,
-        selectItem: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void
+        selectItem: @escaping (PromptItem, NSEvent.ModifierFlags) -> Void,
+        actionContext: @escaping (String) -> PromptItemSelectionActionContext,
+        beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void
     ) {
         let height = entry.totalHeight(width: width)
         view.frame.size = CGSize(width: width, height: height)
@@ -3630,7 +3725,9 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                         selectItem(item, [])
                     }
                     state.moveSelectedToTrash()
-                }
+                },
+                actionContext: actionContext,
+                beginDrag: beginDrag
             )
             return
         }
@@ -3659,7 +3756,9 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                 isSelected: state.selectedIDs.contains(item.id),
                 selectAction: { modifiers in
                     selectItem(item, modifiers)
-                }
+                },
+                actionContext: actionContext,
+                beginDrag: beginDrag
             )
             return
         }
@@ -3708,6 +3807,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             hostingView.configureContextMenu(
                 item: entry.promptItem,
                 state: state,
+                actionContext: actionContext,
+                beginDrag: beginDrag,
                 selectAction: entry.promptItem.map { item in
                     { modifiers in selectItem(item, modifiers) }
                 }
@@ -3721,6 +3822,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             hostingView.configureContextMenu(
                 item: entry.promptItem,
                 state: state,
+                actionContext: actionContext,
+                beginDrag: beginDrag,
                 selectAction: entry.promptItem.map { item in
                     { modifiers in selectItem(item, modifiers) }
                 }
@@ -3754,46 +3857,29 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
     }
 }
 
-private final class NativeFallbackCardDraggingSource: NSObject, NSDraggingSource {
-    var onEnded: (() -> Void)?
-
-    func draggingSession(
-        _ session: NSDraggingSession,
-        sourceOperationMaskFor context: NSDraggingContext
-    ) -> NSDragOperation {
-        context == .withinApplication ? .move : []
-    }
-
-    func draggingSession(
-        _ session: NSDraggingSession,
-        endedAt screenPoint: NSPoint,
-        operation: NSDragOperation
-    ) {
-        onEnded?()
-    }
-}
-
 private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     private weak var state: AppState?
     private var item: PromptItem?
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var menuTargets: [NativeMarkdownMenuActionTarget] = []
-    private let draggingSource = NativeFallbackCardDraggingSource()
     private var dragStartLocation: NSPoint?
     private var hasStartedDragging = false
     private var collapseSelectionOnMouseUp = false
+    private var actionContext: ((String) -> PromptItemSelectionActionContext)?
+    private var beginDrag: ((String, NSEvent, NSView, NSImage) -> Void)?
 
     func configureContextMenu(
         item: PromptItem?,
         state: AppState,
+        actionContext: @escaping (String) -> PromptItemSelectionActionContext,
+        beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void,
         selectAction: ((NSEvent.ModifierFlags) -> Void)?
     ) {
         self.item = item
         self.state = state
+        self.actionContext = actionContext
+        self.beginDrag = beginDrag
         self.selectAction = selectAction
-        draggingSource.onEnded = { [weak self] in
-            self?.clearDragState()
-        }
         menuTargets = []
     }
 
@@ -3832,14 +3918,9 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
-        let itemIDs = state?.orderedItemIDsForDrag(startingWith: item.id) ?? [item.id]
-        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
-        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
-        let session = beginDraggingSession(with: [draggingItem], event: event, source: draggingSource)
-        session.animatesToStartingPositionsOnCancelOrFail = false
+        beginDrag?(item.id, event, self, dragPreviewImage())
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -3860,8 +3941,11 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let item, let state else { return nil }
-        if !state.selectedIDs.contains(item.id) {
-            selectAction?(event.modifierFlags)
+        let context = actionContext?(item.id)
+            ?? PromptItemSelectionActionContext(orderedItemIDs: [item.id], primaryID: item.id)
+        let actionItemIDs = context.orderedItemIDs
+        if Set(actionItemIDs) != state.selectedIDs {
+            state.selectItems(ids: Set(actionItemIDs), primaryID: context.primaryID)
         }
 
         let menu = NSMenu()
@@ -3876,7 +3960,7 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
         menu.addItem(.separator())
 
         if !item.isDeleted {
-            addMoveToFolderMenu(item: item, state: state, to: menu)
+            addMoveToFolderMenu(item: item, state: state, itemIDs: actionItemIDs, to: menu)
             if item.isPromptPrimaryAsset {
                 addMenuItem("导出...", symbolName: "square.and.arrow.up", to: menu) {
                     state.modal = .export
@@ -3920,21 +4004,32 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
                 state.beginPermanentDeleteSelectedTrashItems()
             }
         } else {
-            addMenuItem("移到回收站", symbolName: "trash", to: menu) { state.moveSelectedToTrash() }
+            let title = actionItemIDs.count > 1 ? "将 \(actionItemIDs.count) 个项目移到回收站" : "移到回收站"
+            addMenuItem(title, symbolName: "trash", to: menu) { state.moveItemsToTrash(actionItemIDs) }
         }
         return menu
     }
 
-    private func addMoveToFolderMenu(item: PromptItem, state: AppState, to menu: NSMenu) {
-        let rootItem = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
+    private func addMoveToFolderMenu(item: PromptItem, state: AppState, itemIDs: [String], to menu: NSMenu) {
+        let title = itemIDs.count > 1 ? "移动 \(itemIDs.count) 个项目到文件夹" : "移动到文件夹"
+        let rootItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
         let submenu = NSMenu(title: "移动到文件夹")
         for destination in state.folderDestinations() {
-            let menuItem = addMenuItem(destination.name, symbolName: "folder", to: submenu) {
-                state.moveItem(item.id, toFolderID: destination.folderID)
+            let target = NativeMarkdownMenuActionTarget {
+                state.moveItems(itemIDs, toFolderID: destination.folderID)
             }
-            menuItem?.state = item.folderId == destination.folderID ? .on : .off
-            menuItem?.isEnabled = item.folderId != destination.folderID
+            menuTargets.append(target)
+            let menuItem = NSMenuItem(
+                title: destination.name,
+                action: #selector(NativeMarkdownMenuActionTarget.run),
+                keyEquivalent: ""
+            )
+            menuItem.target = target
+            menuItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: destination.name)
+            menuItem.state = state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs) ? .on : .off
+            menuItem.isEnabled = !state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs)
+            submenu.addItem(menuItem)
         }
         rootItem.submenu = submenu
         menu.addItem(rootItem)
@@ -4168,7 +4263,7 @@ private final class NativeImageCardContentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class NativeImageCardView: NSView, NSDraggingSource {
+private final class NativeImageCardView: NSView {
     private enum Metrics {
         static let selectionOutset = AssetCardMetrics.selectionOutset
         static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
@@ -4201,6 +4296,8 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
     private var hasStartedDragging = false
     private var isCardSelected = false
     private var collapseSelectionOnMouseUp = false
+    private var actionContext: ((String) -> PromptItemSelectionActionContext)?
+    private var beginDrag: ((String, NSEvent, NSView, NSImage) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -4222,11 +4319,15 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         item: PromptItem,
         state: AppState,
         isSelected: Bool,
-        selectAction: @escaping (NSEvent.ModifierFlags) -> Void
+        selectAction: @escaping (NSEvent.ModifierFlags) -> Void,
+        actionContext: @escaping (String) -> PromptItemSelectionActionContext,
+        beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void
     ) {
         self.item = item
         self.state = state
         self.selectAction = selectAction
+        self.actionContext = actionContext
+        self.beginDrag = beginDrag
         titleLabel.stringValue = item.title
         editButton.actionHandler = { [weak self] in
             self?.runSelectedAction { state, item in
@@ -4338,14 +4439,9 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
-        let itemIDs = state?.orderedItemIDsForDrag(startingWith: item.id) ?? [item.id]
-        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
-        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
-        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
-        session.animatesToStartingPositionsOnCancelOrFail = false
+        beginDrag?(item.id, event, self, dragPreviewImage())
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -4358,26 +4454,14 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         super.mouseUp(with: event)
     }
 
-    func draggingSession(
-        _ session: NSDraggingSession,
-        sourceOperationMaskFor context: NSDraggingContext
-    ) -> NSDragOperation {
-        context == .withinApplication ? .move : []
-    }
-
-    func draggingSession(
-        _ session: NSDraggingSession,
-        endedAt screenPoint: NSPoint,
-        operation: NSDragOperation
-    ) {
-        dragStartLocation = nil
-        hasStartedDragging = false
-        collapseSelectionOnMouseUp = false
-    }
-
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let state, let item else { return nil }
-        selectAction?(event.modifierFlags)
+        let context = actionContext?(item.id)
+            ?? PromptItemSelectionActionContext(orderedItemIDs: [item.id], primaryID: item.id)
+        let actionItemIDs = context.orderedItemIDs
+        if Set(actionItemIDs) != state.selectedIDs {
+            state.selectItems(ids: Set(actionItemIDs), primaryID: context.primaryID)
+        }
         let menu = NSMenu()
         menuTargets = []
         addMenuItem("预览", symbolName: "eye", to: menu) { state.previewSelected() }
@@ -4385,7 +4469,7 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu) { state.revealSelectedInFinder() }
         menu.addItem(.separator())
         if !item.isDeleted {
-            addMoveToFolderMenu(item: item, state: state, to: menu)
+            addMoveToFolderMenu(item: item, state: state, itemIDs: actionItemIDs, to: menu)
             addMenuItem("导出...", symbolName: "square.and.arrow.up", to: menu) { state.modal = .export }
             menu.addItem(.separator())
         }
@@ -4403,7 +4487,8 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
             menu.addItem(.separator())
             addMenuItem("彻底删除...", symbolName: "trash.slash", to: menu) { state.beginPermanentDeleteSelectedTrashItems() }
         } else {
-            addMenuItem("移到回收站", symbolName: "trash", to: menu) { state.moveSelectedToTrash() }
+            let title = actionItemIDs.count > 1 ? "将 \(actionItemIDs.count) 个项目移到回收站" : "移到回收站"
+            addMenuItem(title, symbolName: "trash", to: menu) { state.moveItemsToTrash(actionItemIDs) }
         }
         return menu
     }
@@ -4495,16 +4580,26 @@ private final class NativeImageCardView: NSView, NSDraggingSource {
         return menuItem
     }
 
-    private func addMoveToFolderMenu(item: PromptItem, state: AppState, to menu: NSMenu) {
-        let rootItem = NSMenuItem(title: "移动到文件夹", action: nil, keyEquivalent: "")
+    private func addMoveToFolderMenu(item: PromptItem, state: AppState, itemIDs: [String], to menu: NSMenu) {
+        let title = itemIDs.count > 1 ? "移动 \(itemIDs.count) 个项目到文件夹" : "移动到文件夹"
+        let rootItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
         let submenu = NSMenu(title: "移动到文件夹")
         for destination in state.folderDestinations() {
-            let menuItem = addMenuItem(destination.name, symbolName: "folder", to: submenu) {
-                state.moveItem(item.id, toFolderID: destination.folderID)
+            let target = NativeMarkdownMenuActionTarget {
+                state.moveItems(itemIDs, toFolderID: destination.folderID)
             }
-            menuItem?.state = item.folderId == destination.folderID ? .on : .off
-            menuItem?.isEnabled = item.folderId != destination.folderID
+            menuTargets.append(target)
+            let menuItem = NSMenuItem(
+                title: destination.name,
+                action: #selector(NativeMarkdownMenuActionTarget.run),
+                keyEquivalent: ""
+            )
+            menuItem.target = target
+            menuItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: destination.name)
+            menuItem.state = state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs) ? .on : .off
+            menuItem.isEnabled = !state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs)
+            submenu.addItem(menuItem)
         }
         rootItem.submenu = submenu
         menu.addItem(rootItem)
@@ -4525,7 +4620,7 @@ private final class NativeMarkdownCardContentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class NativeMarkdownCardView: NSView, NSDraggingSource {
+private final class NativeMarkdownCardView: NSView {
     private enum Metrics {
         static let selectionOutset = AssetCardMetrics.selectionOutset
         static let contentCornerRadius = AssetCardMetrics.cardCornerRadius
@@ -4571,12 +4666,15 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
     private weak var state: AppState?
     private var loadTask: Task<Void, Never>?
     private var representedKey = ""
+    private var representedItemID = ""
     private var representedItemIsDeleted = false
     private var isCardSelected = false
     private var draggedItemID: String?
     private var dragStartLocation: NSPoint?
     private var hasStartedDragging = false
     private var collapseSelectionOnMouseUp = false
+    private var actionContext: ((String) -> PromptItemSelectionActionContext)?
+    private var beginDrag: ((String, NSEvent, NSView, NSImage) -> Void)?
     private var areActionsVisible = false
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
     private var previewAction: (() -> Void)?
@@ -4615,13 +4713,18 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         openAction: @escaping () -> Void,
         revealAction: @escaping () -> Void,
         copyPathAction: @escaping () -> Void,
-        trashAction: @escaping () -> Void
+        trashAction: @escaping () -> Void,
+        actionContext: @escaping (String) -> PromptItemSelectionActionContext,
+        beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void
     ) {
         let snapshot = TextAssetCardSnapshot(item: item)
         self.state = state
         let key = "\(snapshot.assetPath)|\(snapshot.updatedAt.timeIntervalSince1970)"
+        representedItemID = item.id
         representedItemIsDeleted = item.isDeleted
         draggedItemID = item.isDeleted ? nil : item.id
+        self.actionContext = actionContext
+        self.beginDrag = beginDrag
         self.selectAction = selectAction
         self.previewAction = previewAction
         self.editAction = editAction
@@ -4725,14 +4828,9 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         let deltaY = event.locationInWindow.y - dragStartLocation.y
         guard hypot(deltaX, deltaY) >= 6 else { return }
 
-        let itemIDs = state?.orderedItemIDsForDrag(startingWith: draggedItemID) ?? [draggedItemID]
-        guard let pasteboardItem = promptStudioPasteboardItem(itemIDs: itemIDs) else { return }
-        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: dragPreviewImage())
         collapseSelectionOnMouseUp = false
         hasStartedDragging = true
-        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
-        session.animatesToStartingPositionsOnCancelOrFail = false
+        beginDrag?(draggedItemID, event, self, dragPreviewImage())
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -4745,32 +4843,24 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
         super.mouseUp(with: event)
     }
 
-    func draggingSession(
-        _ session: NSDraggingSession,
-        sourceOperationMaskFor context: NSDraggingContext
-    ) -> NSDragOperation {
-        context == .withinApplication ? .move : []
-    }
-
-    func draggingSession(
-        _ session: NSDraggingSession,
-        endedAt screenPoint: NSPoint,
-        operation: NSDragOperation
-    ) {
-        dragStartLocation = nil
-        hasStartedDragging = false
-        collapseSelectionOnMouseUp = false
-    }
-
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let state else { return nil }
-        selectAction?(event.modifierFlags)
+        let context = actionContext?(representedItemID)
+            ?? PromptItemSelectionActionContext(orderedItemIDs: [representedItemID], primaryID: representedItemID)
+        let actionItemIDs = context.orderedItemIDs
+        if Set(actionItemIDs) != state.selectedIDs {
+            state.selectItems(ids: Set(actionItemIDs), primaryID: context.primaryID)
+        }
         let menu = NSMenu()
         menuTargets = []
         addMenuItem("预览", symbolName: "eye", to: menu, action: previewAction)
         addMenuItem("用默认应用打开", symbolName: "arrow.up.right.square", to: menu, action: openAction)
         addMenuItem("在 Finder 中显示", symbolName: "folder", to: menu, action: revealAction)
         menu.addItem(.separator())
+        if let item = state.items.first(where: { $0.id == representedItemID }), !item.isDeleted {
+            addMoveToFolderMenu(item: item, state: state, itemIDs: actionItemIDs, to: menu)
+            menu.addItem(.separator())
+        }
         addMenuItem("编辑 Prompt", symbolName: "pencil", to: menu, action: editAction)
         addMenuItem("复制文档信息", symbolName: "doc.on.doc", to: menu, action: copyAction)
         addMenuItem("复制文件路径", symbolName: "text.badge.checkmark", to: menu, action: copyPathAction)
@@ -4784,9 +4874,37 @@ private final class NativeMarkdownCardView: NSView, NSDraggingSource {
                 state.beginPermanentDeleteSelectedTrashItems()
             }
         } else {
-            addMenuItem("移到回收站", symbolName: "trash", to: menu, action: trashAction)
+            let title = actionItemIDs.count > 1 ? "将 \(actionItemIDs.count) 个项目移到回收站" : "移到回收站"
+            addMenuItem(title, symbolName: "trash", to: menu) {
+                state.moveItemsToTrash(actionItemIDs)
+            }
         }
         return menu
+    }
+
+    private func addMoveToFolderMenu(item: PromptItem, state: AppState, itemIDs: [String], to menu: NSMenu) {
+        let title = itemIDs.count > 1 ? "移动 \(itemIDs.count) 个项目到文件夹" : "移动到文件夹"
+        let rootItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        rootItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "移动到文件夹")
+        let submenu = NSMenu(title: "移动到文件夹")
+        for destination in state.folderDestinations() {
+            let target = NativeMarkdownMenuActionTarget {
+                state.moveItems(itemIDs, toFolderID: destination.folderID)
+            }
+            menuTargets.append(target)
+            let menuItem = NSMenuItem(
+                title: destination.name,
+                action: #selector(NativeMarkdownMenuActionTarget.run),
+                keyEquivalent: ""
+            )
+            menuItem.target = target
+            menuItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: destination.name)
+            menuItem.state = state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs) ? .on : .off
+            menuItem.isEnabled = !state.selectedItemsAreInFolder(destination.folderID, itemIDs: itemIDs)
+            submenu.addItem(menuItem)
+        }
+        rootItem.submenu = submenu
+        menu.addItem(rootItem)
     }
 
     private func setup() {

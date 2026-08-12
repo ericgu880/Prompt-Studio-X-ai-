@@ -307,6 +307,40 @@ func testPromptItemDragPayload() throws {
     )
 }
 
+func testSelectionActionContextPreservesFinderStyleMultiSelection() throws {
+    let visualIDs = ["image", "audio", "markdown", "video"]
+    let selected = Set(["image", "audio", "markdown"])
+
+    let selectedContext = PromptItemSelectionActionContext.resolve(
+        clickedItemID: "audio",
+        selectedItemIDs: selected,
+        primaryID: "markdown",
+        visualItemIDs: visualIDs
+    )
+    try expect(selectedContext.orderedItemIDs == ["image", "audio", "markdown"], "right-clicking a selected card should preserve the complete ordered selection")
+    try expect(selectedContext.primaryID == "markdown", "right-clicking a selected card should preserve the primary item")
+
+    let unselectedContext = PromptItemSelectionActionContext.resolve(
+        clickedItemID: "video",
+        selectedItemIDs: selected,
+        primaryID: "markdown",
+        visualItemIDs: visualIDs
+    )
+    try expect(unselectedContext.orderedItemIDs == ["video"], "right-clicking an unselected card should collapse to that card")
+    try expect(unselectedContext.primaryID == "video", "the newly clicked card should become primary")
+}
+
+func testSelectionActionContextBuildsCompleteDragPayload() throws {
+    let context = PromptItemSelectionActionContext.resolve(
+        clickedItemID: "markdown",
+        selectedItemIDs: Set(["image", "audio", "markdown"]),
+        primaryID: "image",
+        visualItemIDs: ["image", "audio", "markdown"]
+    )
+    let decoded = try PromptItemDragPayload.decode(context.dragPayload().encoded())
+    try expect(decoded.itemIDs == ["image", "audio", "markdown"], "drag payload should retain every selected item in visual order")
+}
+
 func testPromptItemBatchMovePlanner() throws {
     let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
     var first = sampleItem(title: "First", assetKind: .image, prompt: "first")
@@ -388,6 +422,80 @@ func testPromptRepositoryBatchFolderUpdateRollsBack() throws {
     let reloaded = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
     try expect(reloaded["rollback-first"]?.folderId == "source", "batch rollback should restore the first item")
     try expect(reloaded["rollback-second"]?.folderId == "source", "batch rollback should retain the second item")
+}
+
+func testPromptRepositoryBatchDeletedStateRollsBack() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    var first = sampleItem(title: "First", prompt: "first")
+    first.id = "delete-rollback-first"
+    first.versions = []
+    var second = sampleItem(title: "Second", prompt: "second")
+    second.id = "delete-rollback-second"
+    second.versions = []
+    try repository.saveItems([first, second])
+
+    let databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path, mode: .existingReadWrite)
+    try database.execute(
+        """
+        CREATE TRIGGER abort_batch_delete_update
+        BEFORE UPDATE OF deletedAt ON prompt_items
+        WHEN NEW.id = 'delete-rollback-second' AND NEW.deletedAt IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'forced delete rollback');
+        END;
+        """
+    )
+
+    var caughtError: Error?
+    do {
+        try repository.markDeleted(itemIDs: [first.id, second.id], deletedAt: Date())
+    } catch {
+        caughtError = error
+    }
+    try expect(caughtError?.localizedDescription.contains("forced delete rollback") == true, "batch delete should expose the trigger error")
+
+    let reloaded = Dictionary(uniqueKeysWithValues: try repository.loadItems().map { ($0.id, $0) })
+    try expect(reloaded[first.id]?.deletedAt == nil, "batch rollback should restore the first deleted state")
+    try expect(reloaded[second.id]?.deletedAt == nil, "batch rollback should retain the second deleted state")
+}
+
+func testPromptRepositoryBatchPermanentDeleteRollsBack() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    var first = sampleItem(title: "First", prompt: "first")
+    first.id = "permanent-rollback-first"
+    first.versions = []
+    var second = sampleItem(title: "Second", prompt: "second")
+    second.id = "permanent-rollback-second"
+    second.versions = []
+    try repository.saveItems([first, second])
+
+    let databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    let database = try SQLiteDatabase(path: databaseURL.path, mode: .existingReadWrite)
+    try database.execute(
+        """
+        CREATE TRIGGER abort_batch_permanent_delete
+        BEFORE DELETE ON prompt_items
+        WHEN OLD.id = 'permanent-rollback-second'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced permanent delete rollback');
+        END;
+        """
+    )
+
+    var caughtError: Error?
+    do {
+        try repository.permanentlyDelete(itemIDs: [first.id, second.id])
+    } catch {
+        caughtError = error
+    }
+    try expect(caughtError?.localizedDescription.contains("forced permanent delete rollback") == true, "batch permanent delete should expose the trigger error")
+
+    let reloadedIDs = Set(try repository.loadItems().map(\.id))
+    try expect(reloadedIDs.contains(first.id), "batch rollback should restore the first permanently deleted row")
+    try expect(reloadedIDs.contains(second.id), "batch rollback should retain the second permanently deleted row")
 }
 
 func testPromptRepositoryFolderUpdatePreservesVersions() throws {
@@ -1074,7 +1182,11 @@ do {
     try testPromptSelectionResolver()
     try testMarqueeSelectionResolver()
     try testPromptItemDragPayload()
+    try testSelectionActionContextPreservesFinderStyleMultiSelection()
+    try testSelectionActionContextBuildsCompleteDragPayload()
     try testPromptItemBatchMovePlanner()
+    try testPromptRepositoryBatchDeletedStateRollsBack()
+    try testPromptRepositoryBatchPermanentDeleteRollsBack()
     try testFilteringPerformanceWith1000Items()
     try testTextFormatFiltering()
     try testPrimaryPromptAssetsAndAttachments()

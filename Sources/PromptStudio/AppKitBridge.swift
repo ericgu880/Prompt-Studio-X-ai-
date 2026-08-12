@@ -17,12 +17,17 @@ enum AppKitBridge {
     }
 
     static func copyFileToPasteboard(path: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: path) else { return false }
-        let url = URL(fileURLWithPath: path)
+        copyFilesToPasteboard(paths: [path])
+    }
+
+    static func copyFilesToPasteboard(paths: [String]) -> Bool {
+        let validPaths = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !validPaths.isEmpty else { return false }
+        let urls = validPaths.map { URL(fileURLWithPath: $0) }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        let wroteFile = pasteboard.writeObjects([url as NSURL])
-        pasteboard.setPropertyList([path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+        let wroteFile = pasteboard.writeObjects(urls.map { $0 as NSURL })
+        pasteboard.setPropertyList(validPaths, forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
         return wroteFile
     }
 
