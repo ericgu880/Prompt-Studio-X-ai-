@@ -44,7 +44,9 @@ final class PetCoordinator: ObservableObject {
         guard !didStart else { return }
         didStart = true
         _ = statusItemController
-        socketCoordinatorServer.start()
+        if preferences.hostRegistrationEnabled {
+            socketCoordinatorServer.start()
+        }
         preferenceObserver = NotificationCenter.default.addObserver(
             forName: .petPreferencesDidChange,
             object: nil,
@@ -54,7 +56,16 @@ final class PetCoordinator: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, let value else { return }
                 preferences = value
-                if !value.showOnLaunch, !isSessionHidden {
+                if value.hostRegistrationEnabled {
+                    socketCoordinatorServer.start()
+                } else {
+                    socketCoordinatorServer.stop()
+                }
+                if value.showOnLaunch {
+                    if isSessionHidden {
+                        show()
+                    }
+                } else if !isSessionHidden {
                     hideForSession()
                 }
             }
@@ -88,13 +99,26 @@ final class PetCoordinator: ObservableObject {
 
     func hideForSession() {
         isSessionHidden = true
+        if let pendingRequest {
+            NotificationCenter.default.post(
+                name: .petCaptureCancelled,
+                object: PetCaptureOutcome.cancelled(captureID: pendingRequest.id)
+            )
+        }
         pendingRequest = nil
+        panelController.setAsking(false)
         _ = machine.transition(.hide)
         panelController.hide()
     }
 
     func pauseCapture(for seconds: TimeInterval = 3_600) {
         pausedUntil = Date().addingTimeInterval(seconds)
+        if let pendingRequest {
+            NotificationCenter.default.post(
+                name: .petCaptureCancelled,
+                object: PetCaptureOutcome.cancelled(captureID: pendingRequest.id)
+            )
+        }
         pendingRequest = nil
         if machine.state == .asking {
             _ = machine.transition(.cancel)
@@ -116,6 +140,7 @@ final class PetCoordinator: ObservableObject {
     /// Entry point for the native messaging/socket layer. A visible pet asks
     /// first; hidden mode bypasses the confirmation UI and saves immediately.
     func requestCapture(_ request: PetCaptureRequest) {
+        let request = requestWithCurrentPreferences(request)
         let text = request.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             postFailure(for: request, message: PetCaptureError.invalidSelection.localizedDescription)
@@ -142,12 +167,14 @@ final class PetCoordinator: ObservableObject {
 
         pendingRequest = request
         _ = machine.transition(.captureRequested)
+        panelController.setAsking(true)
         NotificationCenter.default.post(name: .petCapturePresented, object: request)
     }
 
     func confirmPendingCapture() {
         guard let request = pendingRequest else { return }
         pendingRequest = nil
+        panelController.setAsking(false)
         _ = machine.transition(.confirm)
         Task { @MainActor [weak self] in
             _ = await self?.performCapture(request, silently: false)
@@ -157,6 +184,7 @@ final class PetCoordinator: ObservableObject {
     func cancelPendingCapture() {
         guard let request = pendingRequest else { return }
         pendingRequest = nil
+        panelController.setAsking(false)
         _ = machine.transition(.cancel)
         NotificationCenter.default.post(name: .petCaptureCancelled, object: PetCaptureOutcome.cancelled(captureID: request.id))
         scheduleReset()
@@ -166,17 +194,19 @@ final class PetCoordinator: ObservableObject {
     /// Visible requests still require explicit confirmation through
     /// `confirmPendingCapture()` and therefore return a `presented` outcome.
     func capture(_ request: PetCaptureRequest) async -> PetCaptureOutcome {
+        let request = requestWithCurrentPreferences(request)
+        let isHidden = isSessionHidden || machine.state == .hidden
         let text = request.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            return .failed(captureID: request.id, message: PetCaptureError.invalidSelection.localizedDescription)
+            return rejectedCapture(request, message: PetCaptureError.invalidSelection.localizedDescription, silently: isHidden)
         }
         guard preferences.captureEnabled else {
-            return .failed(captureID: request.id, message: PetCaptureError.disabled.localizedDescription)
+            return rejectedCapture(request, message: PetCaptureError.disabled.localizedDescription, silently: isHidden)
         }
         if let pausedUntil, pausedUntil > Date() {
-            return .failed(captureID: request.id, message: PetCaptureError.paused(until: pausedUntil).localizedDescription)
+            return rejectedCapture(request, message: PetCaptureError.paused(until: pausedUntil).localizedDescription, silently: isHidden)
         }
-        guard isSessionHidden || machine.state == .hidden else {
+        guard isHidden else {
             requestCapture(request)
             return .presented(captureID: request.id)
         }
@@ -204,16 +234,16 @@ final class PetCoordinator: ObservableObject {
         do {
             let outcome = try await captureHandler(request)
             if silently {
+                sendHiddenNotification(outcome: outcome)
                 if outcome.isSuccess {
-                    sendHiddenNotification(outcome: outcome)
-                } else {
-                    sendHiddenNotification(outcome: outcome)
+                    postSourceClearIfNeeded(request: request, outcome: outcome)
                 }
                 return outcome
             }
             if outcome.isSuccess {
                 _ = machine.transition(.saved)
                 NotificationCenter.default.post(name: .petCaptureSaved, object: outcome)
+                postSourceClearIfNeeded(request: request, outcome: outcome)
             } else {
                 _ = machine.transition(.failed)
                 NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
@@ -236,14 +266,55 @@ final class PetCoordinator: ObservableObject {
     private func sendHiddenNotification(outcome: PetCaptureOutcome) {
         NotificationCenter.default.post(name: .petHiddenCaptureSaved, object: outcome)
         let notification = NSUserNotification()
-        notification.title = outcome.isSuccess ? "PromptStudio" : "网页采集失败"
-        notification.informativeText = outcome.isSuccess ? "网页文字已保存到采集收件箱" : (outcome.failureMessage ?? "无法保存网页文字")
+        let didSave: Bool
+        switch outcome {
+        case .saved, .alreadySaved:
+            didSave = true
+        case .presented, .animate, .cancelled, .failed:
+            didSave = false
+        }
+        notification.title = didSave ? "PromptStudio" : "网页采集失败"
+        notification.informativeText = didSave ? "网页文字已保存到采集收件箱" : (outcome.failureMessage ?? "无法保存网页文字")
+        notification.soundName = preferences.soundEnabled ? NSUserNotificationDefaultSoundName : nil
         NSUserNotificationCenter.default.deliver(notification)
+    }
+
+    private func postSourceClearIfNeeded(request: PetCaptureRequest, outcome: PetCaptureOutcome) {
+        guard request.clearSourceAfterCapture else { return }
+        switch outcome {
+        case .saved, .alreadySaved:
+            NotificationCenter.default.post(name: .petCaptureSourceShouldClear, object: outcome)
+        case .presented, .animate, .cancelled, .failed:
+            break
+        }
+    }
+
+    private func requestWithCurrentPreferences(_ request: PetCaptureRequest) -> PetCaptureRequest {
+        PetCaptureRequest(
+            id: request.id,
+            selectedText: request.selectedText,
+            pageTitle: request.pageTitle,
+            pageURL: request.pageURL,
+            siteName: request.siteName,
+            clickPoint: request.clickPoint,
+            capturedAt: request.capturedAt,
+            defaultFolderID: preferences.defaultFolderID,
+            clearSourceAfterCapture: preferences.clearSourceAfterCapture,
+            soundEnabled: preferences.soundEnabled
+        )
     }
 
     private func postFailure(for request: PetCaptureRequest, message: String) {
         let outcome = PetCaptureOutcome.failed(captureID: request.id, message: message)
         NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
+    }
+
+    private func rejectedCapture(_ request: PetCaptureRequest, message: String, silently: Bool) -> PetCaptureOutcome {
+        let outcome = PetCaptureOutcome.failed(captureID: request.id, message: message)
+        if silently {
+            sendHiddenNotification(outcome: outcome)
+        }
+        return outcome
     }
 
     private func scheduleReset() {
