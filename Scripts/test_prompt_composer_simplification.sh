@@ -58,6 +58,9 @@ require_pattern "$OVERLAY_FILE" \
     'private var automaticInferenceTaskID' \
     "Smart-paste inference must not be overwritten by the manual typing debounce."
 require_pattern "$OVERLAY_FILE" \
+    'guard smartPasteInterpretation == nil || prompt != smartPasteAppliedPrompt else { return }' \
+    "The debounce callback must explicitly preserve an unedited smart-paste interpretation."
+require_pattern "$OVERLAY_FILE" \
     'private func moveUnsavedPreviewImageToReferencesIfNeeded()' \
     "Text type selection must not retain an incompatible unsaved preview image."
 require_pattern "$OVERLAY_FILE" \

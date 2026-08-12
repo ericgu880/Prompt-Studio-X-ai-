@@ -2189,6 +2189,7 @@ struct PromptComposerOverlay: View {
 
     private func updateAutomaticTypeDecision() {
         guard case .automatic = typeMode else { return }
+        guard smartPasteInterpretation == nil || prompt != smartPasteAppliedPrompt else { return }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else {
             typeDecision = .unresolved(reason: "请输入 Prompt 后自动识别")
