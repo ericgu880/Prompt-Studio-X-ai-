@@ -379,6 +379,7 @@ public final class PromptStudioCaptureHost {
         let point: CaptureScreenPoint?
         let insidePet: Bool?
         let drop: Bool?
+        let sequence: Int?
     }
 
     private struct SocketImageCaptureEnvelope: Encodable {
@@ -393,6 +394,7 @@ public final class PromptStudioCaptureHost {
         let screenPoint: CaptureScreenPoint?
         let insidePet: Bool?
         let drop: Bool?
+        let sequence: Int?
     }
 
     public init(
@@ -454,7 +456,9 @@ public final class PromptStudioCaptureHost {
                             selectedText: appResponse.selectedText ?? request.candidate.selectedText,
                             message: appResponse.message,
                             mouthScreenPoint: appResponse.mouthScreenPoint,
-                            clearSource: appResponse.clearSource
+                            clearSource: appResponse.clearSource,
+                            sequence: appResponse.sequence,
+                            insidePet: appResponse.insidePet
                         )
                         terminalSent = Self.isTerminal(response.type)
                         try NativeMessagingFramer.writeFrame(self.encoder.encode(response), to: self.output)
@@ -610,7 +614,8 @@ public final class PromptStudioCaptureHost {
             captureID: request.captureID,
             screenPoint: request.screenPoint ?? request.point,
             insidePet: request.insidePet,
-            drop: request.drop
+            drop: request.drop,
+            sequence: request.sequence
         ))
         try forwardControl(payload, captureID: request.captureID, terminalTypes: ["ack", "imageDragPreviewAck", "failed"])
     }
@@ -633,7 +638,7 @@ public final class PromptStudioCaptureHost {
         catch { throw CaptureHostRuntimeError.imageInvalid }
         guard request.type == type else { throw CaptureHostRuntimeError.imageInvalid }
         beforeForward(request)
-        let payload = try encoder.encode(SocketImageControlEnvelope(type: type, captureID: request.captureID, screenPoint: nil, insidePet: nil, drop: nil))
+        let payload = try encoder.encode(SocketImageControlEnvelope(type: type, captureID: request.captureID, screenPoint: nil, insidePet: nil, drop: nil, sequence: nil))
         try forwardControl(payload, captureID: request.captureID, terminalTypes: terminalTypes)
     }
 
@@ -663,7 +668,9 @@ public final class PromptStudioCaptureHost {
             selectedText: appResponse.selectedText ?? selectedText,
             message: appResponse.message,
             mouthScreenPoint: appResponse.mouthScreenPoint,
-            clearSource: appResponse.clearSource
+            clearSource: appResponse.clearSource,
+            sequence: appResponse.sequence,
+            insidePet: appResponse.insidePet
         )
     }
 

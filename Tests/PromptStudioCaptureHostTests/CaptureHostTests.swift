@@ -367,7 +367,8 @@ func hostForwardsDragPreviewAcknowledgement() throws {
         "captureID": "drag-1",
         "screenPoint": ["x": 12, "y": 24],
         "insidePet": true,
-        "drop": false
+        "drop": false,
+        "sequence": 7
     ])
     let inputURL = try temporaryFile(preview)
     let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-preview-output-\(UUID().uuidString)")
@@ -377,7 +378,13 @@ func hostForwardsDragPreviewAcknowledgement() throws {
         try? FileManager.default.removeItem(at: outputURL)
     }
     var forwarded: Data?
-    let appAck = try JSONEncoder().encode(CaptureHostResponse(type: "ack", captureID: "drag-1", code: "preview-accepted"))
+    let appAck = try JSONEncoder().encode(CaptureHostResponse(
+        type: "imageDragPreviewAck",
+        captureID: "drag-1",
+        mouthScreenPoint: CaptureScreenPoint(x: 18, y: 28),
+        sequence: 7,
+        insidePet: true
+    ))
     let host = PromptStudioCaptureHost(
         trustedOrigin: origin,
         input: try FileHandle(forReadingFrom: inputURL),
@@ -395,8 +402,10 @@ func hostForwardsDragPreviewAcknowledgement() throws {
     let outputHandle = try FileHandle(forReadingFrom: outputURL)
     let responseFrame = try #require(try NativeMessagingFramer.readFrame(from: outputHandle))
     let response = try #require(try? JSONDecoder().decode(CaptureHostResponse.self, from: responseFrame))
-    #expect(response.type == "ack")
-    #expect(response.code == "preview-accepted")
+    #expect(response.type == "imageDragPreviewAck")
+    #expect(response.sequence == 7)
+    #expect(response.insidePet == true)
+    #expect(response.mouthScreenPoint == CaptureScreenPoint(x: 18, y: 28))
 }
 
 private func imageRequestJSON(_ object: [String: Any]) throws -> Data {

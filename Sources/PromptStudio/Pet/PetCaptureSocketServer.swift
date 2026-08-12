@@ -27,10 +27,15 @@ final class PetCaptureSocketServer {
     private(set) var isRunning = false
     private(set) var lastStartError: String?
     private let handler: PetCaptureHandler
+    private let imageHandler: PetImageCaptureHandler?
+    private let imageDragHandler: PetImageDragHandler?
+    private let imageDragCancelHandler: PetImageDragCancelHandler?
+    private let stagingRootURL: URL
     private var listenerDescriptor: Int32 = -1
     private var acceptTask: Task<Void, Never>?
     private var createdSocketIdentity: SocketIdentity?
     private var pendingIDs = Set<String>()
+    private var activeImageCaptureID: String?
     private var terminalOutcomes: [String: PetCaptureOutcome] = [:]
     private var sourceClearCaptureIDs = Set<String>()
     private var pendingWaiters: [String: [UUID: CheckedContinuation<PetCaptureOutcome?, Never>]] = [:]
@@ -86,6 +91,21 @@ final class PetCaptureSocketServer {
         }
     }
 
+    private struct ImageCaptureEnvelope: Decodable {
+        let type: String
+        let stagingToken: String
+        let candidate: PetImageCaptureCandidate
+    }
+
+    private struct ImageDragEnvelope: Decodable {
+        let type: String
+        let captureID: String
+        let sequence: Int?
+        let screenPoint: PetCaptureRequest.ScreenPoint?
+        let insidePet: Bool?
+        let drop: Bool?
+    }
+
     private struct WireResponse: Codable {
         let type: String
         let captureID: String
@@ -94,6 +114,8 @@ final class PetCaptureSocketServer {
         let code: String?
         let retryable: Bool?
         let clearSource: Bool?
+        let sequence: Int?
+        let insidePet: Bool?
 
         init(
             type: String,
@@ -102,7 +124,9 @@ final class PetCaptureSocketServer {
             message: String? = nil,
             code: String? = nil,
             retryable: Bool? = nil,
-            clearSource: Bool? = nil
+            clearSource: Bool? = nil,
+            sequence: Int? = nil,
+            insidePet: Bool? = nil
         ) {
             self.type = type
             self.captureID = captureID
@@ -111,17 +135,27 @@ final class PetCaptureSocketServer {
             self.code = code
             self.retryable = retryable
             self.clearSource = clearSource
+            self.sequence = sequence
+            self.insidePet = insidePet
         }
     }
 
     init(
         socketURL: URL? = nil,
         pendingTimeout: TimeInterval = 300,
-        handler: @escaping PetCaptureHandler
+        stagingRootURL: URL? = nil,
+        handler: @escaping PetCaptureHandler,
+        imageHandler: PetImageCaptureHandler? = nil,
+        imageDragHandler: PetImageDragHandler? = nil,
+        imageDragCancelHandler: PetImageDragCancelHandler? = nil
     ) {
         self.socketURL = socketURL ?? defaultPetCaptureSocketURL()
         self.pendingTimeout = pendingTimeout
         self.handler = handler
+        self.imageHandler = imageHandler
+        self.imageDragHandler = imageDragHandler
+        self.imageDragCancelHandler = imageDragCancelHandler
+        self.stagingRootURL = (stagingRootURL ?? Self.defaultStagingRootURL()).standardizedFileURL
         outcomeObservers = [
             NotificationCenter.default.addObserver(forName: .petCaptureSaved, object: nil, queue: .main) { [weak self] notification in
                 Task { @MainActor [weak self] in self?.receiveOutcome(notification.object) }
@@ -138,6 +172,14 @@ final class PetCaptureSocketServer {
                 }
             }
         ]
+    }
+
+    private static func defaultStagingRootURL() -> URL {
+        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return applicationSupport
+            .appendingPathComponent("PromptStudio", isDirectory: true)
+            .appendingPathComponent("CaptureStaging", isDirectory: true)
     }
 
     var pendingCaptureIDs: Set<String> { pendingIDs }
@@ -189,6 +231,7 @@ final class PetCaptureSocketServer {
         let continuations = pendingWaiters.values.flatMap(\.values)
         pendingWaiters.removeAll()
         pendingIDs.removeAll()
+        activeImageCaptureID = nil
         terminalOutcomes.removeAll()
         sourceClearCaptureIDs.removeAll()
         continuations.forEach { $0.resume(returning: nil) }
@@ -204,6 +247,132 @@ final class PetCaptureSocketServer {
         let encoder = JSONEncoder()
         decoder.dateDecodingStrategy = .iso8601
         encoder.dateEncodingStrategy = .iso8601
+        if let imageEnvelope = try? decoder.decode(ImageCaptureEnvelope.self, from: data),
+           imageEnvelope.type == "imageCapture" {
+            guard let stagedURL = Self.resolveStagedFile(
+                token: imageEnvelope.stagingToken,
+                rootURL: stagingRootURL
+            ) else {
+                return encoded(
+                    WireResponse(
+                        type: "failed",
+                        captureID: imageEnvelope.candidate.captureID,
+                        message: "暂存图片令牌无效",
+                        code: "staging-token-rejected"
+                    ),
+                    encoder: encoder
+                )
+            }
+            guard let imageHandler else {
+                return encoded(
+                    WireResponse(
+                        type: "failed",
+                        captureID: imageEnvelope.candidate.captureID,
+                        message: "网页图片采集服务暂不可用",
+                        code: "image-unavailable"
+                    ),
+                    encoder: encoder
+                )
+            }
+            if let activeImageCaptureID, activeImageCaptureID != imageEnvelope.candidate.captureID {
+                return encoded(
+                    WireResponse(
+                        type: "failed",
+                        captureID: imageEnvelope.candidate.captureID,
+                        message: "桌宠正在处理上一张图片",
+                        code: "image-busy",
+                        retryable: true
+                    ),
+                    encoder: encoder
+                )
+            }
+            let request = PetImageCaptureRequest(
+                stagingToken: imageEnvelope.stagingToken,
+                candidate: imageEnvelope.candidate
+            )
+            activeImageCaptureID = request.captureID
+            pendingIDs.insert(request.captureID)
+            do {
+                let outcome = try await imageHandler(request, stagedURL)
+                switch outcome {
+                case .presented:
+                    if terminalOutcomes[request.captureID] == nil {
+                        pendingIDs.insert(request.captureID)
+                    } else {
+                        pendingIDs.remove(request.captureID)
+                    }
+                default:
+                    pendingIDs.remove(request.captureID)
+                    activeImageCaptureID = nil
+                }
+                return encoded(response(for: outcome), encoder: encoder)
+            } catch {
+                pendingIDs.remove(request.captureID)
+                activeImageCaptureID = nil
+                return encoded(
+                    WireResponse(
+                        type: "failed",
+                        captureID: request.captureID,
+                        message: error.localizedDescription,
+                        code: "capture-save-failed",
+                        retryable: true
+                    ),
+                    encoder: encoder
+                )
+            }
+        }
+        if let dragEnvelope = try? decoder.decode(ImageDragEnvelope.self, from: data),
+           dragEnvelope.type == "imageDragPreview" {
+            guard let imageDragHandler else {
+                return encoded(
+                    WireResponse(type: "failed", captureID: dragEnvelope.captureID, code: "image-unavailable"),
+                    encoder: encoder
+                )
+            }
+            let feedback = imageDragHandler(
+                PetImageDragPreview(
+                    captureID: dragEnvelope.captureID,
+                    sequence: dragEnvelope.sequence ?? 0,
+                    screenPoint: dragEnvelope.screenPoint,
+                    drop: dragEnvelope.drop ?? false
+                )
+            )
+            if feedback.sequence == 0 {
+                return encoded(
+                    WireResponse(
+                        type: "failed",
+                        captureID: dragEnvelope.captureID,
+                        message: "桌宠正在处理上一张图片",
+                        code: "image-busy",
+                        retryable: true
+                    ),
+                    encoder: encoder
+                )
+            }
+            return encoded(
+                WireResponse(
+                    type: "imageDragPreviewAck",
+                    captureID: feedback.captureID,
+                    mouthScreenPoint: feedback.mouthScreenPoint,
+                    sequence: feedback.sequence,
+                    insidePet: feedback.insidePet
+                ),
+                encoder: encoder
+            )
+        }
+        if let dragEnvelope = try? decoder.decode(ImageDragEnvelope.self, from: data),
+           dragEnvelope.type == "imageDragCancel" {
+            imageDragCancelHandler?(dragEnvelope.captureID)
+            return encoded(
+                WireResponse(
+                    type: "imageDragCancelAck",
+                    captureID: dragEnvelope.captureID,
+                    sequence: dragEnvelope.sequence ?? 0,
+                    insidePet: false
+                ),
+                encoder: encoder
+            )
+        }
         guard let envelope = try? decoder.decode(CaptureEnvelope.self, from: data),
               envelope.type == "capture" else {
             return encoded(WireResponse(type: "failed", captureID: "", message: "无效的采集请求"), encoder: encoder)
@@ -252,6 +421,7 @@ final class PetCaptureSocketServer {
     private func receiveOutcome(_ object: Any?) {
         guard let outcome = object as? PetCaptureOutcome,
               pendingIDs.contains(outcome.captureID) else { return }
+        activeImageCaptureID = nil
         terminalOutcomes[outcome.captureID] = outcome
         pendingIDs.remove(outcome.captureID)
         let waiterDictionary = pendingWaiters.removeValue(forKey: outcome.captureID)
@@ -369,6 +539,39 @@ final class PetCaptureSocketServer {
                 retryable: retryable ? true : nil
             )
         }
+    }
+
+    /// Resolves only the host-generated UUID basename.  Browser-provided paths,
+    /// symlinks and files owned by another user never cross into Core.
+    private static func resolveStagedFile(token: String, rootURL: URL) -> URL? {
+        guard token.count == 36,
+              UUID(uuidString: token) != nil,
+              !token.contains("/"),
+              !token.contains("\\"),
+              !token.contains("{"),
+              !token.contains("}"),
+              token == URL(fileURLWithPath: token).lastPathComponent else { return nil }
+        let root = rootURL.standardizedFileURL
+        let file = root.appendingPathComponent(token, isDirectory: false).standardizedFileURL
+        guard file.deletingLastPathComponent() == root else { return nil }
+        #if canImport(Darwin)
+        var rootInfo = stat()
+        guard lstat(root.path, &rootInfo) == 0,
+              (rootInfo.st_mode & S_IFMT) == S_IFDIR,
+              rootInfo.st_uid == getuid(),
+              (rootInfo.st_mode & 0o077) == 0 else { return nil }
+        var info = stat()
+        guard lstat(file.path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(),
+              (info.st_mode & 0o077) == 0 else { return nil }
+        #else
+        guard let rootValues = try? FileManager.default.attributesOfItem(atPath: root.path),
+              (rootValues[.type] as? FileAttributeType) == .typeDirectory,
+              let values = try? FileManager.default.attributesOfItem(atPath: file.path),
+              (values[.type] as? FileAttributeType) == .typeRegular else { return nil }
+        #endif
+        return file
     }
 
     private func encoded(_ response: WireResponse, encoder: JSONEncoder) -> Data {
@@ -513,6 +716,7 @@ final class PetCaptureSocketServer {
 
     private func disconnect(captureID: String) {
         pendingIDs.remove(captureID)
+        if activeImageCaptureID == captureID { activeImageCaptureID = nil }
         terminalOutcomes.removeValue(forKey: captureID)
         sourceClearCaptureIDs.remove(captureID)
         if let waiterDictionary = pendingWaiters.removeValue(forKey: captureID) {

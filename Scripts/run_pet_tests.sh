@@ -18,6 +18,10 @@ env PATH="$TOOLCHAIN_ROOT/usr/bin:$PATH" SDKROOT="$SDK_PATH" swiftc \
     "$ROOT_DIR/Sources/PromptStudio/Pet/PetGeometry.swift" \
     "$ROOT_DIR/Sources/PromptStudio/Pet/PetHostRegistration.swift" \
     "$ROOT_DIR/Sources/PromptStudio/Pet/PetCaptureSocketServer.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/Pet/PetPanelController.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/Pet/PetView.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/Pet/PetStatusItemController.swift" \
+    "$ROOT_DIR/Sources/PromptStudio/Pet/PetCoordinator.swift" \
     "$ROOT_DIR/Tests/PromptStudioPetTests/main.swift" \
     -o "$TEST_BINARY"
 
