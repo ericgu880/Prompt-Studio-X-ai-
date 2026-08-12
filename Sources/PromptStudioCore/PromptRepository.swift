@@ -18,20 +18,44 @@ public enum PromptRepositoryValidationError: Error, LocalizedError {
     }
 }
 
+/// A single candidate that could not be migrated. The migration continues
+/// with later candidates after isolating this item's file/database changes.
+public struct PromptPlaceholderMigrationFailure: Equatable, Sendable {
+    public let itemID: String
+    public let reason: String
+
+    public init(itemID: String, reason: String) {
+        self.itemID = itemID
+        self.reason = reason
+    }
+}
+
 /// Result returned by the explicit, opt-in placeholder migration.
 public struct PromptPlaceholderMigrationResult: Equatable, Sendable {
     public let candidateCount: Int
     public let migratedCount: Int
     public let migratedItemIDs: [String]
+    public let failedCount: Int
+    public let failures: [PromptPlaceholderMigrationFailure]
 
-    public init(candidateCount: Int, migratedCount: Int, migratedItemIDs: [String]) {
+    public init(
+        candidateCount: Int,
+        migratedCount: Int,
+        migratedItemIDs: [String],
+        failedCount: Int = 0,
+        failures: [PromptPlaceholderMigrationFailure] = []
+    ) {
         self.candidateCount = candidateCount
         self.migratedCount = migratedCount
         self.migratedItemIDs = migratedItemIDs
+        self.failedCount = failedCount
+        self.failures = failures
     }
 
     public var count: Int { migratedCount }
     public var updatedCount: Int { migratedCount }
+    public var failureCount: Int { failedCount }
+    public var failureReasons: [String] { failures.map(\.reason) }
 }
 
 public final class PromptRepository: @unchecked Sendable {
@@ -300,65 +324,99 @@ public final class PromptRepository: @unchecked Sendable {
     public func migratePromptPlaceholders() throws -> PromptPlaceholderMigrationResult {
         let candidates = try loadItems().filter { item in
             item.assetPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && item.thumbnailPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && ["PROMPT", "TEXT"].contains(item.format.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
         }
         guard !candidates.isEmpty else {
             return PromptPlaceholderMigrationResult(candidateCount: 0, migratedCount: 0, migratedItemIDs: [])
         }
 
-        let migratedIDs = try database.transaction {
-            var ids: [String] = []
-            for item in candidates {
-                let text = [item.currentVersion?.prompt, item.currentVersion?.negativePrompt]
-                    .compactMap { $0 }
-                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    .joined(separator: "\n")
-                let type = PromptTypeClassifier.classify(text: text)
-                let assetKind: AssetKind
-                let format: String
-                let category: String
-                switch type {
-                case .image:
-                    assetKind = .image
-                    format = ""
-                    category = AssetKind.image.displayName
-                case .video:
-                    assetKind = .video
-                    format = ""
-                    category = AssetKind.video.displayName
-                case .audio:
-                    assetKind = .audio
-                    format = ""
-                    category = AssetKind.audio.displayName
-                case .text:
-                    assetKind = .markdown
-                    format = "MD"
-                    category = AssetKind.markdown.displayName
+        var migratedIDs: [String] = []
+        var failures: [PromptPlaceholderMigrationFailure] = []
+        for item in candidates {
+            var createdAsset: URL?
+            do {
+                try database.transaction {
+                    let text = item.currentVersion?.prompt ?? ""
+                    let type = PromptTypeClassifier.classify(text: text)
+                    let assetKind: AssetKind
+                    let format: String
+                    let category: String
+                    let assetPath: String
+                    let thumbnailPath: String
+                    let fileSize: Int64
+                    switch type {
+                    case .image:
+                        assetKind = .image
+                        format = ""
+                        category = AssetKind.image.displayName
+                        assetPath = ""
+                        thumbnailPath = ""
+                        fileSize = 0
+                    case .video:
+                        assetKind = .video
+                        format = ""
+                        category = AssetKind.video.displayName
+                        assetPath = ""
+                        thumbnailPath = ""
+                        fileSize = 0
+                    case .audio:
+                        assetKind = .audio
+                        format = ""
+                        category = AssetKind.audio.displayName
+                        assetPath = ""
+                        thumbnailPath = ""
+                        fileSize = 0
+                    case .text:
+                        assetKind = .markdown
+                        format = "MD"
+                        category = AssetKind.markdown.displayName
+                        let markdownURL = try writeMarkdownPromptAsset(
+                            promptID: item.id,
+                            title: item.title,
+                            prompt: text,
+                            negativePrompt: item.currentVersion?.negativePrompt ?? ""
+                        )
+                        createdAsset = markdownURL
+                        assetPath = markdownURL.path
+                        thumbnailPath = markdownURL.path
+                        let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
+                        fileSize = Int64(values.fileSize ?? 0)
+                    }
+                    try database.run(
+                        """
+                        UPDATE prompt_items
+                        SET type = ?, assetKind = ?, category = ?, assetPath = ?, thumbnailPath = ?, format = ?, fileSize = ?, updatedAt = ?
+                        WHERE id = ?;
+                        """,
+                        values: [
+                            .text(type.rawValue),
+                            .text(assetKind.rawValue),
+                            .text(category),
+                            .text(assetPath),
+                            .text(thumbnailPath),
+                            .text(format),
+                            .int(fileSize),
+                            .text(Self.string(from: Date())),
+                            .text(item.id)
+                        ]
+                    )
                 }
-                try database.run(
-                    """
-                    UPDATE prompt_items
-                    SET type = ?, assetKind = ?, category = ?, format = ?, updatedAt = ?
-                    WHERE id = ?;
-                    """,
-                    values: [
-                        .text(type.rawValue),
-                        .text(assetKind.rawValue),
-                        .text(category),
-                        .text(format),
-                        .text(Self.string(from: Date())),
-                        .text(item.id)
-                    ]
+                migratedIDs.append(item.id)
+            } catch {
+                if let createdAsset {
+                    try? FileManager.default.removeItem(at: createdAsset)
+                }
+                failures.append(
+                    PromptPlaceholderMigrationFailure(itemID: item.id, reason: error.localizedDescription)
                 )
-                ids.append(item.id)
             }
-            return ids
         }
         return PromptPlaceholderMigrationResult(
             candidateCount: candidates.count,
             migratedCount: migratedIDs.count,
-            migratedItemIDs: migratedIDs
+            migratedItemIDs: migratedIDs,
+            failedCount: failures.count,
+            failures: failures
         )
     }
 
@@ -557,6 +615,45 @@ public final class PromptRepository: @unchecked Sendable {
         }
         try FileManager.default.copyItem(at: sourceURL, to: destination)
         return destination
+    }
+
+    /// Writes a captured or migrated text prompt as a real Markdown primary
+    /// asset. The temporary file is kept inside the library and moved into its
+    /// final location only after the complete bytes are present.
+    public func writeMarkdownPromptAsset(
+        promptID: String,
+        title: String,
+        prompt: String,
+        negativePrompt: String = ""
+    ) throws -> URL {
+        let directory = libraryURL.appendingPathComponent("assets/documents")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let normalizedTitle = title
+            .split(whereSeparator: { $0.isNewline || $0.isWhitespace })
+            .joined(separator: " ")
+        var content = "# \(normalizedTitle.isEmpty ? "Prompt" : normalizedTitle)\n\n## Prompt\n\(prompt)\n"
+        let negative = negativePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !negative.isEmpty {
+            content += "\n## Negative Prompt\n\(negative)\n"
+        }
+
+        let fileManager = FileManager.default
+        let safePromptID = promptID.unicodeScalars.map { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_" ? String(scalar) : "_"
+        }.joined()
+        let fileName = "\(safePromptID.isEmpty ? UUID().uuidString : safePromptID)-\(UUID().uuidString).md"
+        let destination = directory.appendingPathComponent(fileName)
+        let temporary = directory.appendingPathComponent(".\(fileName).tmp")
+        do {
+            try Data(content.utf8).write(to: temporary, options: [.atomic])
+            try fileManager.moveItem(at: temporary, to: destination)
+            return destination
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
     }
 
     public func saveTag(_ tag: Tag) throws {

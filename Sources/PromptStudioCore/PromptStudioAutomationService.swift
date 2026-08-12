@@ -217,41 +217,67 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         case .text:
             assetKind = .markdown
         }
-        let model = try ensureCaptureModel(for: type)
-        let folder = try ensureCaptureFolder()
-        let id = UUID().uuidString
-        let item = PromptItem(
-            id: id,
-            title: captureTitle(from: selectedText),
-            type: type,
-            assetKind: assetKind,
-            modelId: model.id,
-            modelName: model.name,
-            folderId: folder.id,
-            folderName: folder.name,
-            category: type == .text ? "Markdown" : assetKind.displayName,
-            assetPath: "",
-            thumbnailPath: "",
-            aspectRatio: "",
-            width: 0,
-            height: 0,
-            format: type == .text ? "MD" : "",
-            fileSize: 0,
-            sortOrder: try nextTopSortOrder(),
-            tags: ["网页采集", "待整理"],
-            versions: [
-                PromptVersion(
-                    promptItemId: id,
-                    version: "V1.0",
-                    prompt: selectedText,
-                    note: "Captured from web"
+        var createdMarkdownURL: URL?
+        do {
+            let model = try ensureCaptureModel(for: type)
+            let folder = try ensureCaptureFolder()
+            let id = UUID().uuidString
+            var assetPath = ""
+            var thumbnailPath = ""
+            var fileSize: Int64 = 0
+            if type == .text {
+                let markdownURL = try repository.writeMarkdownPromptAsset(
+                    promptID: id,
+                    title: captureTitle(from: selectedText),
+                    prompt: selectedText
                 )
-            ],
-            description: "网页采集",
-            captureID: captureID,
-            capturedSource: candidate.capturedSource
-        )
-        return try repository.saveCapturedItem(item)
+                createdMarkdownURL = markdownURL
+                assetPath = markdownURL.path
+                thumbnailPath = markdownURL.path
+                let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
+                fileSize = Int64(values.fileSize ?? 0)
+            }
+            let item = PromptItem(
+                id: id,
+                title: captureTitle(from: selectedText),
+                type: type,
+                assetKind: assetKind,
+                modelId: model.id,
+                modelName: model.name,
+                folderId: folder.id,
+                folderName: folder.name,
+                category: type == .text ? "Markdown" : assetKind.displayName,
+                assetPath: assetPath,
+                thumbnailPath: thumbnailPath,
+                aspectRatio: "",
+                width: 0,
+                height: 0,
+                format: type == .text ? "MD" : "",
+                fileSize: fileSize,
+                sortOrder: try nextTopSortOrder(),
+                tags: ["网页采集", "待整理"],
+                versions: [
+                    PromptVersion(
+                        promptItemId: id,
+                        version: "V1.0",
+                        prompt: selectedText,
+                        note: "Captured from web"
+                    )
+                ],
+                description: "网页采集",
+                captureID: captureID,
+                capturedSource: candidate.capturedSource
+            )
+            let saved = try repository.saveCapturedItem(item)
+            if saved.id != id {
+                removeGeneratedAsset(at: createdMarkdownURL)
+                createdMarkdownURL = nil
+            }
+            return saved
+        } catch {
+            removeGeneratedAsset(at: createdMarkdownURL)
+            throw error
+        }
     }
 
     @discardableResult
@@ -445,6 +471,11 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             }
         }
         return "网页采集"
+    }
+
+    private func removeGeneratedAsset(at url: URL?) {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func defaultModel(for assetKind: AssetKind) throws -> ModelProfile {

@@ -1859,13 +1859,23 @@ func testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes() throws {
 }
 
 func testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments() throws {
+    let assetFixtureRoot = try temporaryLibraryURL()
+    let realMarkdownPath = assetFixtureRoot.appendingPathComponent("real.md")
+    let realJSONPath = assetFixtureRoot.appendingPathComponent("real.json")
+    let realTXTPath = assetFixtureRoot.appendingPathComponent("real.txt")
+    let realDOCXPath = assetFixtureRoot.appendingPathComponent("real.docx")
+    for path in [realMarkdownPath, realJSONPath, realTXTPath, realDOCXPath] {
+        try Data("fixture".utf8).write(to: path)
+    }
     let imagePlaceholder = sampleItem(title: "image placeholder", assetKind: .image, prompt: "image", assetPath: "", format: "")
     let videoPlaceholder = sampleItem(title: "video placeholder", assetKind: .video, prompt: "video", assetPath: "", format: "PROMPT")
     let audioPlaceholder = sampleItem(title: "audio placeholder", assetKind: .audio, prompt: "audio", assetPath: "", format: "TEXT")
-    let markdown = sampleItem(title: "markdown", assetKind: .markdown, prompt: "# markdown", assetPath: "/tmp/real.md", format: "MD")
-    let json = sampleItem(title: "json", assetKind: .json, prompt: "{}", assetPath: "/tmp/real.json", format: "JSON")
-    let txt = sampleItem(title: "txt", assetKind: .text, prompt: "txt", assetPath: "/tmp/real.txt", format: "TXT")
-    let docx = sampleItem(title: "docx", assetKind: .document, prompt: "docx", assetPath: "/tmp/real.docx", format: "DOCX")
+    let markdown = sampleItem(title: "markdown", assetKind: .markdown, prompt: "# markdown", assetPath: realMarkdownPath.path, format: "MD")
+    let json = sampleItem(title: "json", assetKind: .json, prompt: "{}", assetPath: realJSONPath.path, format: "JSON")
+    let txt = sampleItem(title: "txt", assetKind: .text, prompt: "txt", assetPath: realTXTPath.path, format: "TXT")
+    let docx = sampleItem(title: "docx", assetKind: .document, prompt: "docx", assetPath: realDOCXPath.path, format: "DOCX")
+    let missingText = sampleItem(title: "missing text", assetKind: .markdown, prompt: "missing", assetPath: assetFixtureRoot.appendingPathComponent("missing.md").path, format: "MD")
+    let textWithoutPath = sampleItem(title: "text without path", assetKind: .markdown, prompt: "draft", assetPath: "", format: "PROMPT")
 
     for placeholder in [imagePlaceholder, videoPlaceholder, audioPlaceholder] {
         try expect(placeholder.isMediaPromptPlaceholder, "empty media prompt should be a media placeholder")
@@ -1873,9 +1883,11 @@ func testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments() thr
     }
     for document in [markdown, json, txt, docx] {
         try expect(!document.isMediaPromptPlaceholder, "real text document should not be treated as a media placeholder")
-        try expect(document.primaryAssetState == .textDocument, "text document should retain text-document state")
+        try expect(document.primaryAssetState == .available, "existing text document should be available")
         try expect(document.hasPrimaryAsset, "real text document should report a primary asset path")
     }
+    try expect(missingText.primaryAssetState == .missing, "missing text document should report missing")
+    try expect(textWithoutPath.primaryAssetState == .textDocument, "text draft without a path should retain text-document state")
 }
 
 func testCapturedPromptUsesUnifiedClassificationAndIsIdempotent() throws {
@@ -1891,11 +1903,15 @@ func testCapturedPromptUsesUnifiedClassificationAndIsIdempotent() throws {
     for (captureID, selectedText, expectedType, expectedKind) in candidates {
         let item = try service.createCapturedPrompt(WebCaptureCandidate(captureID: captureID, selectedText: selectedText))
         try expect(item.type == expectedType && item.assetKind == expectedKind, "capture \(captureID) should use unified type and asset kind")
-        try expect(item.assetPath.isEmpty && item.thumbnailPath.isEmpty, "capture \(captureID) should not invent an asset path")
         if expectedType == .text {
             try expect(item.format.uppercased() == "MD", "text capture should retain markdown document semantics")
             try expect(item.isTextDocumentLike && !item.isMediaPromptPlaceholder, "text capture should be a text document, not media placeholder")
+            try expect(!item.assetPath.isEmpty && FileManager.default.fileExists(atPath: item.assetPath), "text capture should create a real markdown asset")
+            try expect(item.primaryAssetState == .available, "text capture markdown should report an available primary asset")
+            let markdown = try String(contentsOfFile: item.assetPath, encoding: .utf8)
+            try expect(markdown.contains(selectedText) && markdown.contains("# \(item.title)"), "captured markdown should contain title and prompt text")
         } else {
+            try expect(item.assetPath.isEmpty && item.thumbnailPath.isEmpty, "media capture \(captureID) should not invent an asset path")
             try expect(item.format.isEmpty, "media capture should not pretend to be a real media file")
             try expect(item.isMediaPromptPlaceholder, "media capture should be represented as a placeholder")
         }
@@ -1904,43 +1920,90 @@ func testCapturedPromptUsesUnifiedClassificationAndIsIdempotent() throws {
     try expect(try repository.loadItems().count == candidates.count, "capture retries should not duplicate rows")
 }
 
+func testConcurrentTextCaptureLeavesOnlyWinningMarkdownAsset() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let firstRepository = try PromptRepository(libraryURL: libraryURL)
+    let secondRepository = try PromptRepository(libraryURL: libraryURL)
+    let services = [
+        PromptStudioAutomationService(repository: firstRepository),
+        PromptStudioAutomationService(repository: secondRepository)
+    ]
+    let candidate = WebCaptureCandidate(captureID: "concurrent-text-capture", selectedText: "分析数据并输出 JSON")
+    let group = DispatchGroup()
+    let state = CaptureRaceState()
+    for service in services {
+        group.enter()
+        DispatchQueue.global().async {
+            defer { group.leave() }
+            do {
+                state.append(item: try service.createCapturedPrompt(candidate))
+            } catch {
+                state.append(error: error)
+            }
+        }
+    }
+    group.wait()
+    try expect(state.errors.isEmpty, "concurrent text capture retries should not fail")
+    try expect(state.items.count == 2 && state.items[0].id == state.items[1].id, "concurrent text capture should return one winning item")
+    let documentsURL = libraryURL.appendingPathComponent("assets/documents")
+    let markdownFiles = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil)
+        .filter { $0.pathExtension.lowercased() == "md" }
+    try expect(markdownFiles.count == 1, "concurrent text capture should clean the losing markdown asset")
+}
+
 func testPromptPlaceholderMigrationIsSafeIdempotentAndTransactional() throws {
     let libraryURL = try temporaryLibraryURL()
     let repository = try PromptRepository(libraryURL: libraryURL)
     let image = sampleItem(title: "legacy image", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "prompt")
     let video = sampleItem(title: "legacy video", assetKind: .text, prompt: "制作 5 秒视频", assetPath: "", format: "TEXT")
-    let text = sampleItem(title: "legacy text", assetKind: .text, prompt: "分析数据并输出 JSON", assetPath: "", format: "TEXT")
+    var text = sampleItem(title: "legacy text", assetKind: .text, prompt: "分析数据并输出 JSON", assetPath: "", format: "TEXT")
+    text.versions[0].negativePrompt = "制作 5 秒视频"
+    var staleThumbnail = video
+    staleThumbnail.id = UUID().uuidString
+    staleThumbnail.title = "legacy video stale thumbnail"
+    staleThumbnail.thumbnailPath = "/tmp/stale-thumbnail.png"
     let realMarkdown = sampleItem(title: "real markdown", assetKind: .markdown, prompt: "生成一张图片", assetPath: "/tmp/real.md", format: "MD")
     let realImage = sampleItem(title: "real image", assetKind: .image, prompt: "生成一张图片", assetPath: "/tmp/real.png", format: "PNG")
-    try repository.saveItems([image, video, text, realMarkdown, realImage])
+    try repository.saveItems([image, video, text, staleThumbnail, realMarkdown, realImage])
 
     let first = try repository.migratePromptPlaceholders()
-    try expect(first.migratedCount == 3, "migration should only touch empty PROMPT/TEXT placeholder candidates")
+    try expect(first.migratedCount == 4, "migration should only touch empty PROMPT/TEXT placeholder candidates")
+    try expect(first.failedCount == 0 && first.failures.isEmpty, "successful migration should report no failures")
     let migrated = try repository.loadItems()
     try expect(migrated.first(where: { $0.id == image.id })?.assetKind == .image, "image placeholder should migrate to image asset kind")
     try expect(migrated.first(where: { $0.id == video.id })?.type == .video, "video placeholder should migrate to video type")
     try expect(migrated.first(where: { $0.id == text.id })?.assetKind == .markdown, "text placeholder should migrate to markdown asset kind")
+    try expect(migrated.first(where: { $0.id == text.id })?.type == .text, "migration classification should use the positive prompt only")
     try expect(migrated.first(where: { $0.id == text.id })?.format.uppercased() == "MD", "text placeholder should canonicalize to MD")
+    guard let migratedText = migrated.first(where: { $0.id == text.id }) else {
+        throw CoreUnitTestError.failure("migrated text row should exist")
+    }
+    try expect(!migratedText.assetPath.isEmpty && FileManager.default.fileExists(atPath: migratedText.assetPath), "text migration should create a markdown asset")
+    try expect(try String(contentsOfFile: migratedText.assetPath, encoding: .utf8).contains(text.currentVersion?.prompt ?? ""), "migrated markdown should contain the current prompt")
+    try expect(migrated.first(where: { $0.id == staleThumbnail.id })?.thumbnailPath == "", "media migration should clear stale thumbnail paths")
     try expect(migrated.first(where: { $0.id == realMarkdown.id })?.assetKind == .markdown, "real markdown row must not be touched")
     try expect(migrated.first(where: { $0.id == realImage.id })?.assetKind == .image, "real media row must not be touched")
-    try expect(try repository.migratePromptPlaceholders().migratedCount == 0, "migration should be idempotent")
+    let second = try repository.migratePromptPlaceholders()
+    try expect(second.migratedCount == 0 && second.failedCount == 0, "migration should be idempotent")
 
     let rollbackURL = try temporaryLibraryURL()
     let rollbackRepository = try PromptRepository(libraryURL: rollbackURL)
-    let firstRollbackItem = sampleItem(title: "rollback one", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "PROMPT")
-    let secondRollbackItem = sampleItem(title: "rollback two", assetKind: .text, prompt: "生成一张图片", assetPath: "", format: "PROMPT")
+    let firstRollbackItem = sampleItem(title: "rollback one", assetKind: .text, prompt: "分析数据并输出 JSON", assetPath: "", format: "PROMPT")
+    let secondRollbackItem = sampleItem(title: "rollback two", assetKind: .text, prompt: "分析数据并输出 JSON", assetPath: "", format: "PROMPT")
     try rollbackRepository.saveItems([firstRollbackItem, secondRollbackItem])
     let rollbackDatabaseURL = rollbackURL.appendingPathComponent("database/promptstudio.sqlite")
     let rollbackDatabase = try SQLiteDatabase(path: rollbackDatabaseURL.path)
-    try rollbackDatabase.execute("CREATE TRIGGER fail_placeholder_migration BEFORE UPDATE OF type ON prompt_items BEGIN SELECT RAISE(ABORT, 'migration failure'); END;")
-    do {
-        _ = try rollbackRepository.migratePromptPlaceholders()
-        throw CoreUnitTestError.failure("migration should surface trigger failures")
-    } catch SQLiteError.stepFailed {
-        // Expected: the whole transaction must roll back.
-    }
+    try rollbackDatabase.execute("CREATE TRIGGER fail_placeholder_migration BEFORE UPDATE OF assetPath ON prompt_items WHEN NEW.id = '\(firstRollbackItem.id)' BEGIN SELECT RAISE(ABORT, 'migration failure'); END;")
+    let rollbackResult = try rollbackRepository.migratePromptPlaceholders()
+    try expect(rollbackResult.migratedCount == 1 && rollbackResult.failedCount == 1, "migration should isolate a failed row and continue")
+    try expect(rollbackResult.failures.first?.itemID == firstRollbackItem.id, "migration should identify the failed row")
     let rolledBack = try rollbackRepository.loadItems()
-    try expect(rolledBack.allSatisfy { $0.assetKind == .text && $0.type == .text }, "failed migration should roll back every row")
+    try expect(rolledBack.first(where: { $0.id == firstRollbackItem.id })?.assetKind == .text, "failed migration should roll back the failed row")
+    try expect(rolledBack.first(where: { $0.id == secondRollbackItem.id })?.assetKind == .markdown, "migration should commit the successful row")
+    let rollbackDocuments = rollbackURL.appendingPathComponent("assets/documents")
+    let leftoverMarkdown = (try? FileManager.default.contentsOfDirectory(at: rollbackDocuments, includingPropertiesForKeys: nil)) ?? []
+    try expect(leftoverMarkdown.count == 1, "failed migration should leave only the successful markdown file")
+    try expect(rolledBack.first(where: { $0.id == firstRollbackItem.id })?.assetPath.isEmpty == true, "failed migration should not persist a file path")
 }
 
 do {
@@ -2025,6 +2088,7 @@ do {
     try testUnifiedPromptTypeClassifierAlwaysResolvesFourTypes()
     try testPromptItemPrimaryAssetStatesKeepPlaceholdersSeparateFromDocuments()
     try testCapturedPromptUsesUnifiedClassificationAndIsIdempotent()
+    try testConcurrentTextCaptureLeavesOnlyWinningMarkdownAsset()
     try testPromptPlaceholderMigrationIsSafeIdempotentAndTransactional()
     try await runReferenceThumbnailServiceTests()
     try testPromptRepositoryBatchFolderUpdateRollsBack()

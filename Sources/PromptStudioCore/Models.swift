@@ -535,12 +535,9 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         if isMediaPromptPlaceholder {
             return .mediaPlaceholder
         }
-        if isTextDocumentLike {
-            return .textDocument
-        }
         let path = assetPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else {
-            return .missing
+            return isTextDocumentLike ? .textDocument : .missing
         }
         return fileExists(path) ? .available : .missing
     }
