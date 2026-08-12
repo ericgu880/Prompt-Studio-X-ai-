@@ -183,7 +183,7 @@ func nativeMessagingFramerRejectsMalformedFrames() throws {
     }
 }
 
-@Test("forwarder separates five second cold connection from sixty second confirmation")
+@Test("forwarder separates five second cold connection from five minute confirmation")
 func forwarderUsesBoundedDeadlines() throws {
     let start = Date(timeIntervalSince1970: 10)
     var observedConnectDeadline: Date?
@@ -203,7 +203,7 @@ func forwarderUsesBoundedDeadlines() throws {
     _ = try forwarder.forward(Data("ok".utf8))
     #expect(launchCount == 0)
     #expect(observedConnectDeadline == start.addingTimeInterval(5))
-    #expect(observedResponseDeadline == start.addingTimeInterval(60))
+    #expect(observedResponseDeadline == start.addingTimeInterval(300))
 }
 
 @Test("host forwards every presented animate and terminal frame on one request")

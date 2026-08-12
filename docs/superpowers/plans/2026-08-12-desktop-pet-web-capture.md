@@ -42,4 +42,3 @@
 - Merge tasks into the integration worktree, resolve interface differences without weakening constraints, and add any missing cross-subsystem tests.
 - Run full Swift tests, core unit/smoke tests, Node tests, build, release scripts that are safe locally, and diff review.
 - Document manual Chrome/Edge/Arc installation and E2E checks, including cold start, hidden mode, multiple displays, and 100 captures.
-

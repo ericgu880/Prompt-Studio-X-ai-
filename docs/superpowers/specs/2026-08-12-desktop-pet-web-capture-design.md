@@ -41,4 +41,3 @@ PromptStudio launches a quiet floating ink-creature pet. In Chrome, Edge, or Arc
 - Empty text, password fields, restricted pages, selections over 50,000 characters, retries, disconnects, unavailable libraries, hidden mode, and reduced motion have explicit outcomes.
 - One hundred sequential captures produce no loss or duplicate items.
 - Existing libraries migrate without data loss; signing, notarization, update packaging, and existing tests continue to pass.
-

@@ -69,7 +69,12 @@ mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resource
 cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
 cp "$CAPTURE_HOST_EXECUTABLE" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
-cp -R "$ROOT_DIR/BrowserExtension" "$STAGING_APP_PATH/Contents/Resources/BrowserExtension"
+if [[ "$CONFIGURATION" != release ]]; then
+    # The checked-in extension key is development-only. Production installs come
+    # from the Web Store ID supplied below; bundling this tree in a release app
+    # would create an origin that the production helper correctly rejects.
+    cp -R "$ROOT_DIR/BrowserExtension" "$STAGING_APP_PATH/Contents/Resources/BrowserExtension"
+fi
 if [[ "$CONFIGURATION" == release ]]; then
     write_capture_host_allowed_origins_json \
         "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost.allowed-origins.json" \

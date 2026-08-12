@@ -144,7 +144,7 @@ public final class UnixSocketCaptureForwarder {
         let connectionDeadline = clock().addingTimeInterval(5)
         var launched = false
         while clock() < connectionDeadline {
-            let currentResponseDeadline = clock().addingTimeInterval(60)
+            let currentResponseDeadline = clock().addingTimeInterval(300)
             var sawTerminal = false
             var deliveredResponse = false
             do {
@@ -190,7 +190,7 @@ public final class UnixSocketCaptureForwarder {
         var launched = false
         while clock() < connectionDeadline {
             do {
-                return try exchange(payload, connectionDeadline, clock().addingTimeInterval(60))
+                return try exchange(payload, connectionDeadline, clock().addingTimeInterval(300))
             } catch CaptureHostRuntimeError.responseTimedOut {
                 throw CaptureHostRuntimeError.responseTimedOut
             } catch {
