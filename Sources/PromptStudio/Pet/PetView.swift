@@ -7,6 +7,15 @@ struct PetView: View {
     var body: some View {
         Group {
             if coordinator.machine.state == .asking,
+               let imageRequest = coordinator.pendingImageRequest {
+                HStack(spacing: 12) {
+                    petFace
+                    imageConfirmationCard(imageRequest)
+                        .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+                }
+                .frame(width: 304, height: 134)
+                .padding(8)
+            } else if coordinator.machine.state == .asking,
                let request = coordinator.pendingRequest {
                 HStack(spacing: 12) {
                     petFace
@@ -156,6 +165,66 @@ struct PetView: View {
         .frame(width: 198, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.15), lineWidth: 1))
+    }
+
+    private func imageConfirmationCard(_ request: PetImageCaptureRequest) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let thumbnail = coordinator.pendingImageThumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 46, height: 46)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 24))
+                        .frame(width: 46, height: 46)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("采集这张网页图片？")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(acquisitionLabel(request.candidate.acquisitionMethod))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(request.candidate.pageTitle.isEmpty ? request.candidate.pageURL : request.candidate.pageTitle)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Text(imageTitle(request))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                Button("取消") { coordinator.cancelPendingImageCapture() }
+                    .buttonStyle(.bordered)
+                Button("保存") { coordinator.confirmPendingImageCapture() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(10)
+        .frame(width: 198, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.15), lineWidth: 1))
+    }
+
+    private func acquisitionLabel(_ value: String) -> String {
+        switch value {
+        case "screenshot": "截图采集"
+        case "extensionFetch": "扩展获取"
+        case "loadedBytes": "已加载资源"
+        default: "页面上下文"
+        }
+    }
+
+    private func imageTitle(_ request: PetImageCaptureRequest) -> String {
+        let value = request.candidate.altText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty { return value }
+        let file = request.candidate.originalFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !file.isEmpty { return file }
+        return request.candidate.pageTitle.isEmpty ? "网页图片" : request.candidate.pageTitle
     }
 
     private var accessibilityState: String {

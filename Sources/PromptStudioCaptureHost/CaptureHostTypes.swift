@@ -185,6 +185,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
     public let message: String?
     public let mouthScreenPoint: CaptureScreenPoint?
     public let clearSource: Bool?
+    public let sequence: Int?
+    public let insidePet: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -198,6 +200,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         case mouthScreenPoint
         case mouthPoint
         case clearSource
+        case sequence
+        case insidePet
     }
 
     public init(
@@ -208,7 +212,9 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         selectedText: String? = nil,
         message: String? = nil,
         mouthScreenPoint: CaptureScreenPoint? = nil,
-        clearSource: Bool? = nil
+        clearSource: Bool? = nil,
+        sequence: Int? = nil,
+        insidePet: Bool? = nil
     ) {
         self.type = type
         self.captureID = captureID
@@ -218,6 +224,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         self.message = message
         self.mouthScreenPoint = mouthScreenPoint
         self.clearSource = clearSource
+        self.sequence = sequence
+        self.insidePet = insidePet
     }
 
     public init(from decoder: Decoder) throws {
@@ -238,6 +246,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         let mouthPointValue = try values.decodeIfPresent(CaptureScreenPoint.self, forKey: .mouthPoint)
         mouthScreenPoint = mouthScreenPointValue ?? mouthPointValue
         clearSource = try values.decodeIfPresent(Bool.self, forKey: .clearSource)
+        sequence = try values.decodeIfPresent(Int.self, forKey: .sequence)
+        insidePet = try values.decodeIfPresent(Bool.self, forKey: .insidePet)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -250,6 +260,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         try values.encodeIfPresent(selectedText, forKey: .selectedText)
         try values.encodeIfPresent(mouthScreenPoint, forKey: .mouthScreenPoint)
         try values.encodeIfPresent(clearSource, forKey: .clearSource)
+        try values.encodeIfPresent(sequence, forKey: .sequence)
+        try values.encodeIfPresent(insidePet, forKey: .insidePet)
     }
 }
 

@@ -303,6 +303,7 @@ final class AppState: ObservableObject {
     /// the production capture model; this keeps the Pet target buildable while
     /// allowing the integration branch to connect `createCapturedPrompt`.
     private var petCaptureHandler: PetCaptureHandler?
+    private var petImageCaptureHandler: PetImageCaptureHandler?
 
     private let configuredLibraryURL: URL
     private let libraryAccessCoordinator: LibraryAccessCoordinator
@@ -373,6 +374,10 @@ final class AppState: ObservableObject {
         petCaptureHandler = handler
     }
 
+    func configurePetImageCaptureHandler(_ handler: @escaping PetImageCaptureHandler) {
+        petImageCaptureHandler = handler
+    }
+
     /// Connects the desktop pet to Core's capture-only persistence API.
     ///
     /// Browser captures deliberately cannot override their folder, model, or
@@ -417,11 +422,57 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Connects image captures to Core while resolving the active library for
+    /// every request. The socket/pet layer owns staging cleanup after terminal
+    /// outcomes; this closure never trusts browser paths or metadata for bytes.
+    func configureDefaultPetImageCaptureHandler() {
+        petImageCaptureHandler = { [weak self] request, stagedFileURL in
+            do {
+                guard let self else { throw PetCaptureError.unavailable }
+                let service = try PromptStudioAutomationService(libraryURL: self.libraryURL)
+                let candidate = WebImageCaptureCandidate(
+                    captureID: request.captureID,
+                    domSourceKind: ImageDOMSourceKind(rawValue: request.candidate.domSourceKind) ?? .image,
+                    acquisitionMethod: ImageAcquisitionMethod(rawValue: request.candidate.acquisitionMethod) ?? .pageContext,
+                    sha256: request.candidate.sha256,
+                    pageTitle: request.candidate.pageTitle,
+                    pageURL: request.candidate.pageURL,
+                    siteName: request.candidate.siteName,
+                    resourceURL: request.candidate.resourceURL,
+                    altText: request.candidate.altText,
+                    originalFileName: request.candidate.originalFileName,
+                    isScreenshot: request.candidate.isScreenshot,
+                    mimeType: request.candidate.mimeType,
+                    byteCount: request.candidate.byteCount,
+                    pixelWidth: request.candidate.pixelWidth,
+                    pixelHeight: request.candidate.pixelHeight,
+                    clickScreenPoint: request.candidate.clickScreenPoint.map { WebCapturePoint(x: $0.x, y: $0.y) } ?? .zero,
+                    capturedAt: request.candidate.capturedAt
+                )
+                let item = try service.createCapturedImage(candidate, stagedFileURL: stagedFileURL)
+                self.reload(selecting: self.selectedID)
+                return .saved(captureID: item.captureID ?? request.captureID, mouthPoint: nil)
+            } catch {
+                return .failed(
+                    captureID: request.captureID,
+                    message: error.localizedDescription,
+                    code: "capture-save-failed",
+                    retryable: true
+                )
+            }
+        }
+    }
+
     func handlePetCapture(_ request: PetCaptureRequest) async throws -> PetCaptureOutcome {
         guard let petCaptureHandler else {
             throw PetCaptureError.unavailable
         }
         return try await petCaptureHandler(request)
+    }
+
+    func handlePetImageCapture(_ request: PetImageCaptureRequest, stagedFileURL: URL) async throws -> PetCaptureOutcome {
+        guard let petImageCaptureHandler else { throw PetCaptureError.unavailable }
+        return try await petImageCaptureHandler(request, stagedFileURL)
     }
 
     func retryLoadLibrary() {
