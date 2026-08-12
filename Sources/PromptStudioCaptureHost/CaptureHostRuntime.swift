@@ -13,6 +13,7 @@ public enum CaptureHostRuntimeError: Error, Equatable, CustomStringConvertible, 
     case socketUnavailable
     case connectionTimedOut
     case responseTimedOut
+    case responseDisconnected
     case appLaunchFailed
 
     public var description: String {
@@ -25,6 +26,7 @@ public enum CaptureHostRuntimeError: Error, Equatable, CustomStringConvertible, 
         case .socketUnavailable: return "capture socket unavailable"
         case .connectionTimedOut: return "capture socket connection timed out"
         case .responseTimedOut: return "capture response timed out"
+        case .responseDisconnected: return "capture socket closed before terminal response"
         case .appLaunchFailed: return "unable to launch PromptStudio"
         }
     }
@@ -83,9 +85,12 @@ public struct PromptStudioLauncher {
 
 public final class UnixSocketCaptureForwarder {
     public typealias Exchange = (Data, Date, Date) throws -> Data
+    public typealias ResponseSink = (Data) throws -> Void
+    public typealias StreamingExchange = (Data, Date, Date, ResponseSink) throws -> Void
     private let socketPath: String
     private let launchApp: () throws -> Void
-    private let exchange: Exchange
+    private let exchange: Exchange?
+    private let streamingExchange: StreamingExchange
     private let clock: () -> Date
     private let sleep: (UInt32) -> Void
 
@@ -93,46 +98,124 @@ public final class UnixSocketCaptureForwarder {
         socketPath: String = UnixCaptureSocket.defaultPath(),
         launchApp: @escaping () throws -> Void = { try PromptStudioLauncher().launch() },
         exchange: Exchange? = nil,
+        streamingExchange: StreamingExchange? = nil,
         clock: @escaping () -> Date = Date.init,
         sleep: @escaping (UInt32) -> Void = { _ = usleep($0) }
     ) {
         self.socketPath = socketPath
         self.launchApp = launchApp
-        self.exchange = exchange ?? { payload, connectDeadline, responseDeadline in
-            try UnixSocketCaptureForwarder.exchange(payload, socketPath: socketPath, connectDeadline: connectDeadline, responseDeadline: responseDeadline)
+        self.exchange = exchange
+        if let streamingExchange {
+            self.streamingExchange = streamingExchange
+        } else if let exchange {
+            // Preserve the single-frame injection seam used by callers/tests while
+            // routing production instances through the real socket stream below.
+            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+                try sink(exchange(payload, connectDeadline, responseDeadline))
+            }
+        } else {
+            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+                try UnixSocketCaptureForwarder.exchangeStreaming(
+                    payload,
+                    socketPath: socketPath,
+                    connectDeadline: connectDeadline,
+                    responseDeadline: responseDeadline,
+                    responseSink: sink
+                )
+            }
         }
         self.clock = clock
         self.sleep = sleep
     }
 
     public func forward(_ payload: Data) throws -> Data {
+        if let exchange {
+            return try forwardSingle(payload, exchange: exchange)
+        }
+        var lastResponse: Data?
+        try forwardStreaming(payload) { response in
+            lastResponse = response
+        }
+        guard let lastResponse else { throw CaptureHostRuntimeError.responseDisconnected }
+        return lastResponse
+    }
+
+    public func forwardStreaming(_ payload: Data, responseSink: @escaping ResponseSink) throws {
         let connectionDeadline = clock().addingTimeInterval(5)
         var launched = false
-        var lastError: Error = CaptureHostRuntimeError.socketUnavailable
+        while clock() < connectionDeadline {
+            let currentResponseDeadline = clock().addingTimeInterval(60)
+            var sawTerminal = false
+            var deliveredResponse = false
+            do {
+                try streamingExchange(payload, connectionDeadline, currentResponseDeadline) { frame in
+                    deliveredResponse = true
+                    if Self.isTerminalResponse(frame) { sawTerminal = true }
+                    try responseSink(frame)
+                }
+                if sawTerminal { return }
+                throw CaptureHostRuntimeError.responseDisconnected
+            } catch CaptureHostRuntimeError.responseDisconnected {
+                // The app accepted this request but closed before a terminal frame. Do
+                // not resend it: let the native port disconnect so background pending
+                // state can replay by captureID.
+                throw CaptureHostRuntimeError.responseDisconnected
+            } catch CaptureHostRuntimeError.responseTimedOut {
+                throw CaptureHostRuntimeError.responseTimedOut
+            } catch let error as CaptureHostRuntimeError {
+                switch error {
+                case .socketUnavailable, .connectionTimedOut, .appLaunchFailed:
+                    if deliveredResponse {
+                        throw CaptureHostRuntimeError.responseDisconnected
+                    }
+                    if !launched {
+                        try? launchApp()
+                        launched = true
+                    }
+                default:
+                    throw error
+                }
+            } catch {
+                // A response sink failure (for example malformed app JSON) is not a
+                // connection retry. The caller emits a terminal failed response.
+                throw error
+            }
+            sleep(100_000)
+        }
+        throw CaptureHostRuntimeError.connectionTimedOut
+    }
+
+    private func forwardSingle(_ payload: Data, exchange: @escaping Exchange) throws -> Data {
+        let connectionDeadline = clock().addingTimeInterval(5)
+        var launched = false
         while clock() < connectionDeadline {
             do {
                 return try exchange(payload, connectionDeadline, clock().addingTimeInterval(60))
             } catch CaptureHostRuntimeError.responseTimedOut {
                 throw CaptureHostRuntimeError.responseTimedOut
             } catch {
-                lastError = error
                 if !launched {
-                    do {
-                        try launchApp()
-                        launched = true
-                    } catch {
-                        lastError = error
-                        launched = true
-                    }
+                    try? launchApp()
+                    launched = true
                 }
                 sleep(100_000)
             }
         }
-        if lastError is CaptureHostRuntimeError { throw CaptureHostRuntimeError.connectionTimedOut }
         throw CaptureHostRuntimeError.connectionTimedOut
     }
 
-    private static func exchange(_ payload: Data, socketPath: String, connectDeadline: Date, responseDeadline: Date) throws -> Data {
+    private static func isTerminalResponse(_ payload: Data) -> Bool {
+        guard let response = try? JSONDecoder().decode(CaptureHostResponse.self, from: payload) else { return false }
+        return ["saved", "cancelled", "failed"].contains(response.type)
+    }
+
+    private static func exchangeStreaming(
+        _ payload: Data,
+        socketPath: String,
+        connectDeadline: Date,
+        responseDeadline: Date,
+        responseSink: ResponseSink
+    ) throws {
         #if canImport(Darwin)
         var socketInfo = stat()
         guard lstat(socketPath, &socketInfo) == 0,
@@ -189,12 +272,19 @@ public final class UnixSocketCaptureForwarder {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         do {
             try NativeMessagingFramer.writeFrame(payload, to: handle, deadline: responseDeadline)
-            guard let response = try NativeMessagingFramer.readFrame(from: handle, deadline: responseDeadline) else {
-                throw CaptureHostRuntimeError.socketUnavailable
+            while true {
+                guard let response = try NativeMessagingFramer.readFrame(from: handle, deadline: responseDeadline) else {
+                    throw CaptureHostRuntimeError.responseDisconnected
+                }
+                try responseSink(response)
+                if isTerminalResponse(response) { return }
             }
-            return response
         } catch NativeMessagingError.deadlineExceeded {
             throw CaptureHostRuntimeError.responseTimedOut
+        } catch CaptureHostRuntimeError.responseDisconnected {
+            throw CaptureHostRuntimeError.responseDisconnected
+        } catch is NativeMessagingError {
+            throw CaptureHostRuntimeError.responseDisconnected
         }
         #else
         throw CaptureHostRuntimeError.socketUnavailable
@@ -230,30 +320,50 @@ public final class PromptStudioCaptureHost {
     public func run() throws {
         while let frame = try NativeMessagingFramer.readFrame(from: input) {
             let started = Date()
-            let response: CaptureHostResponse
+            var candidate: BrowserCaptureCandidate?
+            var terminalSent = false
             do {
                 let request = try decodeAndValidate(frame)
+                candidate = request.candidate
                 let socketPayload = try encoder.encode(SocketCaptureEnvelope(candidate: request.candidate))
-                let forwarded = try forwarder.forward(socketPayload)
-                let appResponse = try decoder.decode(CaptureHostResponse.self, from: forwarded)
-                response = CaptureHostResponse(
-                    type: appResponse.type,
-                    captureID: appResponse.captureID.isEmpty ? request.candidate.captureID : appResponse.captureID,
-                    code: appResponse.code,
-                    selectedText: appResponse.selectedText ?? request.candidate.selectedText,
-                    message: appResponse.message,
-                    mouthScreenPoint: appResponse.mouthScreenPoint
-                )
+                try forwarder.forwardStreaming(socketPayload) { forwarded in
+                    let appResponse = try self.decoder.decode(CaptureHostResponse.self, from: forwarded)
+                    let response = CaptureHostResponse(
+                        type: appResponse.type,
+                        captureID: appResponse.captureID.isEmpty ? request.candidate.captureID : appResponse.captureID,
+                        code: appResponse.code,
+                        selectedText: appResponse.selectedText ?? request.candidate.selectedText,
+                        message: appResponse.message,
+                        mouthScreenPoint: appResponse.mouthScreenPoint
+                    )
+                    terminalSent = Self.isTerminal(response.type)
+                    try NativeMessagingFramer.writeFrame(self.encoder.encode(response), to: self.output)
+                }
+                guard terminalSent else { throw CaptureHostRuntimeError.responseDisconnected }
                 CaptureHostLogger.status("forwarded", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: request.candidate.selectedText.count)
             } catch let error as CaptureHostRuntimeError {
-                response = CaptureHostResponse(type: "failed", captureID: captureID(from: frame), code: errorCode(error), message: errorCode(error))
-                CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000))
+                if case .responseDisconnected = error {
+                    CaptureHostLogger.status("disconnected", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                    throw error
+                }
+                if !terminalSent {
+                    let code = errorCode(error)
+                    let response = CaptureHostResponse(type: "failed", captureID: candidate?.captureID ?? captureID(from: frame), code: code, message: code)
+                    try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
+                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                }
             } catch {
-                response = CaptureHostResponse(type: "failed", captureID: captureID(from: frame), code: "invalid-request", message: "invalid-request")
-                CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000))
+                if !terminalSent {
+                    let response = CaptureHostResponse(type: "failed", captureID: candidate?.captureID ?? captureID(from: frame), code: "invalid-request", message: "invalid-request")
+                    try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
+                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                }
             }
-            try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
         }
+    }
+
+    private static func isTerminal(_ type: String) -> Bool {
+        ["saved", "cancelled", "failed"].contains(type)
     }
 
     private func decodeAndValidate(_ frame: Data) throws -> CaptureEnvelope {
@@ -286,6 +396,7 @@ public final class PromptStudioCaptureHost {
         case .socketUnavailable: return "app-unavailable"
         case .connectionTimedOut: return "app-connection-timeout"
         case .responseTimedOut: return "app-response-timeout"
+        case .responseDisconnected: return "app-response-disconnected"
         case .appLaunchFailed: return "app-launch-failed"
         }
     }

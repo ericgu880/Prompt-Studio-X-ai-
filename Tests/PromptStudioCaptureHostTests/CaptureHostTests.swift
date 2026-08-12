@@ -56,7 +56,9 @@ func hostRunUsesTrustedOriginAndStdoutFraming() throws {
     }
     let appResponse = CaptureHostResponse(type: "saved", captureID: candidate.captureID, selectedText: candidate.selectedText)
     let appPayload = try JSONEncoder().encode(appResponse)
-    let forwarder = UnixSocketCaptureForwarder(exchange: { _, _, _ in appPayload })
+    let forwarder = UnixSocketCaptureForwarder(streamingExchange: { _, _, _, sink in
+        try sink(appPayload)
+    })
     let host = PromptStudioCaptureHost(
         trustedOrigin: CaptureOriginAllowlist.developmentOrigin,
         input: try FileHandle(forReadingFrom: inputURL),
@@ -202,6 +204,70 @@ func forwarderUsesBoundedDeadlines() throws {
     #expect(launchCount == 0)
     #expect(observedConnectDeadline == start.addingTimeInterval(5))
     #expect(observedResponseDeadline == start.addingTimeInterval(60))
+}
+
+@Test("host forwards every presented animate and terminal frame on one request")
+func hostForwardsCompleteResponseSequence() throws {
+    let candidate = BrowserCaptureCandidate(
+        captureID: "capture-sequence",
+        selectedText: "hello",
+        pageTitle: "Page",
+        pageURL: "https://example.test",
+        siteName: "example.test",
+        clickScreenPoint: CaptureScreenPoint(x: 4, y: 8),
+        capturedAt: "2026-08-12T00:00:00.000Z"
+    )
+    let request = CaptureEnvelope(origin: CaptureOriginAllowlist.developmentOrigin, candidate: candidate)
+    let inputURL = try temporaryFile(try NativeMessagingFramer.encode(JSONEncoder().encode(request)))
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-sequence-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let appResponses = [
+        CaptureHostResponse(type: "presented", captureID: candidate.captureID, selectedText: candidate.selectedText),
+        CaptureHostResponse(type: "animate", captureID: candidate.captureID, selectedText: candidate.selectedText, mouthScreenPoint: CaptureScreenPoint(x: 20, y: 30)),
+        CaptureHostResponse(type: "saved", captureID: candidate.captureID, selectedText: candidate.selectedText),
+    ]
+    let appPayloads = try appResponses.map { try JSONEncoder().encode($0) }
+    let forwarder = UnixSocketCaptureForwarder(streamingExchange: { _, _, _, sink in
+        for payload in appPayloads { try sink(payload) }
+    })
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: CaptureOriginAllowlist.developmentOrigin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: forwarder
+    )
+    try host.run()
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    var types: [String] = []
+    while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
+        let response = try JSONDecoder().decode(CaptureHostResponse.self, from: frame)
+        types.append(response.type)
+    }
+    #expect(types == ["presented", "animate", "saved"])
+}
+
+@Test("EOF before a terminal response is a retryable stream failure")
+func forwarderTreatsEOFWithoutTerminalAsRetryable() throws {
+    var clockCalls = 0
+    var responseDeadlines: [Date] = []
+    let forwarder = UnixSocketCaptureForwarder(streamingExchange: { _, _, responseDeadline, sink in
+        responseDeadlines.append(responseDeadline)
+        let presented = try JSONEncoder().encode(CaptureHostResponse(type: "presented", captureID: "capture-eof"))
+        try sink(presented)
+        throw CaptureHostRuntimeError.responseDisconnected
+    }, clock: {
+        clockCalls += 1
+        let time: TimeInterval = clockCalls < 3 ? 10 : (clockCalls < 8 ? 100 : 200)
+        return Date(timeIntervalSince1970: time)
+    }, sleep: { _ in })
+    #expect(throws: CaptureHostRuntimeError.responseDisconnected) {
+        try forwarder.forwardStreaming(Data("payload".utf8), responseSink: { _ in })
+    }
+    #expect(responseDeadlines.count == 1)
 }
 
 private func temporaryFile(_ data: Data) throws -> URL {
