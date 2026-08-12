@@ -969,22 +969,11 @@ struct PromptComposerOverlay: View {
     private func createTypeTab(_ option: PromptType) -> some View {
         let active = type == option
         let title = createTypeTitle(option)
-        return Button {
+        return CreateComposerTypeTab(title: title, active: active) {
             type = option
             ensureModelMatchesType()
             ensurePromptFormatMatchesType()
-        } label: {
-            Text(title)
-                .font(StudioFont.font(12, weight: .medium))
-                .foregroundStyle(active ? CreateComposerColor.primaryText : CreateComposerColor.secondaryText)
-                .frame(width: 66, height: 30)
-                .background(active ? StudioColor.selection : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .help(title)
     }
 
     private func createTypeTitle(_ option: PromptType) -> String {
@@ -2618,10 +2607,53 @@ private enum CreateComposerColor {
     static let inputBackground = StudioColor.control
     static let fieldBackground = Color(hex: 0x2D2D2D)
     static let dropActive = StudioColor.panelRaised
+    static let tabHover = Color(hex: 0x2A2A2A)
     static let border = Color(hex: 0x3E3E3E)
     static let primaryText = StudioColor.text
     static let secondaryText = StudioColor.secondaryText.opacity(0.92)
     static let placeholderText = StudioColor.tertiaryText
+}
+
+private struct CreateComposerTypeTab: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let title: String
+    let active: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(StudioFont.font(12, weight: active ? .semibold : .medium))
+                .foregroundStyle(active ? StudioColor.primaryActionText : CreateComposerColor.secondaryText)
+                .frame(width: 66, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(
+                            active
+                                ? StudioColor.primaryAction
+                                : (isHovered ? CreateComposerColor.tabHover : Color.clear)
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(
+                            active ? Color.white.opacity(0.92) : StudioColor.hairline,
+                            lineWidth: 1
+                        )
+                        .opacity(active || isHovered ? 1 : 0)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: active)
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(active ? .isSelected : [])
+        .help(title)
+    }
 }
 
 private struct CreateComposerPrimaryButtonStyle: ButtonStyle {
