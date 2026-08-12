@@ -7,6 +7,16 @@
     return TERMINAL_TYPES.has(type);
   }
 
+  function captureRoute(entries, response) {
+    if (!response || !response.captureID || !entries || typeof entries.get !== 'function') return null;
+    const entry = entries.get(response.captureID);
+    if (!entry || !Number.isInteger(entry.tabID)) return null;
+    return {
+      tabID: entry.tabID,
+      frameID: Number.isInteger(entry.frameID) ? entry.frameID : 0,
+    };
+  }
+
   class PendingCaptureLedger {
     constructor({ now = Date.now } = {}) {
       this.now = typeof now === 'function' ? now : () => Date.now();
@@ -53,7 +63,7 @@
     }
   }
 
-  const api = { CAPTURE_TTL_MS, MAX_RETRY_ATTEMPTS, isTerminalCaptureType, PendingCaptureLedger };
+  const api = { CAPTURE_TTL_MS, MAX_RETRY_ATTEMPTS, isTerminalCaptureType, captureRoute, PendingCaptureLedger };
   global.PromptStudioBackgroundLogic = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this));
