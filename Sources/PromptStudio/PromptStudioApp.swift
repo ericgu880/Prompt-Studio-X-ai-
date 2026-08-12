@@ -28,6 +28,7 @@ struct PromptStudioApp: App {
                 .onAppear {
                     appDelegate.appState = appState
                     appDelegate.petCoordinator = petCoordinator
+                    appState.configureDefaultPetCaptureHandler(libraryURL: appState.libraryURL)
                     petCoordinator.captureHandler = { [weak appState] request in
                         guard let appState else { throw PetCaptureError.unavailable }
                         return try await appState.handlePetCapture(request)

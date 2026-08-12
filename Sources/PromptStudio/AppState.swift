@@ -439,11 +439,63 @@ final class AppState: ObservableObject {
         petCaptureHandler = handler
     }
 
+    /// Installs a real local fallback adapter for capture before the Core
+    /// capture-only API is connected by the integration branch. The adapter
+    /// uses the existing automation create path, preserving the capture inbox
+    /// folder and source metadata in the app-local request envelope.
+    func configureDefaultPetCaptureHandler(libraryURL: URL? = nil) {
+        let targetLibraryURL = libraryURL ?? self.libraryURL
+        petCaptureHandler = { request in
+            do {
+                let service = try PromptStudioAutomationService(libraryURL: targetLibraryURL)
+                let title = Self.captureTitle(from: request.selectedText)
+                let input = AutomationCreatePromptInput(
+                    title: title,
+                    prompt: request.selectedText,
+                    tags: ["网页采集", "待整理"],
+                    model: "local_asset",
+                    folderID: request.defaultFolderID
+                )
+                let item: PromptItem
+                do {
+                    item = try service.createPrompt(input)
+                } catch AutomationServiceError.folderNotFound {
+                    // A pre-migration library may not have the inbox yet. The
+                    // integration Core adapter will make it durable; this
+                    // fallback still saves the capture instead of returning
+                    // an unavoidable unavailable error.
+                    item = try service.createPrompt(
+                        AutomationCreatePromptInput(
+                            title: title,
+                            prompt: request.selectedText,
+                            tags: ["网页采集", "待整理"],
+                            model: "local_asset"
+                        )
+                    )
+                }
+                _ = item
+                return .saved(captureID: request.id, mouthPoint: request.clickPoint)
+            } catch {
+                return .failed(captureID: request.id, message: error.localizedDescription)
+            }
+        }
+    }
+
     func handlePetCapture(_ request: PetCaptureRequest) async throws -> PetCaptureOutcome {
         guard let petCaptureHandler else {
             throw PetCaptureError.unavailable
         }
         return try await petCaptureHandler(request)
+    }
+
+    private static func captureTitle(from text: String) -> String {
+        let line = text
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? "网页采集"
+        let normalized = line.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let title = String(normalized.prefix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "网页采集" : title
     }
 
     func retryLoadLibrary() {

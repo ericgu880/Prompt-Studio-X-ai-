@@ -12,7 +12,9 @@ final class PetPanelController: NSObject, NSWindowDelegate {
     weak var coordinator: PetCoordinator?
     let panel: PetPanel
 
-    private let panelSize = CGSize(width: 102, height: 102)
+    private let compactSize = CGSize(width: 102, height: 102)
+    private let askingSize = CGSize(width: 320, height: 150)
+    private var isAsking = false
     private var snapWorkItem: DispatchWorkItem?
 
     init(coordinator: PetCoordinator) {
@@ -32,6 +34,8 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
+        panel.acceptsMouseMovedEvents = true
+        panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
@@ -50,11 +54,29 @@ final class PetPanelController: NSObject, NSWindowDelegate {
                 inset: 8
             ))
         }
-        panel.orderFront(nil)
+        panel.orderFrontRegardless()
     }
 
     func hide() {
         panel.orderOut(nil)
+    }
+
+    func setAsking(_ asking: Bool) {
+        guard asking != isAsking else { return }
+        isAsking = asking
+        let oldFrame = panel.frame
+        let newSize = asking ? askingSize : compactSize
+        var origin = oldFrame.origin
+        if asking, let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            origin.x = min(origin.x, visibleFrame.maxX - newSize.width - 8)
+            origin.y = min(origin.y, visibleFrame.maxY - newSize.height - 8)
+            origin.x = max(origin.x, visibleFrame.minX + 8)
+            origin.y = max(origin.y, visibleFrame.minY + 8)
+        } else if !asking, oldFrame.maxX > (panel.screen?.visibleFrame.maxX ?? oldFrame.maxX) {
+            origin.x = max(origin.x, oldFrame.maxX - newSize.width)
+        }
+        panel.setFrame(NSRect(origin: origin, size: newSize), display: true, animate: false)
+        panel.orderFrontRegardless()
     }
 
     func snapNow() {
@@ -91,11 +113,11 @@ final class PetPanelController: NSObject, NSWindowDelegate {
 
     private func restoredOrigin(on visibleFrame: CGRect) -> CGPoint {
         if let stored = PetPositionStore.load(),
-           let screen = PetGeometry.screenContaining(origin: stored, panelSize: panelSize, screens: NSScreen.screens.map(\.visibleFrame)) {
-            return PetGeometry.clampedOrigin(proposed: stored, panelSize: panelSize, visibleFrame: screen, inset: 8)
+           let screen = PetGeometry.screenContaining(origin: stored, panelSize: compactSize, screens: NSScreen.screens.map(\.visibleFrame)) {
+            return PetGeometry.clampedOrigin(proposed: stored, panelSize: compactSize, visibleFrame: screen, inset: 8)
         }
         return CGPoint(
-            x: visibleFrame.maxX - panelSize.width - 24,
+            x: visibleFrame.maxX - compactSize.width - 24,
             y: visibleFrame.minY + 34
         )
     }

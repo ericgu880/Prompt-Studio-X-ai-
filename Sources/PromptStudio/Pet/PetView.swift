@@ -5,20 +5,22 @@ struct PetView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            blob
-                .overlay(eyes)
-                .overlay(mouth)
-
+        Group {
             if coordinator.machine.state == .asking,
                let request = coordinator.pendingRequest {
-                confirmationCard(request)
-                    .offset(x: 142, y: 0)
-                    .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+                HStack(spacing: 12) {
+                    petFace
+                    confirmationCard(request)
+                        .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+                }
+                .frame(width: 304, height: 134)
+                .padding(8)
+            } else {
+                petFace
+                    .frame(width: 86, height: 86)
+                    .padding(8)
             }
         }
-        .frame(width: 86, height: 86)
-        .padding(8)
         .contentShape(Rectangle())
         .contextMenu {
             Button("隐藏桌宠") { coordinator.hideForSession() }
@@ -30,6 +32,15 @@ struct PetView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("PromptStudio 桌宠")
         .accessibilityValue(accessibilityState)
+    }
+
+    private var petFace: some View {
+        ZStack {
+            blob
+                .overlay(eyes)
+                .overlay(mouth)
+        }
+        .frame(width: 86, height: 86)
     }
 
     private var blob: some View {
@@ -142,7 +153,7 @@ struct PetView: View {
             }
         }
         .padding(10)
-        .frame(width: 190, alignment: .leading)
+        .frame(width: 198, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.15), lineWidth: 1))
     }

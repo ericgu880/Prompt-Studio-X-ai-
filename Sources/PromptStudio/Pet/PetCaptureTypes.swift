@@ -28,6 +28,9 @@ struct PetCaptureRequest: Codable, Equatable, Identifiable, Sendable {
     let siteName: String
     let clickPoint: ScreenPoint?
     let capturedAt: Date
+    let defaultFolderID: String?
+    let clearSourceAfterCapture: Bool
+    let soundEnabled: Bool
 
     init(
         id: String = UUID().uuidString,
@@ -36,7 +39,10 @@ struct PetCaptureRequest: Codable, Equatable, Identifiable, Sendable {
         pageURL: String = "",
         siteName: String = "",
         clickPoint: ScreenPoint? = nil,
-        capturedAt: Date = Date()
+        capturedAt: Date = Date(),
+        defaultFolderID: String? = nil,
+        clearSourceAfterCapture: Bool = false,
+        soundEnabled: Bool = false
     ) {
         self.id = id
         self.selectedText = selectedText
@@ -45,6 +51,9 @@ struct PetCaptureRequest: Codable, Equatable, Identifiable, Sendable {
         self.siteName = siteName
         self.clickPoint = clickPoint
         self.capturedAt = capturedAt
+        self.defaultFolderID = defaultFolderID
+        self.clearSourceAfterCapture = clearSourceAfterCapture
+        self.soundEnabled = soundEnabled
     }
 
     var captureID: String { id }
@@ -83,8 +92,8 @@ enum PetCaptureOutcome: Codable, Equatable, Sendable {
 
     var isSuccess: Bool {
         switch self {
-        case .saved, .alreadySaved, .animate: true
-        case .presented, .cancelled, .failed: false
+        case .saved, .alreadySaved: true
+        case .presented, .animate, .cancelled, .failed: false
         }
     }
 
@@ -177,5 +186,6 @@ extension Notification.Name {
     static let petCaptureSaved = Notification.Name("PromptStudio.petCaptureSaved")
     static let petCaptureFailed = Notification.Name("PromptStudio.petCaptureFailed")
     static let petHiddenCaptureSaved = Notification.Name("PromptStudio.petHiddenCaptureSaved")
+    static let petCaptureSourceShouldClear = Notification.Name("PromptStudio.petCaptureSourceShouldClear")
     static let petPreferencesDidChange = Notification.Name("PromptStudio.petPreferencesDidChange")
 }

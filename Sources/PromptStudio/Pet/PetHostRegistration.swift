@@ -1,65 +1,77 @@
 import Foundation
 import SwiftUI
 
+/// App-owned state for the browser host registration boundary.
+///
+/// The browser extension owns its native-messaging manifest and installation
+/// scripts.  PromptStudio only exposes callbacks for the integration layer to
+/// install or remove that host; this type deliberately does not generate or
+/// serialize a browser manifest.
 struct PetHostRegistration: Codable, Equatable, Sendable {
-    var hostName: String
-    var executablePath: String
-    var extensionIDs: [String]
+    var isInstalled: Bool
+    var executablePath: String?
+    var configuredBrowserCount: Int
 
     init(
-        hostName: String = "com.promptstudio.capture",
-        executablePath: String = "",
-        extensionIDs: [String] = []
+        isInstalled: Bool = false,
+        executablePath: String? = nil,
+        configuredBrowserCount: Int = 0
     ) {
-        self.hostName = hostName
+        self.isInstalled = isInstalled
         self.executablePath = executablePath
-        self.extensionIDs = extensionIDs.filter { !$0.isEmpty && !$0.contains("*") }
-    }
-
-    var allowedOrigins: [String] {
-        extensionIDs.map { "chrome-extension://\($0)/" }.sorted()
-    }
-
-    func manifestData() throws -> Data {
-        let manifest: [String: Any] = [
-            "name": hostName,
-            "description": "PromptStudio local web capture host",
-            "path": executablePath,
-            "type": "stdio",
-            "allowed_origins": allowedOrigins
-        ]
-        return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
-    }
-
-    func manifestJSON() -> String {
-        guard let data = try? manifestData() else { return "{}" }
-        return String(decoding: data, as: UTF8.self)
+        self.configuredBrowserCount = max(0, configuredBrowserCount)
     }
 }
 
-enum PetHostRegistrationService {
-    static let defaultHostName = "com.promptstudio.capture"
+/// Integration hook for host installation.  The default callbacks are no-ops
+/// so the native pet can run without pretending to own browser registration.
+@MainActor
+final class PetHostRegistrationService: ObservableObject {
+    typealias Action = () throws -> Void
 
-    static func manifest(
-        executablePath: String,
-        extensionIDs: [String]
-    ) -> PetHostRegistration {
-        PetHostRegistration(
-            hostName: defaultHostName,
-            executablePath: executablePath,
-            extensionIDs: extensionIDs
-        )
+    @Published private(set) var state: PetHostRegistration
+
+    private let installAction: Action?
+    private let removeAction: Action?
+
+    init(
+        state: PetHostRegistration = PetHostRegistration(),
+        install: Action? = nil,
+        remove: Action? = nil
+    ) {
+        self.state = state
+        installAction = install
+        removeAction = remove
+    }
+
+    /// Runs the integration-provided installer and marks the local state as
+    /// installed only after it succeeds.
+    @discardableResult
+    func installHost() throws -> PetHostRegistration {
+        try installAction?()
+        state.isInstalled = true
+        return state
+    }
+
+    /// Runs the integration-provided remover and marks the local state as
+    /// removed only after it succeeds.
+    @discardableResult
+    func removeHost() throws -> PetHostRegistration {
+        try removeAction?()
+        state.isInstalled = false
+        return state
     }
 }
 
 struct PetHostRegistrationView: View {
     @ObservedObject private var preferencesStore = PetPreferencesStore.shared
-    let executablePath: String
-    let extensionIDs: [String]
 
-    init(executablePath: String = "", extensionIDs: [String] = []) {
-        self.executablePath = executablePath
-        self.extensionIDs = extensionIDs
+    /// Kept as display-only metadata until the integration layer supplies real
+    /// install/remove callbacks.  No browser manifest is inferred here.
+    let configuredBrowserCount: Int
+
+    init(configuredBrowserCount: Int = 0) {
+        self.configuredBrowserCount = max(0, configuredBrowserCount)
     }
 
     var body: some View {
@@ -73,8 +85,12 @@ struct PetHostRegistrationView: View {
                 Text(preferencesStore.value.hostRegistrationEnabled ? "本地网页采集主机已启用" : "本地网页采集主机已停用")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                if !extensionIDs.isEmpty {
-                    Text("已配置 \(extensionIDs.count) 个浏览器扩展")
+                if configuredBrowserCount > 0 {
+                    Text("已连接 \(configuredBrowserCount) 个浏览器")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("浏览器主机的安装和移除由集成层处理")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
