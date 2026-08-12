@@ -106,8 +106,9 @@ describe("production configuration", () => {
       COMMERCE_ENABLED: "false",
       LEMON_SQUEEZY_WEBHOOK_SECRET: "",
       COMMERCE_PRODUCT_MAPPINGS_JSON: "",
-      RESEND_API_KEY: "test-resend-key",
-      RESEND_WEBHOOK_SECRET: "test-resend-webhook-secret",
+      EMAIL_ENABLED: "false",
+      RESEND_API_KEY: "",
+      RESEND_WEBHOOK_SECRET: "",
       ADMIN_SESSION_SECRET: "s".repeat(32),
       ADMIN_CSRF_SECRET: "c".repeat(32),
       ADMIN_HMAC_SECRET: "h".repeat(32),
@@ -120,6 +121,8 @@ describe("production configuration", () => {
     };
     for (const [name, value] of Object.entries(environment)) vi.stubEnv(name, value);
 
-    expect(() => loadConfig()).not.toThrow();
+    const config = loadConfig();
+    expect(config.commercial.commerceEnabled).toBe(false);
+    expect(config.commercial.emailEnabled).toBe(false);
   });
 });

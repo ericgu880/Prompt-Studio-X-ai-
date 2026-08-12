@@ -60,6 +60,8 @@ function makeConfig(databaseUrl: string): AppConfig {
     telemetryEnabled: false,
     trustProxyHops: 0,
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       dataEncryptionKeyB64: randomBytes(32).toString("base64"),
       publicBaseURL: "http://localhost:8787",
       supportURL: "https://promptstudio.app/support",

@@ -93,9 +93,10 @@ LEGACY_ADMIN_ENABLED=false
 WORKER_ENABLED=true
 TRUST_PROXY_HOPS=1
 COMMERCE_ENABLED=false
+EMAIL_ENABLED=false
 ```
 
-Also set every required secret from `.env.example`. `TRUST_PROXY_HOPS` must match the verified reverse-proxy topology; production refuses `0` so rate limits do not silently collapse all customers onto one proxy IP. The current all-in-one deployment requires `WORKER_ENABLED=true`. For manual marketplace sales, set `COMMERCE_ENABLED=false`; Lemon Squeezy secrets and product mappings are then optional. When automated Lemon Squeezy sales are enabled, `COMMERCE_PRODUCT_MAPPINGS_JSON` must contain at least one entry and acts as the allowlist that maps a variant to `pro_lifetime`, seat count, major version, and update entitlement.
+Also set every required secret from `.env.example`. `TRUST_PROXY_HOPS` must match the verified reverse-proxy topology; production refuses `0` so rate limits do not silently collapse all customers onto one proxy IP. The current all-in-one deployment requires `WORKER_ENABLED=true`. For manual marketplace sales, set `COMMERCE_ENABLED=false`; Lemon Squeezy secrets and product mappings are then optional. Set `EMAIL_ENABLED=false` until a verified Resend domain, API key, and webhook secret are available. When automated Lemon Squeezy sales are enabled, `COMMERCE_PRODUCT_MAPPINGS_JSON` must contain at least one entry and acts as the allowlist that maps a variant to `pro_lifetime`, seat count, major version, and update entitlement.
 
 `/ready` checks both PostgreSQL connectivity and the latest critical commerce reconciliation migration. It returns 503 until `prisma migrate deploy` has completed, preventing signed purchase webhooks from being accepted by an instance with a stale schema.
 
@@ -119,6 +120,8 @@ npm run build
 npm test
 npm run prisma:deploy
 ```
+
+Inside a production container, run administrative CLI commands with `npm run cli:prod -- ...`.
 
 The complete commercial journey test requires an isolated PostgreSQL database or schema whose name contains `test`:
 

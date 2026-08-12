@@ -90,8 +90,12 @@ export async function buildApp(prisma: PrismaClient, config: AppConfig) {
   await app.register(adminApiRoutes, config);
   await app.register(adminRoutes, config);
   app.addHook("onReady", async () => {
-    app.licenseServices.commerceInbox.start();
-    app.licenseServices.emailWorker.start();
+    if (config.commercial?.commerceEnabled !== false) {
+      app.licenseServices.commerceInbox.start();
+    }
+    if (config.commercial?.emailEnabled !== false) {
+      app.licenseServices.emailWorker.start();
+    }
   });
   app.addHook("onClose", async () => {
     const workers = [

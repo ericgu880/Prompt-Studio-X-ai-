@@ -7,6 +7,8 @@ import { CommerceInboxWorker } from "../src/services/CommerceInboxWorker.js";
 function workerConfig(): AppConfig {
   return {
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       dataEncryptionKeyB64: randomBytes(32).toString("base64"),
       workerEnabled: true,
       workerPollIntervalMs: 10,

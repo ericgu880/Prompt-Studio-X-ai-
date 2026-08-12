@@ -29,6 +29,8 @@ function appConfig(): AppConfig {
     legacyAdminEnabled: true,
     trustProxyHops: 0,
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       dataEncryptionKeyB64: "unused",
       publicBaseURL: "http://localhost:8787",
       supportURL: "https://promptstudio.app/support",
@@ -51,6 +53,36 @@ function deferred() {
 }
 
 describe("server lifecycle", () => {
+  it("does not start the commerce worker when manual sales mode is enabled", async () => {
+    const config = appConfig();
+    config.commercial.commerceEnabled = false;
+    config.commercial.workerEnabled = true;
+    const app = await buildApp({} as PrismaClient, config);
+    const commerceStart = vi.spyOn(app.licenseServices.commerceInbox, "start");
+    const emailStart = vi.spyOn(app.licenseServices.emailWorker, "start").mockImplementation(() => {});
+
+    await app.ready();
+
+    expect(commerceStart).not.toHaveBeenCalled();
+    expect(emailStart).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("does not start the email worker before Resend is configured", async () => {
+    const config = appConfig();
+    config.commercial.emailEnabled = false;
+    config.commercial.workerEnabled = true;
+    const app = await buildApp({} as PrismaClient, config);
+    const commerceStart = vi.spyOn(app.licenseServices.commerceInbox, "start").mockImplementation(() => {});
+    const emailStart = vi.spyOn(app.licenseServices.emailWorker, "start");
+
+    await app.ready();
+
+    expect(commerceStart).toHaveBeenCalledTimes(1);
+    expect(emailStart).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("closes Fastify and Prisma exactly once during repeated termination signals", async () => {
     const shutdownOrder: string[] = [];
     const app = {

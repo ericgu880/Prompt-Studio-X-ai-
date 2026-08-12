@@ -13,6 +13,8 @@ import { EmailOutboxService } from "../src/services/EmailOutboxService.js";
 function config(): AppConfig {
   return {
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       dataEncryptionKeyB64: randomBytes(32).toString("base64"),
       resendApiKey: "re_test",
       resendFromEmail: "PromptStudio <license@promptstudio.app>",
