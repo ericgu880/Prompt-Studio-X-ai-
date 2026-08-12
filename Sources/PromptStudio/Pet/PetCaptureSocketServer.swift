@@ -133,7 +133,9 @@ final class PetCaptureSocketServer {
                 Task { @MainActor [weak self] in self?.receiveOutcome(notification.object) }
             },
             NotificationCenter.default.addObserver(forName: .petCaptureSourceShouldClear, object: nil, queue: .main) { [weak self] notification in
-                Task { @MainActor [weak self] in self?.receiveSourceClear(notification.object) }
+                MainActor.assumeIsolated {
+                    self?.receiveSourceClear(notification.object)
+                }
             }
         ]
     }
