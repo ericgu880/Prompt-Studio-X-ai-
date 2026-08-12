@@ -1433,6 +1433,49 @@ func testAutomationServiceCreatesAndUpdatesPrompts() throws {
     try expect(updated.tags == ["更新"], "agent prompt update should replace tags")
 }
 
+func testAutomationServiceCreatesTypedPromptPlaceholdersAndMarkdown() throws {
+    let libraryURL = try temporaryLibraryURL()
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    try repository.saveModelProfile(ModelProfile(id: "image-model", name: "Image Model", type: .image, parameters: []))
+    try repository.saveModelProfile(ModelProfile(id: "video-model", name: "Video Model", type: .video, parameters: []))
+    let service = PromptStudioAutomationService(repository: repository)
+
+    let explicitImage = try service.createPrompt(
+        AutomationCreatePromptInput(title: "Image", prompt: "write anything", model: "Image Model")
+    )
+    try expect(explicitImage.type == .image && explicitImage.assetKind == .image, "a valid image model should force an image prompt")
+    try expect(explicitImage.assetPath.isEmpty && explicitImage.format.isEmpty && explicitImage.isMediaPromptPlaceholder, "media prompt should be a file-less placeholder")
+
+    let vague = try service.createPrompt(
+        AutomationCreatePromptInput(title: "Vague", prompt: "something unclassified")
+    )
+    try expect(vague.type == .image && vague.modelId == "unspecified_image", "an unspecified model should follow the image fallback type")
+    try expect(vague.assetKind == .image && vague.assetPath.isEmpty, "an unspecified media prompt should remain file-less")
+
+    let text = try service.createPrompt(
+        AutomationCreatePromptInput(title: "Writing", prompt: "写一篇关于森林的文章")
+    )
+    try expect(text.type == .text && text.assetKind == .markdown && text.format == "MD", "explicit writing intent should create a Markdown prompt")
+    try expect(!text.assetPath.isEmpty && FileManager.default.fileExists(atPath: text.assetPath), "created Markdown prompt should have a real file")
+    try expect(text.primaryAssetState == .available, "created Markdown prompt should be available")
+
+    let failedURL = try temporaryLibraryURL()
+    let failedRepository = try PromptRepository(libraryURL: failedURL)
+    try SQLiteDatabase(path: failedRepository.databaseURL.path).execute("CREATE TRIGGER fail_create_prompt BEFORE INSERT ON prompt_items WHEN NEW.title = 'DB failure' BEGIN SELECT RAISE(ABORT, 'create failure'); END;")
+    let failedService = PromptStudioAutomationService(repository: failedRepository)
+    do {
+        _ = try failedService.createPrompt(AutomationCreatePromptInput(title: "DB failure", prompt: "写一篇文章"))
+        throw CoreUnitTestError.failure("createPrompt should surface DB failures")
+    } catch SQLiteError.stepFailed {
+        // Expected: the newly generated Markdown file must be cleaned up.
+    }
+    let failedDocuments = try FileManager.default.contentsOfDirectory(
+        at: failedURL.appendingPathComponent("assets/documents"),
+        includingPropertiesForKeys: nil
+    )
+    try expect(failedDocuments.isEmpty, "failed createPrompt should not leave an orphan Markdown file")
+}
+
 func testAutomationServiceImportsTextMetadata() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let service = PromptStudioAutomationService(repository: repository)
@@ -2059,6 +2102,7 @@ do {
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
     try testAutomationServiceCreatesAndUpdatesPrompts()
+    try testAutomationServiceCreatesTypedPromptPlaceholdersAndMarkdown()
     try testAutomationServiceImportsTextMetadata()
     try testDocumentTextExtractorReadsRealDocx()
     try testAutomationServiceImportsRealDocxMetadata()

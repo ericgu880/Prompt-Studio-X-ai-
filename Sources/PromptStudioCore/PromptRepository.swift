@@ -335,7 +335,7 @@ public final class PromptRepository: @unchecked Sendable {
         for item in candidates {
             var createdAsset: URL?
             do {
-                try database.transaction {
+                let didMigrate = try database.transaction {
                     let text = item.currentVersion?.prompt ?? ""
                     let type = PromptTypeClassifier.classify(text: text)
                     let assetKind: AssetKind
@@ -382,11 +382,13 @@ public final class PromptRepository: @unchecked Sendable {
                         let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
                         fileSize = Int64(values.fileSize ?? 0)
                     }
-                    try database.run(
+                    let changed = try database.runAndReturnChanges(
                         """
                         UPDATE prompt_items
                         SET type = ?, assetKind = ?, category = ?, assetPath = ?, thumbnailPath = ?, format = ?, fileSize = ?, updatedAt = ?
-                        WHERE id = ?;
+                        WHERE id = ?
+                          AND trim(assetPath) = ''
+                          AND upper(trim(format)) IN ('PROMPT', 'TEXT');
                         """,
                         values: [
                             .text(type.rawValue),
@@ -400,8 +402,13 @@ public final class PromptRepository: @unchecked Sendable {
                             .text(item.id)
                         ]
                     )
+                    return changed == 1
                 }
-                migratedIDs.append(item.id)
+                if didMigrate {
+                    migratedIDs.append(item.id)
+                } else if let createdAsset {
+                    try? FileManager.default.removeItem(at: createdAsset)
+                }
             } catch {
                 if let createdAsset {
                     try? FileManager.default.removeItem(at: createdAsset)
@@ -645,13 +652,19 @@ public final class PromptRepository: @unchecked Sendable {
         let fileName = "\(safePromptID.isEmpty ? UUID().uuidString : safePromptID)-\(UUID().uuidString).md"
         let destination = directory.appendingPathComponent(fileName)
         let temporary = directory.appendingPathComponent(".\(fileName).tmp")
+        let destinationExistedBefore = fileManager.fileExists(atPath: destination.path)
+        guard !destinationExistedBefore else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
+        }
         do {
             try Data(content.utf8).write(to: temporary, options: [.atomic])
             try fileManager.moveItem(at: temporary, to: destination)
             return destination
         } catch {
             try? fileManager.removeItem(at: temporary)
-            try? fileManager.removeItem(at: destination)
+            if !destinationExistedBefore {
+                try? fileManager.removeItem(at: destination)
+            }
             throw error
         }
     }

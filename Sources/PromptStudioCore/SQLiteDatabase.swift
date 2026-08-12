@@ -118,6 +118,14 @@ public final class SQLiteDatabase: @unchecked Sendable {
         }
     }
 
+    /// Runs a write statement and returns SQLite's affected-row count.
+    @discardableResult
+    public func runAndReturnChanges(_ sql: String, values: [SQLiteValue] = []) throws -> Int {
+        try run(sql, values: values)
+        let changed = try query("SELECT changes() AS changed;").first?["changed"] ?? nil
+        return Int(changed ?? "0") ?? 0
+    }
+
     public func query(_ sql: String, values: [SQLiteValue] = []) throws -> [[String: String?]] {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {

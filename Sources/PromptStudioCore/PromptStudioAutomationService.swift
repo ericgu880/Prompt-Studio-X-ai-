@@ -147,7 +147,27 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         guard !title.isEmpty else {
             throw AutomationServiceError.invalidInput("标题不能为空")
         }
-        let model = try resolveModel(input.model)
+        let requestedModel = input.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localModels = try repository.loadModelProfiles()
+        let matchedModel = requestedModel.flatMap { requested in
+            localModels.first(where: { $0.id == requested || $0.name.caseInsensitiveCompare(requested) == .orderedSame })
+        }
+        let type: PromptType
+        let model: ModelProfile
+        if let matchedModel {
+            type = PromptTypeClassifier.classify(
+                text: input.prompt,
+                mode: .manual(matchedModel.type)
+            )
+            model = matchedModel
+        } else {
+            type = PromptTypeClassifier.classify(text: input.prompt)
+            if let requestedModel, !requestedModel.isEmpty {
+                model = ModelProfile(id: requestedModel, name: requestedModel, type: type, parameters: [])
+            } else {
+                model = try ensureCaptureModel(for: type)
+            }
+        }
         let folder = try resolveFolder(input.folderID)
         let id = UUID().uuidString
         let version = PromptVersion(
@@ -157,29 +177,54 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             negativePrompt: input.negativePrompt,
             note: "Created by agent"
         )
-        let item = PromptItem(
-            id: id,
-            title: title,
-            type: model.type,
-            assetKind: .text,
-            modelId: model.id,
-            modelName: model.name,
-            folderId: folder?.id ?? "",
-            folderName: folder?.name ?? "未分类",
-            category: "文本",
-            assetPath: "",
-            thumbnailPath: "",
-            aspectRatio: "",
-            width: 0,
-            height: 0,
-            format: "PROMPT",
-            fileSize: 0,
-            sortOrder: try nextTopSortOrder(),
-            tags: normalizedTags(input.tags),
-            versions: [version]
-        )
-        try repository.saveItem(item)
-        return item
+        let assetKind = assetKind(for: type)
+        var createdMarkdownURL: URL?
+        do {
+            var assetPath = ""
+            var thumbnailPath = ""
+            var format = ""
+            var fileSize: Int64 = 0
+            if type == .text {
+                let markdownURL = try repository.writeMarkdownPromptAsset(
+                    promptID: id,
+                    title: title,
+                    prompt: input.prompt,
+                    negativePrompt: input.negativePrompt
+                )
+                createdMarkdownURL = markdownURL
+                assetPath = markdownURL.path
+                thumbnailPath = markdownURL.path
+                format = "MD"
+                let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
+                fileSize = Int64(values.fileSize ?? 0)
+            }
+            let item = PromptItem(
+                id: id,
+                title: title,
+                type: type,
+                assetKind: assetKind,
+                modelId: model.id,
+                modelName: model.name,
+                folderId: folder?.id ?? "",
+                folderName: folder?.name ?? "未分类",
+                category: type == .text ? "Markdown" : assetKind.displayName,
+                assetPath: assetPath,
+                thumbnailPath: thumbnailPath,
+                aspectRatio: "",
+                width: 0,
+                height: 0,
+                format: format,
+                fileSize: fileSize,
+                sortOrder: try nextTopSortOrder(),
+                tags: normalizedTags(input.tags),
+                versions: [version]
+            )
+            try repository.saveItem(item)
+            return item
+        } catch {
+            removeGeneratedAsset(at: createdMarkdownURL)
+            throw error
+        }
     }
 
     /// Persists an approved browser selection in the free capture inbox.
@@ -419,18 +464,6 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         """
     }
 
-    private func resolveModel(_ requested: String?) throws -> ModelProfile {
-        let models = try repository.loadModelProfiles()
-        let trimmed = requested?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmed, !trimmed.isEmpty {
-            if let model = models.first(where: { $0.id == trimmed || $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-                return model
-            }
-            return ModelProfile(id: trimmed, name: trimmed, type: .text, parameters: [])
-        }
-        return models.first ?? ModelProfile(id: "default", name: "未指定", type: .text, parameters: [])
-    }
-
     private func ensureCaptureModel(for type: PromptType = .text) throws -> ModelProfile {
         let id = "unspecified_\(type.rawValue)"
         let canonical = ModelProfile(id: id, name: "未指定模型", type: type, parameters: [])
@@ -442,6 +475,19 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         }
         try repository.saveModelProfile(canonical)
         return canonical
+    }
+
+    private func assetKind(for type: PromptType) -> AssetKind {
+        switch type {
+        case .image:
+            .image
+        case .video:
+            .video
+        case .audio:
+            .audio
+        case .text:
+            .markdown
+        }
     }
 
     private func ensureCaptureFolder() throws -> LibraryFolder {
