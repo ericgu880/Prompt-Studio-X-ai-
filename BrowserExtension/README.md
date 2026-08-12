@@ -2,7 +2,8 @@
 
 This is a Manifest V3 extension for Chrome, Edge, and Arc. It runs the selection overlay locally
 and sends only user-approved selections to the bundled `PromptStudioCaptureHost` through Chrome
-Native Messaging. The extension does not make network requests.
+Native Messaging. Image bytes are fetched only after an explicit image menu action or image drag
+start, using the ordered page-context/extension fallback pipeline; text capture remains local.
 
 ## Explicit user installation
 

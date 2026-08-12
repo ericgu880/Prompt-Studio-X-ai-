@@ -1,7 +1,8 @@
 (function runPromptStudioContent() {
   const S = globalThis.PromptStudioSelection;
   const C = globalThis.PromptStudioContentCore;
-  if (!S || !C || !document.body) return;
+  const I = globalThis.PromptStudioImageCapture;
+  if (!S || !C || !I || !document.body) return;
 
   const restrictedPage = !['http:', 'https:'].includes(location.protocol);
   let feedButton = null;
@@ -12,6 +13,206 @@
   let selectionRect = null;
   const captureOrigins = new Map();
   const animatedCaptureIDs = new Set();
+  let dragSession = null;
+  let mouthDuplicate = null;
+  let lastPointerPoint = { x: 0, y: 0, screenX: 0, screenY: 0 };
+
+  function elementAtPoint(x, y, srcUrl) {
+    let element = Number.isFinite(x) && Number.isFinite(y) && document.elementFromPoint(x, y);
+    if (element && element.nodeType === Node.TEXT_NODE) element = element.parentElement;
+    const imageElement = element && element.closest && element.closest('img, picture, canvas, svg');
+    if (imageElement) return imageElement;
+    if (srcUrl && document.images) {
+      return Array.from(document.images).find((candidate) => candidate.currentSrc === srcUrl || candidate.src === srcUrl) || null;
+    }
+    return element || null;
+  }
+
+  function bytesFromDataURL(value) {
+    if (typeof value !== 'string' || !/^data:/i.test(value)) return null;
+    const comma = value.indexOf(',');
+    if (comma < 0) return null;
+    const metadata = value.slice(0, comma);
+    const payload = value.slice(comma + 1);
+    if (/;base64/i.test(metadata)) {
+      try { return I.decodeBase64(payload); } catch { return null; }
+    }
+    try {
+      return new TextEncoder().encode(decodeURIComponent(payload));
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadedBytesForElement(element, descriptor) {
+    const source = descriptor && descriptor.url;
+    const direct = bytesFromDataURL(source);
+    if (direct) return direct;
+    if (element && typeof element.toBlob === 'function') {
+      return new Promise((resolve) => {
+        try {
+          element.toBlob(async (blob) => resolve(blob ? await I.responseBytes(blob) : null), 'image/png');
+        } catch { resolve(null); }
+      });
+    }
+    if (element && String(element.tagName || '').toLowerCase() === 'svg' && element.outerHTML) {
+      return new TextEncoder().encode(element.outerHTML);
+    }
+    return null;
+  }
+
+  async function descriptorForCapture(request) {
+    const x = Number.isFinite(request.x) ? request.x : lastPointerPoint.x;
+    const y = Number.isFinite(request.y) ? request.y : lastPointerPoint.y;
+    const element = elementAtPoint(x, y, request.srcUrl);
+    let descriptor = I.resolveImageDescriptor(element, {
+      viewportWidth: window.innerWidth,
+      devicePixelRatio: window.devicePixelRatio,
+      allowCSSBackground: request.context === 'page',
+      baseURL: location.href,
+    });
+    if (!descriptor && request.srcUrl) descriptor = I.classifyImageSource(request.srcUrl);
+    if (!descriptor) return null;
+    const rect = element && typeof element.getBoundingClientRect === 'function'
+      ? rectInTopViewport(element) : null;
+    const loadedBytes = await loadedBytesForElement(element, descriptor);
+    const clickScreenPoint = {
+      x: Number.isFinite(request.screenX) ? request.screenX : (lastPointerPoint.screenX || window.screenX + x),
+      y: Number.isFinite(request.screenY) ? request.screenY : (lastPointerPoint.screenY || window.screenY + y),
+    };
+    let viewportWidth = window.innerWidth;
+    let viewportHeight = window.innerHeight;
+    try {
+      viewportWidth = window.top.innerWidth;
+      viewportHeight = window.top.innerHeight;
+    } catch { /* cross-origin top frames retain their local viewport */ }
+    return {
+      captureID: request.captureID,
+      pageTitle: document.title || '',
+      pageURL: location.href,
+      siteName: S.siteNameFromURL(location.href),
+      resourceURL: descriptor.url || null,
+      url: descriptor.url || null,
+      altText: element && typeof element.alt === 'string' ? element.alt : '',
+      originalFileName: descriptor.url ? (descriptor.url.split('/').pop() || '').split('?')[0] : '',
+      domSourceKind: descriptor.domSourceKind,
+      acquisitionMethod: 'pageContext',
+      isScreenshot: false,
+      mimeType: descriptor.domSourceKind === 'inlineSVG' ? 'image/svg+xml' : null,
+      pixelWidth: element && Number.isFinite(element.naturalWidth) && element.naturalWidth ? element.naturalWidth : null,
+      pixelHeight: element && Number.isFinite(element.naturalHeight) && element.naturalHeight ? element.naturalHeight : null,
+      clickScreenPoint,
+      capturedAt: new Date().toISOString(),
+      loadedBytes,
+      crop: rect ? I.cropRectForVisibleElement(rect, { width: viewportWidth, height: viewportHeight }, window.devicePixelRatio) : null,
+    };
+  }
+
+  function rectInTopViewport(element) {
+    const local = element.getBoundingClientRect();
+    const rect = {
+      left: local.left, top: local.top, right: local.right, bottom: local.bottom,
+    };
+    // Same-origin frames expose frameElement.  Add each frame's viewport offset so a
+    // top-level captureVisibleTab crop remains correct for nested content scripts.
+    let frame = window.frameElement;
+    while (frame && frame.getBoundingClientRect) {
+      const frameRect = frame.getBoundingClientRect();
+      rect.left += frameRect.left;
+      rect.right += frameRect.left;
+      rect.top += frameRect.top;
+      rect.bottom += frameRect.top;
+      try { frame = frame.ownerDocument && frame.ownerDocument.defaultView && frame.ownerDocument.defaultView.frameElement; } catch { frame = null; }
+    }
+    return rect;
+  }
+
+  async function cropScreenshot(dataURL, crop) {
+    if (!dataURL || !crop || !crop.width || !crop.height) return null;
+    return new Promise((resolve) => {
+      const imageElement = new Image();
+      imageElement.onload = async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = crop.width;
+        canvas.height = crop.height;
+        const context = canvas.getContext('2d');
+        if (!context) { resolve(null); return; }
+        context.drawImage(imageElement, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+        try {
+          canvas.toBlob(async (blob) => resolve(blob ? await I.responseBytes(blob) : null), 'image/png');
+        } catch { resolve(null); }
+      };
+      imageElement.onerror = () => resolve(null);
+      imageElement.src = dataURL;
+    });
+  }
+
+  function clearMouthDuplicate() {
+    if (mouthDuplicate) mouthDuplicate.remove();
+    mouthDuplicate = null;
+  }
+
+  function renderMouthDuplicate(result) {
+    clearMouthDuplicate();
+    if (!dragSession || !result || !result.insidePet || !dragSession.element) return;
+    const duplicate = dragSession.element.cloneNode(true);
+    duplicate.classList.add('promptstudio-capture-mouth-duplicate');
+    duplicate.removeAttribute('id');
+    duplicate.setAttribute('aria-hidden', 'true');
+    duplicate.width = 36;
+    duplicate.height = 36;
+    const point = result.mouthScreenPoint || result.mouthPoint;
+    const viewportPoint = point ? S.mapScreenPointToViewport(point, {
+      screenX: window.screenX, screenY: window.screenY, outerHeight: window.outerHeight, innerHeight: window.innerHeight,
+      visualViewportOffsetX: globalThis.visualViewport ? visualViewport.offsetLeft : 0,
+      visualViewportOffsetY: globalThis.visualViewport ? visualViewport.offsetTop : 0,
+      devicePixelRatio: window.devicePixelRatio, screenCoordinatesArePhysicalPixels: false,
+    }) : { x: 0, y: 0 };
+    duplicate.style.left = `${Math.max(0, viewportPoint.x - 18)}px`;
+    duplicate.style.top = `${Math.max(0, viewportPoint.y - 18)}px`;
+    duplicate.style.width = '36px';
+    duplicate.style.height = '36px';
+    document.documentElement.appendChild(duplicate);
+    mouthDuplicate = duplicate;
+  }
+
+  function clearDragSession() {
+    clearMouthDuplicate();
+    dragSession = null;
+  }
+
+  function sendDragPreview(event) {
+    if (!dragSession || !dragSession.captureID) return;
+    chrome.runtime.sendMessage({
+      type: 'previewImageDrag', captureID: dragSession.captureID,
+      screenPoint: { x: event.screenX, y: event.screenY },
+    });
+  }
+
+  function beginImageDrag(event) {
+    const element = event.target && event.target.closest && event.target.closest('img, canvas, svg');
+    if (!element || dragSession) return;
+    const captureID = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID() : `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    dragSession = { captureID, element, dropped: false, started: true };
+    descriptorForCapture({ captureID, context: 'image', x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, srcUrl: element.currentSrc || element.src || '' })
+      .then((descriptor) => {
+        if (!dragSession || dragSession.captureID !== captureID || !descriptor) return;
+        dragSession.descriptor = descriptor;
+        chrome.runtime.sendMessage({ type: 'startImageDrag', descriptor }, (response) => {
+          if (chrome.runtime.lastError || !response || !response.ok) {
+            clearDragSession();
+            showNotice(response && response.code === 'image-busy' ? 'PromptStudio 正在处理另一张图片。' : '图片预取失败，请重试。', { left: event.clientX, top: event.clientY });
+          } else {
+            chrome.runtime.sendMessage({
+              type: 'previewImageDrag', captureID,
+              screenPoint: { x: event.screenX, y: event.screenY },
+            });
+          }
+        });
+      })
+      .catch(() => clearDragSession());
+  }
 
   function isPasswordNode(node) {
     const element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
@@ -160,8 +361,33 @@
       .then(() => fragment.remove(), () => fragment.remove());
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== 'captureResult') return;
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.type === 'resolveImageCapture') {
+      descriptorForCapture(message).then((descriptor) => {
+        sendResponse(descriptor ? { ok: true, descriptor } : { ok: false, code: 'image-not-found' });
+      }).catch(() => sendResponse({ ok: false, code: 'image-not-found' }));
+      return true;
+    }
+    if (message && message.type === 'cropImageScreenshot') {
+      cropScreenshot(message.dataURL, message.crop).then((bytes) => {
+        sendResponse(bytes ? { ok: true, bytes } : { ok: false, code: 'screenshot-crop-failed' });
+      }).catch(() => sendResponse({ ok: false, code: 'screenshot-crop-failed' }));
+      return true;
+    }
+    if (message && message.type === 'imageCaptureResult') {
+      const result = message.result || {};
+      if (dragSession && result.captureID === dragSession.captureID) {
+        renderMouthDuplicate(result);
+        if (result.type === 'failed') {
+          showNotice(result.code === 'image-busy' ? 'PromptStudio 正在处理另一张图片。' : '图片采集失败，请重试。', { left: 12, top: 12 });
+          clearDragSession();
+        } else if (result.type === 'saved' || result.type === 'cancelled') {
+          clearDragSession();
+        }
+      }
+      return false;
+    }
+    if (!message || message.type !== 'captureResult') return false;
     const result = message.result || {};
     const messageCaptureID = result.captureID;
     if ((result.type === 'saved' || result.type === 'animate')
@@ -188,6 +414,34 @@
   });
 
   document.addEventListener('selectionchange', scheduleSelection, true);
+  document.addEventListener('pointermove', (event) => {
+    lastPointerPoint = { x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY };
+  }, true);
+  document.addEventListener('contextmenu', (event) => {
+    lastPointerPoint = { x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY };
+  }, true);
+  document.addEventListener('dragstart', beginImageDrag, true);
+  document.addEventListener('dragover', (event) => {
+    if (!dragSession) return;
+    event.preventDefault();
+    sendDragPreview(event);
+  }, true);
+  document.addEventListener('drop', (event) => {
+    if (!dragSession) return;
+    event.preventDefault();
+    dragSession.dropped = true;
+    chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.ok) {
+        showNotice('图片采集失败，请重试。', { left: event.clientX, top: event.clientY });
+        clearDragSession();
+      }
+    });
+  }, true);
+  document.addEventListener('dragend', () => {
+    if (!dragSession) return;
+    if (!dragSession.dropped) chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+    if (!dragSession.dropped) clearDragSession();
+  }, true);
   window.addEventListener('scroll', clearSelectionUI, true);
   window.addEventListener('resize', clearSelectionUI, true);
   document.addEventListener('pointerdown', (event) => {
