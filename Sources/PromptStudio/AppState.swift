@@ -299,6 +299,11 @@ final class AppState: ObservableObject {
     @Published private(set) var canNavigateForward = false
     @Published private(set) var libraryAccessState: LibraryAccessState = .loading
 
+    /// The app-side adapter is intentionally a closure. PromptStudioCore owns
+    /// the production capture model; this keeps the Pet target buildable while
+    /// allowing the integration branch to connect `createCapturedPrompt`.
+    private var petCaptureHandler: PetCaptureHandler?
+
     private let configuredLibraryURL: URL
     private let libraryAccessCoordinator: LibraryAccessCoordinator
     private var authorizedLibraryContext: AuthorizedLibraryContext?
@@ -362,6 +367,17 @@ final class AppState: ObservableObject {
         startLibraryLoad { [libraryAccessCoordinator] in
             try libraryAccessCoordinator.loadInitialContext()
         }
+    }
+
+    func configurePetCaptureHandler(_ handler: @escaping PetCaptureHandler) {
+        petCaptureHandler = handler
+    }
+
+    func handlePetCapture(_ request: PetCaptureRequest) async throws -> PetCaptureOutcome {
+        guard let petCaptureHandler else {
+            throw PetCaptureError.unavailable
+        }
+        return try await petCaptureHandler(request)
     }
 
     func retryLoadLibrary() {

@@ -755,9 +755,11 @@ struct ExportSheet: View {
 struct SettingsSheet: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var shortcutStore: AppShortcutStore
+    @ObservedObject private var petPreferencesStore = PetPreferencesStore.shared
     @State private var selectedPage: SettingsPage = .library
     @State private var shortcutDraft = AppShortcutStore.defaultBindings()
     @State private var shortcutRecorderAction: AppShortcutAction?
+    @State private var petDraft = PetPreferences.defaults
 
     var body: some View {
         HStack(spacing: 0) {
@@ -780,7 +782,7 @@ struct SettingsSheet: View {
                 }
                 .transparentScrollArea()
                 .background(StudioColor.appBackground)
-                if selectedPage == .shortcuts {
+                if selectedPage == .shortcuts || selectedPage == .pet {
                     settingsBottomBar
                 }
             }
@@ -795,6 +797,7 @@ struct SettingsSheet: View {
                 selectedPage = page
                 state.preferredSettingsPageID = nil
             }
+            petDraft = petPreferencesStore.value
         }
     }
 
@@ -917,6 +920,8 @@ struct SettingsSheet: View {
         case .license:
             LicenseSettingsView()
                 .environmentObject(state)
+        case .pet:
+            PetSettingsPage(preferences: $petDraft)
         }
     }
 
@@ -1162,6 +1167,8 @@ struct SettingsSheet: View {
         case .shortcuts:
             shortcutDraft = AppShortcutStore.defaultBindings()
             shortcutRecorderAction = nil
+        case .pet:
+            petDraft = PetPreferences.defaults
         default:
             break
         }
@@ -1170,6 +1177,9 @@ struct SettingsSheet: View {
     private func saveSettings() {
         guard canSave else { return }
         shortcutStore.save(shortcutDraft)
+        if selectedPage == .pet {
+            petPreferencesStore.update(petDraft)
+        }
         state.modal = nil
     }
 
@@ -1193,10 +1203,100 @@ struct SettingsSheet: View {
     }
 }
 
+private struct PetSettingsPage: View {
+    @Binding var preferences: PetPreferences
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 0) {
+                petToggleRow(
+                    title: "启动时显示桌宠",
+                    detail: "应用启动后在当前显示器边缘显示桌宠。隐藏仅对当前会话生效。",
+                    isOn: $preferences.showOnLaunch
+                )
+                petToggleRow(
+                    title: "启用网页采集",
+                    detail: "允许浏览器扩展把选中的网页文字发送到 PromptStudio。",
+                    isOn: $preferences.captureEnabled
+                )
+                petToggleRow(
+                    title: "采集声音",
+                    detail: "保存成功或失败时播放提示音（默认关闭）。",
+                    isOn: $preferences.soundEnabled
+                )
+                petToggleRow(
+                    title: "保存后清除来源选择",
+                    detail: "采集成功后清除浏览器中的原文选择。",
+                    isOn: $preferences.clearSourceAfterCapture
+                )
+                petToggleRow(
+                    title: "启用浏览器连接",
+                    detail: "允许本地 Native Messaging 主机接收 Chrome、Edge 或 Arc 的采集请求。",
+                    isOn: $preferences.hostRegistrationEnabled
+                )
+            }
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("默认文件夹")
+                    .font(StudioFont.font(13, weight: .semibold))
+                TextField("folder-capture-inbox", text: $preferences.defaultFolderID)
+                    .textFieldStyle(.plain)
+                    .font(StudioFont.font(13))
+                    .foregroundStyle(StudioColor.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .background(StudioColor.control)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+                Text("默认使用“待整理”采集收件箱（folder-capture-inbox）。")
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(StudioColor.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+
+            PetHostRegistrationView()
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(StudioColor.panel)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
+        }
+    }
+
+    private func petToggleRow(title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(StudioFont.font(13, weight: .semibold))
+                Text(detail)
+                    .font(StudioFont.font(12))
+                    .foregroundStyle(StudioColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        .padding(16)
+        .overlay(alignment: .top) {
+            Rectangle().fill(StudioColor.hairline).frame(height: 1)
+        }
+    }
+}
+
 private enum SettingsPage: String, CaseIterable, Identifiable {
     case library
     case shortcuts
     case license
+    case pet
 
     enum Section: CaseIterable, Identifiable {
         case storage
@@ -1219,6 +1319,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .library: "资料库"
         case .shortcuts: "快捷键"
         case .license: "授权"
+        case .pet: "桌宠与采集"
         }
     }
 
@@ -1227,6 +1328,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .library: "查看并复制当前本地资料库、数据库和资产目录路径。"
         case .shortcuts: "自定义常用操作快捷键。"
         case .license: "激活、刷新或停用当前设备授权。"
+        case .pet: "控制桌宠显示、网页采集和本地浏览器连接。"
         }
     }
 
@@ -1235,6 +1337,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .library: "externaldrive"
         case .shortcuts: "keyboard"
         case .license: "key"
+        case .pet: "pawprint"
         }
     }
 
@@ -1243,11 +1346,12 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         case .library: "本地"
         case .shortcuts: "效率"
         case .license: "Pro"
+        case .pet: "本地"
         }
     }
 
     var supportsReset: Bool {
-        self == .shortcuts
+        self == .shortcuts || self == .pet
     }
 
     var searchText: String {
@@ -1258,7 +1362,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .library:
             .storage
-        case .shortcuts, .license:
+        case .shortcuts, .license, .pet:
             .system
         }
     }
