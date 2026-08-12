@@ -75,6 +75,7 @@ struct SidePanelReferenceSection: View {
     let references: [ReferenceAsset]
     var title: String = "参考资产"
     var limit: Int = 8
+    var onPreview: ((ReferenceAsset) -> Void)?
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.fixed(62), spacing: 8), count: 4)
@@ -86,18 +87,67 @@ struct SidePanelReferenceSection: View {
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                 ForEach(references.prefix(limit)) { reference in
-                    ReferenceAssetPreview(reference: reference)
-                        .frame(width: 62, height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioColor.hairline, lineWidth: 1))
-                        .transaction { transaction in
-                            transaction.animation = nil
-                        }
+                    SidePanelReferenceThumbnail(reference: reference, onPreview: onPreview)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct SidePanelReferenceThumbnail: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let reference: ReferenceAsset
+    let onPreview: ((ReferenceAsset) -> Void)?
+    @State private var isHovered = false
+
+    private var canPreview: Bool {
+        onPreview != nil && AssetFormatCatalog.support(forFileExtension: URL(fileURLWithPath: reference.path).pathExtension).assetKind == .image
+    }
+
+    var body: some View {
+        Group {
+            if canPreview {
+                Button {
+                    onPreview?(reference)
+                } label: {
+                    thumbnailContent(showsPreviewControl: isHovered)
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    withAnimation(StudioMotion.fast(reduceMotion: reduceMotion)) {
+                        isHovered = hovering
+                    }
+                }
+                .help("放大参考图")
+                .accessibilityLabel("放大参考图")
+            } else {
+                thumbnailContent(showsPreviewControl: false)
+                    .transaction { $0.animation = nil }
+            }
+        }
+    }
+
+    private func thumbnailContent(showsPreviewControl: Bool) -> some View {
+        ZStack {
+            ReferenceAssetPreview(reference: reference)
+
+            if showsPreviewControl {
+                Color.black.opacity(0.28)
+                Circle()
+                    .fill(Color.black.opacity(0.72))
+                    .overlay(Circle().stroke(Color.white.opacity(0.34), lineWidth: 1))
+                    .frame(width: 24, height: 24)
+                Image(systemName: "plus")
+                    .font(StudioFont.symbol(11, weight: .semibold))
+                    .foregroundStyle(Color.white)
+            }
+        }
+        .frame(width: 62, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(showsPreviewControl ? StudioColor.primaryAction.opacity(0.6) : StudioColor.hairline, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 

@@ -141,5 +141,6 @@ bash "$ROOT_DIR/Scripts/test_reorder_interaction.sh"
 bash "$ROOT_DIR/Scripts/test_hover_reveal_scroller_overflow.sh"
 bash "$ROOT_DIR/Scripts/test_markdown_visual_line_numbers.sh"
 bash "$ROOT_DIR/Scripts/test_prompt_smart_paste.sh"
+bash "$ROOT_DIR/Scripts/test_reference_asset_preview_hover.sh"
 
 echo "Release UI copy tests passed"
