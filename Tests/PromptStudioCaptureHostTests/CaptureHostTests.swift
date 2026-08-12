@@ -161,6 +161,11 @@ func browserRegistrationPathsCoverSupportedBrowsers() {
     #expect(UnixCaptureSocket.defaultPath(homeDirectory: "/Users/tester").hasSuffix("/PromptStudio/web-capture.sock"))
 }
 
+@Test("cold launch keeps PromptStudio in the background")
+func coldLaunchDoesNotActivateMainApp() {
+    #expect(PromptStudioLauncher.launchArguments == ["-g", "-b", "com.creatigo.promptstudio"])
+}
+
 @Test("framer rejects partial headers, truncated payloads, and invalid length")
 func nativeMessagingFramerRejectsMalformedFrames() throws {
     #expect(throws: NativeMessagingError.truncatedFrame) {

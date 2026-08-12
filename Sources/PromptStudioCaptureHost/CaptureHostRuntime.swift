@@ -66,12 +66,14 @@ public struct UnixCaptureSocket {
 }
 
 public struct PromptStudioLauncher {
+    public static let launchArguments = ["-g", "-b", "com.creatigo.promptstudio"]
+
     public init() {}
 
     public func launch() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-b", "com.creatigo.promptstudio"]
+        process.arguments = Self.launchArguments
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
