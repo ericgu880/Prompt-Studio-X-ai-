@@ -56,12 +56,12 @@
   }
 
   function makeCaptureCandidate({ text, pageTitle, pageURL, clickScreenPoint, capturedAt, captureID } = {}) {
-    const normalizedText = typeof text === 'string' ? text.trim() : '';
-    if (!normalizedText) throw new Error('empty-selection');
-    if (normalizedText.length > MAX_CAPTURE_CHARACTERS) throw new Error('selection-too-large');
+    const selectedText = typeof text === 'string' ? text : '';
+    if (!selectedText.trim()) throw new Error('empty-selection');
+    if (selectedText.length > MAX_CAPTURE_CHARACTERS) throw new Error('selection-too-large');
     return {
       captureID: captureID || newCaptureID(),
-      selectedText: normalizedText,
+      selectedText,
       pageTitle: typeof pageTitle === 'string' ? pageTitle : '',
       pageURL: typeof pageURL === 'string' ? pageURL : '',
       siteName: siteNameFromURL(pageURL),

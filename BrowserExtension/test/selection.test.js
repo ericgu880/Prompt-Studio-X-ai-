@@ -55,7 +55,7 @@ test('candidate metadata is read only when the click builds the candidate', () =
   });
   assert.deepEqual(candidate, {
     captureID: 'capture-1',
-    selectedText: 'selected prompt',
+    selectedText: '  selected prompt  ',
     pageTitle: 'A page',
     pageURL: 'https://example.test/path?q=1',
     siteName: 'example.test',
