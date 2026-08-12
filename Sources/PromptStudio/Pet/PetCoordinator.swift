@@ -11,6 +11,7 @@ final class PetCoordinator: ObservableObject {
     @Published private(set) var isSessionHidden = false
 
     var captureHandler: PetCaptureHandler?
+    let hostRegistrationService: PetHostRegistrationService
 
     private let preferencesStore: PetPreferencesStore
     private var preferenceObserver: NSObjectProtocol?
@@ -28,11 +29,13 @@ final class PetCoordinator: ObservableObject {
 
     init(
         preferencesStore: PetPreferencesStore? = nil,
+        hostRegistrationService: PetHostRegistrationService? = nil,
         captureHandler: PetCaptureHandler? = nil
     ) {
         let store = preferencesStore ?? PetPreferencesStore.shared
         self.preferencesStore = store
         preferences = store.value
+        self.hostRegistrationService = hostRegistrationService ?? .live()
         self.captureHandler = captureHandler
     }
 
@@ -45,7 +48,7 @@ final class PetCoordinator: ObservableObject {
         didStart = true
         _ = statusItemController
         if preferences.hostRegistrationEnabled {
-            socketCoordinatorServer.start()
+            enableBrowserConnection()
         }
         preferenceObserver = NotificationCenter.default.addObserver(
             forName: .petPreferencesDidChange,
@@ -57,9 +60,10 @@ final class PetCoordinator: ObservableObject {
                 guard let self, let value else { return }
                 preferences = value
                 if value.hostRegistrationEnabled {
-                    socketCoordinatorServer.start()
+                    enableBrowserConnection()
                 } else {
                     socketCoordinatorServer.stop()
+                    _ = try? hostRegistrationService.removeHost()
                 }
                 if value.showOnLaunch {
                     if isSessionHidden {
@@ -89,6 +93,15 @@ final class PetCoordinator: ObservableObject {
             self.preferenceObserver = nil
         }
         panelController.hide()
+    }
+
+    private func enableBrowserConnection() {
+        do {
+            try hostRegistrationService.installHost()
+            socketCoordinatorServer.start()
+        } catch {
+            socketCoordinatorServer.stop()
+        }
     }
 
     func show() {
@@ -182,6 +195,7 @@ final class PetCoordinator: ObservableObject {
         pendingRequest = request
         _ = machine.transition(.captureRequested)
         panelController.setAsking(true)
+        panelController.moveNearBrowserPoint(request.clickPoint)
         NotificationCenter.default.post(name: .petCapturePresented, object: request)
         return .presented(captureID: request.id)
     }
@@ -258,7 +272,8 @@ final class PetCoordinator: ObservableObject {
         }
 
         do {
-            let outcome = try await captureHandler(request)
+            let savedOutcome = try await captureHandler(request)
+            let outcome = silently ? savedOutcome : outcomeWithPetMouth(savedOutcome)
             if silently {
                 sendHiddenNotification(outcome: outcome)
                 if outcome.isSuccess {
@@ -285,6 +300,17 @@ final class PetCoordinator: ObservableObject {
                 NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
                 scheduleReset()
             }
+            return outcome
+        }
+    }
+
+    private func outcomeWithPetMouth(_ outcome: PetCaptureOutcome) -> PetCaptureOutcome {
+        switch outcome {
+        case .saved(let captureID, _):
+            return .saved(captureID: captureID, mouthPoint: panelController.mouthBrowserScreenPoint)
+        case .alreadySaved(let captureID, _):
+            return .alreadySaved(captureID: captureID, mouthPoint: panelController.mouthBrowserScreenPoint)
+        case .presented, .animate, .cancelled, .failed:
             return outcome
         }
     }

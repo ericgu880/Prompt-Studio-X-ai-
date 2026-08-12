@@ -8,7 +8,7 @@ struct PetPreferences: Codable, Equatable, Sendable {
         soundEnabled: false,
         defaultFolderID: "folder-capture-inbox",
         clearSourceAfterCapture: false,
-        hostRegistrationEnabled: true
+        hostRegistrationEnabled: false
     )
 
     var showOnLaunch: Bool
@@ -24,7 +24,7 @@ struct PetPreferences: Codable, Equatable, Sendable {
         soundEnabled: Bool = false,
         defaultFolderID: String = "folder-capture-inbox",
         clearSourceAfterCapture: Bool = false,
-        hostRegistrationEnabled: Bool = true
+        hostRegistrationEnabled: Bool = false
     ) {
         self.showOnLaunch = showOnLaunch
         self.captureEnabled = captureEnabled

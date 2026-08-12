@@ -1205,6 +1205,7 @@ struct SettingsSheet: View {
 
 private struct PetSettingsPage: View {
     @Binding var preferences: PetPreferences
+    @EnvironmentObject private var petCoordinator: PetCoordinator
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1261,7 +1262,7 @@ private struct PetSettingsPage: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioColor.hairline, lineWidth: 1))
 
-            PetHostRegistrationView()
+            PetHostRegistrationView(registrationService: petCoordinator.hostRegistrationService)
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(StudioColor.panel)
