@@ -25,6 +25,29 @@ func imageStagingAcceptsOrderedChunksAndGeneratedToken() throws {
     #expect(try Data(contentsOf: staged.fileURL) == bytes)
 }
 
+@Test("image staging atomically skips a preoccupied token and never follows a symlink")
+func imageStagingAtomicallySkipsSymlinkCollision() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-collision-\(UUID().uuidString)", isDirectory: true)
+    let target = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-target-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: target)
+    }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let original = Data("must-not-change".utf8)
+    try original.write(to: target)
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("collision"), withDestinationURL: target)
+    var tokens = ["collision", "next-token"]
+    let store = ImageStagingStore(rootDirectory: root, tokenGenerator: { tokens.removeFirst() })
+    let candidate = BrowserImageCaptureCandidate(captureID: "image-collision", capturedAt: "2026-08-13T00:00:00.000Z")
+
+    let session = try store.begin(candidate: candidate, expectedByteCount: 0, sha256: sha256Hex(Data()))
+    #expect(session.stagingToken == "next-token")
+    #expect(try Data(contentsOf: target) == original)
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("collision").path))
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("next-token").path))
+}
+
 @Test("image staging rejects duplicate and out-of-order chunks")
 func imageStagingRejectsDuplicateAndOutOfOrderChunks() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-image-stage-\(UUID().uuidString)", isDirectory: true)
@@ -134,6 +157,83 @@ func captureHostResponseCarriesRetryability() throws {
     #expect(object["retryable"] as? Bool == true)
     let decoded = try JSONDecoder().decode(CaptureHostResponse.self, from: encoded)
     #expect(decoded.retryable == true)
+}
+
+@Test("image begin rejects candidate integrity fields that disagree with the outer envelope")
+func imageBeginRejectsCandidateIntegrityMismatch() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-integrity-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let origin = CaptureOriginAllowlist.developmentOrigin
+    let emptyDigest = sha256Hex(Data())
+    let byteCountMismatch = BrowserImageCaptureCandidate(
+        captureID: "image-integrity-byte-count",
+        byteCount: 1,
+        sha256: emptyDigest,
+        capturedAt: "2026-08-13T00:00:00.000Z"
+    )
+    let hashMismatch = BrowserImageCaptureCandidate(
+        captureID: "image-integrity-hash",
+        byteCount: 0,
+        sha256: String(repeating: "0", count: 64),
+        capturedAt: "2026-08-13T00:00:00.000Z"
+    )
+    let first = try imageRequestJSON([
+        "type": "imageBegin", "origin": origin,
+        "candidate": try jsonObject(byteCountMismatch),
+        "expectedByteCount": 0, "sha256": emptyDigest
+    ])
+    let second = try imageRequestJSON([
+        "type": "imageBegin", "origin": origin,
+        "candidate": try jsonObject(hashMismatch),
+        "expectedByteCount": 0, "sha256": emptyDigest
+    ])
+    let inputURL = try temporaryFile(first + second)
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-image-integrity-output-\(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: origin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: UnixSocketCaptureForwarder(streamingExchange: { _, _, _, _ in fatalError("integrity mismatch must not reach app") }),
+        stagingStore: ImageStagingStore(rootDirectory: root)
+    )
+    try host.run()
+    let outputHandle = try FileHandle(forReadingFrom: outputURL)
+    var responses: [CaptureHostResponse] = []
+    while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
+        responses.append(try JSONDecoder().decode(CaptureHostResponse.self, from: frame))
+    }
+    #expect(responses.map(\.type) == ["failed", "failed"])
+    #expect(responses.map(\.code) == ["image-invalid", "image-invalid"])
+}
+
+@Test("forwarder passes caller terminal types to the socket exchange")
+func forwarderPassesCallerTerminalTypes() throws {
+    var observedTerminalTypes: Set<String> = []
+    var frames: [CaptureHostResponse] = []
+    let forwarder = UnixSocketCaptureForwarder(terminalStreamingExchange: { _, _, _, terminalTypes, sink in
+        observedTerminalTypes = terminalTypes
+        try sink(JSONEncoder().encode(CaptureHostResponse(type: "ack", captureID: "image-terminal")))
+        if terminalTypes.contains("saved") {
+            try sink(JSONEncoder().encode(CaptureHostResponse(type: "saved", captureID: "image-terminal")))
+        }
+    })
+    try forwarder.forwardStreaming(Data("image-end".utf8), responseSink: { payload in
+        frames.append(try JSONDecoder().decode(CaptureHostResponse.self, from: payload))
+    }, terminalTypes: ["saved", "cancelled", "failed"])
+    #expect(observedTerminalTypes == ["saved", "cancelled", "failed"])
+    #expect(frames.map(\.type) == ["ack", "saved"])
+
+    frames.removeAll()
+    try forwarder.forwardStreaming(Data("image-preview".utf8), responseSink: { payload in
+        frames.append(try JSONDecoder().decode(CaptureHostResponse.self, from: payload))
+    }, terminalTypes: ["ack"])
+    #expect(observedTerminalTypes == ["ack"])
+    #expect(frames.map(\.type) == ["ack"])
 }
 
 @Test("host stages image frames and forwards a tokenized candidate without a path")

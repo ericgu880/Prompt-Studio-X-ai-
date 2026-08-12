@@ -465,34 +465,17 @@ public final class ImageStagingStore: @unchecked Sendable {
         guard normalizedDigest.count == 64,
               normalizedDigest.allSatisfy({ $0.isHexDigit }) else { throw ImageStagingError.invalidDigest }
         try ensureSecureRootLocked()
-        let token = try uniqueTokenLocked()
-        let fileURL = rootDirectory.appendingPathComponent(token, isDirectory: false)
-        guard FileManager.default.createFile(atPath: fileURL.path, contents: Data()) else {
-            throw ImageStagingError.stagingFileUnavailable
-        }
-        do {
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-            guard try Self.isOwnedRegularFile(fileURL.path) else {
-                try? FileManager.default.removeItem(at: fileURL)
-                throw ImageStagingError.stagingFileInsecure
-            }
-            let handle = try FileHandle(forWritingTo: fileURL)
-            let publicSession = ImageStagingSession(
-                captureID: candidate.captureID,
-                stagingToken: token,
-                expectedByteCount: expectedByteCount,
-                expectedSHA256: normalizedDigest,
-                candidate: candidate,
-                fileURL: fileURL
-            )
-            session = Session(publicSession: publicSession, handle: handle, now: clock())
-            return publicSession
-        } catch let error as ImageStagingError {
-            throw error
-        } catch {
-            try? FileManager.default.removeItem(at: fileURL)
-            throw ImageStagingError.stagingFileUnavailable
-        }
+        let (token, fileURL, handle) = try createSecureFileLocked()
+        let publicSession = ImageStagingSession(
+            captureID: candidate.captureID,
+            stagingToken: token,
+            expectedByteCount: expectedByteCount,
+            expectedSHA256: normalizedDigest,
+            candidate: candidate,
+            fileURL: fileURL
+        )
+        session = Session(publicSession: publicSession, handle: handle, now: clock())
+        return publicSession
     }
 
     private func ensureSecureRootLocked() throws {
@@ -521,15 +504,72 @@ public final class ImageStagingStore: @unchecked Sendable {
         }
     }
 
-    private func uniqueTokenLocked() throws -> String {
+    private func createSecureFileLocked() throws -> (token: String, fileURL: URL, handle: FileHandle) {
         for _ in 0..<8 {
-            let candidate = tokenGenerator()
-            guard Self.isSafeToken(candidate) else { continue }
-            let fileURL = rootDirectory.appendingPathComponent(candidate, isDirectory: false)
-            if !FileManager.default.fileExists(atPath: fileURL.path) { return candidate }
+            let token = tokenGenerator()
+            guard Self.isSafeToken(token) else { continue }
+            let fileURL = rootDirectory.appendingPathComponent(token, isDirectory: false)
+            #if canImport(Darwin)
+            let descriptor = fileURL.path.withCString {
+                Darwin.open(
+                    $0,
+                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                    mode_t(S_IRUSR | S_IWUSR)
+                )
+            }
+            if descriptor < 0 {
+                if errno == EEXIST { continue }
+                throw ImageStagingError.stagingFileUnavailable
+            }
+            var identity = stat()
+            var isValid = fstat(descriptor, &identity) == 0
+            if isValid {
+                isValid = fchmod(descriptor, mode_t(S_IRUSR | S_IWUSR)) == 0
+            }
+            if isValid {
+                var verified = stat()
+                isValid = fstat(descriptor, &verified) == 0
+                if isValid { identity = verified }
+            }
+            let mode = identity.st_mode & mode_t(0o777)
+            isValid = isValid
+                && (identity.st_mode & S_IFMT) == S_IFREG
+                && identity.st_uid == geteuid()
+                && (mode & mode_t(0o077)) == 0
+                && (mode & mode_t(0o600)) == mode_t(0o600)
+            if !isValid {
+                closeCreatedFile(descriptor: descriptor, path: fileURL.path, identity: identity)
+                throw ImageStagingError.stagingFileInsecure
+            }
+            return (token, fileURL, FileHandle(fileDescriptor: descriptor, closeOnDealloc: true))
+            #else
+            guard FileManager.default.createFile(atPath: fileURL.path, contents: Data()) else {
+                if FileManager.default.fileExists(atPath: fileURL.path) { continue }
+                throw ImageStagingError.stagingFileUnavailable
+            }
+            do {
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+                return (token, fileURL, try FileHandle(forWritingTo: fileURL))
+            } catch {
+                try? FileManager.default.removeItem(at: fileURL)
+                throw ImageStagingError.stagingFileUnavailable
+            }
+            #endif
         }
         throw ImageStagingError.stagingFileUnavailable
     }
+
+    #if canImport(Darwin)
+    private func closeCreatedFile(descriptor: Int32, path: String, identity: stat) {
+        var current = stat()
+        if lstat(path, &current) == 0,
+           current.st_dev == identity.st_dev,
+           current.st_ino == identity.st_ino {
+            _ = unlink(path)
+        }
+        close(descriptor)
+    }
+    #endif
 
     private func removeLocked(removeFile: Bool = true) {
         guard let session else { return }

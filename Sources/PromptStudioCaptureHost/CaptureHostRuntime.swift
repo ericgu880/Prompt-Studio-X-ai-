@@ -111,10 +111,11 @@ public final class UnixSocketCaptureForwarder {
     public typealias Exchange = (Data, Date, Date) throws -> Data
     public typealias ResponseSink = (Data) throws -> Void
     public typealias StreamingExchange = (Data, Date, Date, ResponseSink) throws -> Void
+    public typealias TerminalStreamingExchange = (Data, Date, Date, Set<String>, ResponseSink) throws -> Void
     private let socketPath: String
     private let launchApp: () throws -> Void
     private let exchange: Exchange?
-    private let streamingExchange: StreamingExchange
+    private let terminalStreamingExchange: TerminalStreamingExchange
     private let clock: () -> Date
     private let sleep: (UInt32) -> Void
 
@@ -123,27 +124,33 @@ public final class UnixSocketCaptureForwarder {
         launchApp: @escaping () throws -> Void = { try PromptStudioLauncher().launch() },
         exchange: Exchange? = nil,
         streamingExchange: StreamingExchange? = nil,
+        terminalStreamingExchange: TerminalStreamingExchange? = nil,
         clock: @escaping () -> Date = Date.init,
         sleep: @escaping (UInt32) -> Void = { _ = usleep($0) }
     ) {
         self.socketPath = socketPath
         self.launchApp = launchApp
         self.exchange = exchange
-        if let streamingExchange {
-            self.streamingExchange = streamingExchange
+        if let terminalStreamingExchange {
+            self.terminalStreamingExchange = terminalStreamingExchange
+        } else if let streamingExchange {
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, _, sink in
+                try streamingExchange(payload, connectDeadline, responseDeadline, sink)
+            }
         } else if let exchange {
             // Preserve the single-frame injection seam used by callers/tests while
             // routing production instances through the real socket stream below.
-            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, _, sink in
                 try sink(exchange(payload, connectDeadline, responseDeadline))
             }
         } else {
-            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, terminalTypes, sink in
                 try UnixSocketCaptureForwarder.exchangeStreaming(
                     payload,
                     socketPath: socketPath,
                     connectDeadline: connectDeadline,
                     responseDeadline: responseDeadline,
+                    terminalTypes: terminalTypes,
                     responseSink: sink
                 )
             }
@@ -176,7 +183,7 @@ public final class UnixSocketCaptureForwarder {
             var sawTerminal = false
             var deliveredResponse = false
             do {
-                try streamingExchange(payload, connectionDeadline, currentResponseDeadline) { frame in
+                try terminalStreamingExchange(payload, connectionDeadline, currentResponseDeadline, terminalTypes) { frame in
                     deliveredResponse = true
                     if Self.isTerminalResponse(frame, terminalTypes: terminalTypes) { sawTerminal = true }
                     try responseSink(frame)
@@ -244,6 +251,7 @@ public final class UnixSocketCaptureForwarder {
         socketPath: String,
         connectDeadline: Date,
         responseDeadline: Date,
+        terminalTypes: Set<String>,
         responseSink: ResponseSink
     ) throws {
         #if canImport(Darwin)
@@ -307,7 +315,7 @@ public final class UnixSocketCaptureForwarder {
                     throw CaptureHostRuntimeError.responseDisconnected
                 }
                 try responseSink(response)
-                if isTerminalResponse(response) { return }
+                if isTerminalResponse(response, terminalTypes: terminalTypes) { return }
             }
         } catch NativeMessagingError.deadlineExceeded {
             throw CaptureHostRuntimeError.responseTimedOut
@@ -529,6 +537,10 @@ public final class PromptStudioCaptureHost {
         let request: ImageBeginWire
         do { request = try decoder.decode(ImageBeginWire.self, from: frame) }
         catch { throw CaptureHostRuntimeError.imageInvalid }
+        guard (request.candidate.byteCount == 0 || request.candidate.byteCount == request.expectedByteCount),
+              (request.candidate.sha256.isEmpty || request.candidate.sha256.lowercased() == request.sha256.lowercased()) else {
+            throw CaptureHostRuntimeError.imageInvalid
+        }
         do {
             _ = try stagingStore.begin(candidate: request.candidate, expectedByteCount: request.expectedByteCount, sha256: request.sha256)
             try writeResponse(CaptureHostResponse(type: "ack", captureID: request.candidate.captureID, code: "image-begin-accepted"))
