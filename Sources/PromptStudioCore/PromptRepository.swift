@@ -257,12 +257,14 @@ public final class PromptRepository: @unchecked Sendable {
                 parentId TEXT,
                 type TEXT,
                 count INTEGER NOT NULL,
-                sortOrder INTEGER NOT NULL
+                sortOrder INTEGER NOT NULL,
+                createdAt TEXT NOT NULL
             );
             """
         )
         try database.transaction {
             try migratePromptItemsSchema()
+            try migrateLibraryFoldersSchema()
         }
     }
 
@@ -735,14 +737,15 @@ public final class PromptRepository: @unchecked Sendable {
 
     public func saveFolder(_ folder: LibraryFolder) throws {
         try database.run(
-            "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder) VALUES (?, ?, ?, ?, ?, ?);",
+            "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?);",
             values: [
                 .text(folder.id),
                 .text(folder.name),
                 folder.parentId.map { .text($0) } ?? .null,
                 folder.type.map { .text($0.rawValue) } ?? .null,
                 .int(Int64(folder.count)),
-                .int(Int64(folder.sortOrder))
+                .int(Int64(folder.sortOrder)),
+                .text(Self.string(from: folder.createdAt))
             ]
         )
     }
@@ -756,7 +759,8 @@ public final class PromptRepository: @unchecked Sendable {
                 parentId: row["parentId"] ?? nil,
                 type: (row["type"] ?? nil).flatMap(PromptType.init(rawValue:)),
                 count: int(row, "count"),
-                sortOrder: int(row, "sortOrder")
+                sortOrder: int(row, "sortOrder"),
+                createdAt: date(row["createdAt"] ?? nil) ?? Date()
             )
         }
     }
@@ -1077,6 +1081,26 @@ public final class PromptRepository: @unchecked Sendable {
         }
         try database.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_items_capture_id ON prompt_items(captureId) WHERE captureId IS NOT NULL;"
+        )
+    }
+
+    private func migrateLibraryFoldersSchema() throws {
+        let columns = try database.query("PRAGMA table_info(library_folders);")
+        let columnNames = Set(columns.compactMap { $0["name"] ?? nil })
+        guard !columnNames.contains("createdAt") else { return }
+
+        try database.execute("ALTER TABLE library_folders ADD COLUMN createdAt TEXT;")
+        try database.run(
+            """
+            UPDATE library_folders
+            SET createdAt = COALESCE(
+                (SELECT MIN(prompt_items.createdAt)
+                 FROM prompt_items
+                 WHERE prompt_items.folderId = library_folders.id),
+                ?
+            );
+            """,
+            values: [.text(Self.string(from: Date()))]
         )
     }
 

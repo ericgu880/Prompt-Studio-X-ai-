@@ -1607,17 +1607,51 @@ func testFolderSeedIsIdempotent() throws {
 func testFolderCRUDRoundTrip() throws {
     let repository = try PromptRepository(libraryURL: temporaryLibraryURL())
     let parent = LibraryFolder(id: "folder-parent", name: "父文件夹", sortOrder: 1)
-    let folder = LibraryFolder(id: "folder-1", name: "旧文件夹", parentId: parent.id, type: .image, sortOrder: 3)
+    let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let folder = LibraryFolder(id: "folder-1", name: "旧文件夹", parentId: parent.id, type: .image, sortOrder: 3, createdAt: createdAt)
 
     try repository.saveFolder(parent)
     try repository.saveFolder(folder)
     try expect(try repository.loadFolders().contains { $0.parentId == parent.id && $0.name == "旧文件夹" }, "saved child folder should load with parent")
+    try expect(try repository.loadFolders().first { $0.id == folder.id }?.createdAt == createdAt, "folder creation date should persist across reloads")
 
     try repository.renameFolder(id: folder.id, name: "新文件夹")
     try expect(try repository.loadFolders().first { $0.id == folder.id }?.name == "新文件夹", "renamed folder should persist")
 
     try repository.deleteFolder(id: folder.id)
     try expect(try repository.loadFolders().contains { $0.id == folder.id } == false, "deleted folder should be removed")
+}
+
+func testFolderCreatedAtMigratesFromLegacySchema() throws {
+    let libraryURL = try temporaryLibraryURL()
+    try PromptRepository.createLibraryDirectories(at: libraryURL)
+    let databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
+    do {
+        let database = try SQLiteDatabase(path: databaseURL.path)
+        try database.execute(
+            """
+            CREATE TABLE library_folders (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                parentId TEXT,
+                type TEXT,
+                count INTEGER NOT NULL,
+                sortOrder INTEGER NOT NULL
+            );
+            """
+        )
+        try database.run(
+            "INSERT INTO library_folders (id, name, parentId, type, count, sortOrder) VALUES (?, ?, ?, ?, ?, ?);",
+            values: [.text("legacy-folder"), .text("旧资料夹"), .null, .null, .int(0), .int(0)]
+        )
+    }
+
+    let migrationStartedAt = Date().addingTimeInterval(-1)
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    guard let migrated = try repository.loadFolders().first(where: { $0.id == "legacy-folder" }) else {
+        throw CoreUnitTestError.failure("legacy folder should remain after schema migration")
+    }
+    try expect(migrated.createdAt >= migrationStartedAt, "legacy folder should receive a stable creation date")
 }
 
 func testAutomationServiceCreatesAndUpdatesPrompts() throws {
@@ -2342,6 +2376,7 @@ do {
     try testWebCaptureSchemaMigrationAddsColumnsAndIndex()
     try testFolderSeedIsIdempotent()
     try testFolderCRUDRoundTrip()
+    try testFolderCreatedAtMigratesFromLegacySchema()
     try testAutomationServiceCreatesAndUpdatesPrompts()
     try testAutomationServiceCreatesTypedPromptPlaceholdersAndMarkdown()
     try testAutomationServiceImportsTextMetadata()

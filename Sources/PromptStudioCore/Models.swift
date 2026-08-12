@@ -653,6 +653,11 @@ public struct LibraryFolder: Codable, Identifiable, Equatable, Sendable {
     public var type: PromptType?
     public var count: Int
     public var sortOrder: Int
+    public var createdAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, parentId, type, count, sortOrder, createdAt
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -660,7 +665,8 @@ public struct LibraryFolder: Codable, Identifiable, Equatable, Sendable {
         parentId: String? = nil,
         type: PromptType? = nil,
         count: Int = 0,
-        sortOrder: Int = 0
+        sortOrder: Int = 0,
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.name = name
@@ -668,6 +674,18 @@ public struct LibraryFolder: Codable, Identifiable, Equatable, Sendable {
         self.type = type
         self.count = count
         self.sortOrder = sortOrder
+        self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
+        type = try container.decodeIfPresent(PromptType.self, forKey: .type)
+        count = try container.decodeIfPresent(Int.self, forKey: .count) ?? 0
+        sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
 

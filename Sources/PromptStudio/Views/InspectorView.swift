@@ -23,7 +23,7 @@ struct InspectorView: View {
     var body: some View {
         Group {
             if let folder = state.selectedFolder {
-                folderInspector(for: folder)
+                folderInfoInspector(for: folder)
             } else if let item = state.selectedItem {
                 inspector(for: item)
             } else {
@@ -81,6 +81,56 @@ struct InspectorView: View {
             markdownDocumentLoadTask = nil
             isMarkdownDocumentLoading = false
         }
+    }
+
+    private func folderInfoInspector(for folder: LibraryFolder) -> some View {
+        let folderIDs = state.folderDescendantIDs(for: folder.id)
+        let assets = state.items.filter { !$0.isDeleted && folderIDs.contains($0.folderId) }
+        let totalSize = assets.reduce(Int64(0)) { $0 + max(0, $1.fileSize) }
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(StudioColor.control)
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(StudioColor.primaryAction)
+                    }
+                    .frame(width: 58, height: 58)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(folder.name)
+                            .font(StudioFont.font(18, weight: .bold))
+                            .foregroundStyle(StudioColor.text)
+                            .lineLimit(3)
+                        Text("文件夹信息")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
+                    Spacer(minLength: 8)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    infoLine("文件名", folder.name)
+                    infoLine("文件数", "\(assets.count)")
+                    infoLine("Size", fileSizeText(totalSize))
+                    infoLine("创建日期", folderCreatedDateText(folder.createdAt))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.control.opacity(0.55)))
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+        }
+        .transparentScrollArea()
+    }
+
+    private func folderCreatedDateText(_ date: Date) -> String {
+        date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits))
     }
 
     @ViewBuilder
