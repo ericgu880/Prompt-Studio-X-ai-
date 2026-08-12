@@ -79,6 +79,7 @@ public final class SQLiteDatabase: @unchecked Sendable {
         sqlite3_extended_result_codes(handle, 1)
         try execute("PRAGMA foreign_keys = ON;")
         try execute("PRAGMA journal_mode = WAL;")
+        try execute("PRAGMA busy_timeout = 5000;")
     }
 
     deinit {

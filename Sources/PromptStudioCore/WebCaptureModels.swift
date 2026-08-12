@@ -75,10 +75,103 @@ public struct WebCaptureCandidate: Codable, Equatable, Sendable {
 }
 
 /// Lifecycle events emitted by the local web-capture coordinator.
-public enum WebCaptureEvent: String, Codable, CaseIterable, Sendable {
-    case presented
-    case cancelled
-    case animate
-    case saved
-    case failed
+///
+/// The explicit `type` discriminator keeps the payload stable for the browser wire protocol.
+public enum WebCaptureEvent: Codable, Equatable, Sendable {
+    case presented(captureID: String)
+    case cancelled(captureID: String)
+    case animate(captureID: String, mouthScreenPoint: WebCapturePoint)
+    case saved(captureID: String, itemID: String)
+    case failed(captureID: String, code: String, retryable: Bool)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case captureID
+        case mouthScreenPoint
+        case itemID
+        case code
+        case retryable
+    }
+
+    private enum EventType: String, Codable {
+        case presented
+        case cancelled
+        case animate
+        case saved
+        case failed
+    }
+
+    public var captureID: String {
+        switch self {
+        case .presented(let captureID),
+             .cancelled(let captureID),
+             .animate(let captureID, _),
+             .saved(let captureID, _),
+             .failed(let captureID, _, _):
+            return captureID
+        }
+    }
+
+    public var type: String {
+        switch self {
+        case .presented: return EventType.presented.rawValue
+        case .cancelled: return EventType.cancelled.rawValue
+        case .animate: return EventType.animate.rawValue
+        case .saved: return EventType.saved.rawValue
+        case .failed: return EventType.failed.rawValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try values.decode(EventType.self, forKey: .type)
+        let captureID = try values.decode(String.self, forKey: .captureID)
+        switch type {
+        case .presented:
+            self = .presented(captureID: captureID)
+        case .cancelled:
+            self = .cancelled(captureID: captureID)
+        case .animate:
+            self = .animate(
+                captureID: captureID,
+                mouthScreenPoint: try values.decode(WebCapturePoint.self, forKey: .mouthScreenPoint)
+            )
+        case .saved:
+            self = .saved(
+                captureID: captureID,
+                itemID: try values.decode(String.self, forKey: .itemID)
+            )
+        case .failed:
+            self = .failed(
+                captureID: captureID,
+                code: try values.decode(String.self, forKey: .code),
+                retryable: try values.decode(Bool.self, forKey: .retryable)
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .presented(let captureID):
+            try values.encode(EventType.presented, forKey: .type)
+            try values.encode(captureID, forKey: .captureID)
+        case .cancelled(let captureID):
+            try values.encode(EventType.cancelled, forKey: .type)
+            try values.encode(captureID, forKey: .captureID)
+        case .animate(let captureID, let mouthScreenPoint):
+            try values.encode(EventType.animate, forKey: .type)
+            try values.encode(captureID, forKey: .captureID)
+            try values.encode(mouthScreenPoint, forKey: .mouthScreenPoint)
+        case .saved(let captureID, let itemID):
+            try values.encode(EventType.saved, forKey: .type)
+            try values.encode(captureID, forKey: .captureID)
+            try values.encode(itemID, forKey: .itemID)
+        case .failed(let captureID, let code, let retryable):
+            try values.encode(EventType.failed, forKey: .type)
+            try values.encode(captureID, forKey: .captureID)
+            try values.encode(code, forKey: .code)
+            try values.encode(retryable, forKey: .retryable)
+        }
+    }
 }

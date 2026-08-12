@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 public enum PromptRepositoryValidationError: Error, LocalizedError {
     case notDirectory(String)
@@ -21,6 +22,7 @@ public final class PromptRepository: @unchecked Sendable {
     public let libraryURL: URL
     public let databaseURL: URL
     private let database: SQLiteDatabase
+    private let captureInsertLock = NSLock()
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -196,7 +198,9 @@ public final class PromptRepository: @unchecked Sendable {
             );
             """
         )
-        try migratePromptItemsSchema()
+        try database.transaction {
+            try migratePromptItemsSchema()
+        }
     }
 
     public func loadItems() throws -> [PromptItem] {
@@ -298,6 +302,33 @@ public final class PromptRepository: @unchecked Sendable {
         try database.transaction {
             try saveItemRecord(item)
             try refreshTags(from: try loadItems())
+        }
+    }
+
+    /// Inserts a captured item exactly once and returns the row that won the capture ID race.
+    /// The operation is serialized by SQLite's write transaction and never replaces an existing
+    /// row, so its prompt versions and metadata remain intact on retries.
+    public func saveCapturedItem(_ item: PromptItem) throws -> PromptItem {
+        guard let captureID = item.captureID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !captureID.isEmpty else {
+            throw SQLiteError.stepFailed("capture ID is required", resultCode: SQLITE_CONSTRAINT, extendedCode: SQLITE_CONSTRAINT)
+        }
+
+        var normalizedItem = item
+        normalizedItem.captureID = captureID
+
+        captureInsertLock.lock()
+        defer { captureInsertLock.unlock() }
+        return try database.transaction {
+            if let existing = try findItem(captureID: captureID) {
+                return existing
+            }
+
+            let inserted = try saveItemRecord(normalizedItem, conflict: .ignoreExistingCapture)
+            if inserted {
+                try refreshTags(from: try loadItems())
+            }
+            return try findItem(captureID: captureID) ?? normalizedItem
         }
     }
 
@@ -553,14 +584,60 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
-    private func saveItemRecord(_ item: PromptItem) throws {
+    private enum SaveItemConflict {
+        case updateExistingID
+        case ignoreExistingCapture
+    }
+
+    @discardableResult
+    private func saveItemRecord(_ item: PromptItem, conflict: SaveItemConflict = .updateExistingID) throws -> Bool {
+        let conflictClause: String
+        switch conflict {
+        case .updateExistingID:
+            conflictClause = """
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                type = excluded.type,
+                assetKind = excluded.assetKind,
+                modelId = excluded.modelId,
+                modelName = excluded.modelName,
+                folderId = excluded.folderId,
+                folderName = excluded.folderName,
+                category = excluded.category,
+                assetPath = excluded.assetPath,
+                thumbnailPath = excluded.thumbnailPath,
+                aspectRatio = excluded.aspectRatio,
+                width = excluded.width,
+                height = excluded.height,
+                format = excluded.format,
+                fileSize = excluded.fileSize,
+                favorite = excluded.favorite,
+                pinnedAt = excluded.pinnedAt,
+                deletedAt = excluded.deletedAt,
+                createdAt = excluded.createdAt,
+                updatedAt = excluded.updatedAt,
+                lastUsedAt = excluded.lastUsedAt,
+                sortOrder = excluded.sortOrder,
+                tagsJSON = excluded.tagsJSON,
+                referencesJSON = excluded.referencesJSON,
+                description = excluded.description,
+                captureId = excluded.captureId,
+                captureSourceJSON = excluded.captureSourceJSON
+            """
+        case .ignoreExistingCapture:
+            // Match the partial unique index explicitly so unrelated constraints still fail.
+            conflictClause = "ON CONFLICT(captureId) WHERE captureId IS NOT NULL DO NOTHING"
+        }
+
         try database.run(
             """
-            INSERT OR REPLACE INTO prompt_items (
+            INSERT INTO prompt_items (
                 id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, pinnedAt, deletedAt, createdAt, updatedAt,
                 lastUsedAt, sortOrder, tagsJSON, referencesJSON, description, captureId, captureSourceJSON
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            \(conflictClause)
+            ;
             """,
             values: [
                 .text(item.id),
@@ -594,10 +671,21 @@ public final class PromptRepository: @unchecked Sendable {
             ]
         )
 
-        try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
-        for version in item.versions {
-            try saveVersion(version)
+        let inserted = Int((try database.query("SELECT changes() AS changed;").first?["changed"] ?? nil) ?? "0") == 1
+        switch conflict {
+        case .updateExistingID:
+            try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
+            for version in item.versions {
+                try saveVersion(version)
+            }
+        case .ignoreExistingCapture:
+            if inserted {
+                for version in item.versions {
+                    try saveVersion(version)
+                }
+            }
         }
+        return inserted
     }
 
     private func loadVersions() throws -> [String: [PromptVersion]] {

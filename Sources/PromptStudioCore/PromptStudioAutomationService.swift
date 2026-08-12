@@ -239,8 +239,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             captureID: captureID,
             capturedSource: candidate.capturedSource
         )
-        try repository.saveItem(item)
-        return item
+        return try repository.saveCapturedItem(item)
     }
 
     @discardableResult
@@ -396,18 +395,28 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
 
     private func ensureCaptureModel() throws -> ModelProfile {
         let id = "unspecified_text"
+        let canonical = ModelProfile(id: id, name: "未指定模型", type: .text, parameters: [])
         if let existing = try repository.loadModelProfiles().first(where: { $0.id == id }) {
-            return existing
+            if existing != canonical {
+                try repository.saveModelProfile(canonical)
+            }
+            return canonical
         }
-        let profile = ModelProfile(id: id, name: "未指定模型", type: .text, parameters: [])
-        try repository.saveModelProfile(profile)
-        return profile
+        try repository.saveModelProfile(canonical)
+        return canonical
     }
 
     private func ensureCaptureFolder() throws -> LibraryFolder {
         let id = "folder-capture-inbox"
         if let existing = try repository.loadFolders().first(where: { $0.id == id }) {
-            return existing
+            var canonical = existing
+            canonical.name = "待整理"
+            canonical.parentId = nil
+            canonical.type = .text
+            if canonical != existing {
+                try repository.saveFolder(canonical)
+            }
+            return canonical
         }
         let sortOrder = ((try repository.loadFolders()).map(\.sortOrder).max() ?? 0) + 1
         let folder = LibraryFolder(id: id, name: "待整理", parentId: nil, type: .text, sortOrder: sortOrder)
