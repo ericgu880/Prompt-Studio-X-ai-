@@ -206,7 +206,7 @@ struct PromptStudioPetTests {
         }
         wireServer.start()
         check(wireServer.isRunning, "wire socket starts: \(wireServer.lastStartError ?? "unknown")", failures: &failures)
-        let wireClientTask = Task.detached { () -> [String] in
+        let wireClientTask = Task.detached { () -> [Data] in
             let descriptor = try connect(to: wireSocketURL.path)
             let frame = try makeFrame(Data(candidate.replacingOccurrences(of: "red-1", with: "wire-1").utf8))
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
@@ -214,21 +214,27 @@ struct PromptStudioPetTests {
             let initial = try readFrame(from: handle)
             let followUpOne = try readFrame(from: handle)
             let followUpTwo = try readFrame(from: handle)
-            return [initial, followUpOne, followUpTwo].compactMap { payload in
-                (try? JSONSerialization.jsonObject(with: payload))
-                    .flatMap { $0 as? [String: Any] }?["type"] as? String
-            }
+            return [initial, followUpOne, followUpTwo]
         }
         for _ in 0..<100 where !wireServer.pendingCaptureIDs.contains("wire-1") {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         NotificationCenter.default.post(
+            name: .petCaptureSourceShouldClear,
+            object: PetCaptureOutcome.saved(captureID: "wire-1", mouthPoint: .init(x: 12, y: 34))
+        )
+        NotificationCenter.default.post(
             name: .petCaptureSaved,
             object: PetCaptureOutcome.saved(captureID: "wire-1", mouthPoint: .init(x: 12, y: 34))
         )
         do {
-            let responseTypes = try await wireClientTask.value
+            let responsePayloads = try await wireClientTask.value
+            let responseObjects = responsePayloads.compactMap {
+                (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+            }
+            let responseTypes = responseObjects.compactMap { $0["type"] as? String }
             check(responseTypes == ["presented", "animate", "saved"], "same socket receives presented/animate/saved", failures: &failures)
+            check(responseObjects.last?["clearSource"] as? Bool == true, "saved response carries source-clear preference", failures: &failures)
         } catch {
             failures.append("same socket protocol failed: \(error.localizedDescription)")
         }

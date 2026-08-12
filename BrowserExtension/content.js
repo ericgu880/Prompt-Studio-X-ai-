@@ -181,6 +181,10 @@
       C.shouldAnimateCaptureResponse(result.type, messageCaptureID, animatedCaptureIDs);
       captureOrigins.delete(messageCaptureID);
     }
+    if (result.type === 'saved' && result.clearSource) {
+      const selection = window.getSelection();
+      if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+    }
   });
 
   document.addEventListener('selectionchange', scheduleSelection, true);

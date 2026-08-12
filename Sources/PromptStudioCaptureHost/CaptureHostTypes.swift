@@ -183,6 +183,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
     public let selectedText: String?
     public let message: String?
     public let mouthScreenPoint: CaptureScreenPoint?
+    public let clearSource: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -194,6 +195,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         case text
         case mouthScreenPoint
         case mouthPoint
+        case clearSource
     }
 
     public init(
@@ -202,7 +204,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         code: String? = nil,
         selectedText: String? = nil,
         message: String? = nil,
-        mouthScreenPoint: CaptureScreenPoint? = nil
+        mouthScreenPoint: CaptureScreenPoint? = nil,
+        clearSource: Bool? = nil
     ) {
         self.type = type
         self.captureID = captureID
@@ -210,6 +213,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         self.selectedText = selectedText
         self.message = message
         self.mouthScreenPoint = mouthScreenPoint
+        self.clearSource = clearSource
     }
 
     public init(from decoder: Decoder) throws {
@@ -228,6 +232,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         let mouthScreenPointValue = try values.decodeIfPresent(CaptureScreenPoint.self, forKey: .mouthScreenPoint)
         let mouthPointValue = try values.decodeIfPresent(CaptureScreenPoint.self, forKey: .mouthPoint)
         mouthScreenPoint = mouthScreenPointValue ?? mouthPointValue
+        clearSource = try values.decodeIfPresent(Bool.self, forKey: .clearSource)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -238,6 +243,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         try values.encodeIfPresent(message, forKey: .message)
         try values.encodeIfPresent(selectedText, forKey: .selectedText)
         try values.encodeIfPresent(mouthScreenPoint, forKey: .mouthScreenPoint)
+        try values.encodeIfPresent(clearSource, forKey: .clearSource)
     }
 }
 

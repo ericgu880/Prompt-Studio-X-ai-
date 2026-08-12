@@ -114,4 +114,6 @@ test('scroll, resize, and outside pointer events clear transient selection UI', 
   assert.match(source, /window\.addEventListener\('resize', clearSelectionUI/);
   assert.match(source, /event\.target !== feedButton/);
   assert.match(source, /result\.type === 'cancelled'/);
+  assert.match(source, /result\.clearSource/);
+  assert.match(source, /removeAllRanges\(\)/);
 });

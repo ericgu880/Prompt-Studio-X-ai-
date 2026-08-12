@@ -228,7 +228,7 @@ func hostForwardsCompleteResponseSequence() throws {
     let appResponses = [
         CaptureHostResponse(type: "presented", captureID: candidate.captureID, selectedText: candidate.selectedText),
         CaptureHostResponse(type: "animate", captureID: candidate.captureID, selectedText: candidate.selectedText, mouthScreenPoint: CaptureScreenPoint(x: 20, y: 30)),
-        CaptureHostResponse(type: "saved", captureID: candidate.captureID, selectedText: candidate.selectedText),
+        CaptureHostResponse(type: "saved", captureID: candidate.captureID, selectedText: candidate.selectedText, clearSource: true),
     ]
     let appPayloads = try appResponses.map { try JSONEncoder().encode($0) }
     let forwarder = UnixSocketCaptureForwarder(streamingExchange: { _, _, _, sink in
@@ -243,11 +243,14 @@ func hostForwardsCompleteResponseSequence() throws {
     try host.run()
     let outputHandle = try FileHandle(forReadingFrom: outputURL)
     var types: [String] = []
+    var savedClearSource: Bool?
     while let frame = try NativeMessagingFramer.readFrame(from: outputHandle) {
         let response = try JSONDecoder().decode(CaptureHostResponse.self, from: frame)
         types.append(response.type)
+        if response.type == "saved" { savedClearSource = response.clearSource }
     }
     #expect(types == ["presented", "animate", "saved"])
+    #expect(savedClearSource == true)
 }
 
 @Test("EOF before a terminal response is a retryable stream failure")

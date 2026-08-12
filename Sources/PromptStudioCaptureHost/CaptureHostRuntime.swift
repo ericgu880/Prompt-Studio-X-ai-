@@ -334,7 +334,8 @@ public final class PromptStudioCaptureHost {
                         code: appResponse.code,
                         selectedText: appResponse.selectedText ?? request.candidate.selectedText,
                         message: appResponse.message,
-                        mouthScreenPoint: appResponse.mouthScreenPoint
+                        mouthScreenPoint: appResponse.mouthScreenPoint,
+                        clearSource: appResponse.clearSource
                     )
                     terminalSent = Self.isTerminal(response.type)
                     try NativeMessagingFramer.writeFrame(self.encoder.encode(response), to: self.output)

@@ -307,8 +307,8 @@ final class PetCoordinator: ObservableObject {
             }
             if outcome.isSuccess {
                 _ = machine.transition(.saved)
-                NotificationCenter.default.post(name: .petCaptureSaved, object: outcome)
                 postSourceClearIfNeeded(request: request, outcome: outcome)
+                NotificationCenter.default.post(name: .petCaptureSaved, object: outcome)
             } else {
                 _ = machine.transition(.failed)
                 NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
