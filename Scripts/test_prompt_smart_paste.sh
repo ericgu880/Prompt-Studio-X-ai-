@@ -32,6 +32,12 @@ require_pattern "$APP_STATE_FILE" \
 require_pattern "$APP_STATE_FILE" \
     'func routePasteCommand()' \
     "Paste routing must be centralized in AppState."
+require_pattern "$APP_STATE_FILE" \
+    '@Published var pendingSmartPasteRequest: PromptComposerPrefill?' \
+    "Smart paste must queue a one-shot request for an already-open composer."
+require_pattern "$APP_STATE_FILE" \
+    'func consumeSmartPasteRequest(token: UUID)' \
+    "Smart paste requests must be consumed after the overlay handles them."
 require_pattern "$APP_FILE" \
     'appState.routePasteCommand()' \
     "The CommandGroup paste action must call the centralized AppState route."
@@ -53,5 +59,23 @@ require_pattern "$OVERLAY_FILE" \
 require_pattern "$OVERLAY_FILE" \
     'undoSmartPaste' \
     "Smart-paste sessions must expose undo-fill behavior."
+require_pattern "$OVERLAY_FILE" \
+    'handleIncomingSmartPaste' \
+    "Incoming app-level smart-paste requests must share the bar replacement flow."
+require_pattern "$OVERLAY_FILE" \
+    '.onChange(of: state.pendingSmartPasteRequest?.token)' \
+    "Prompt composer must observe queued smart-paste requests without rebuilding the draft."
+require_pattern "$OVERLAY_FILE" \
+    'ScrollView {' \
+    "Smart-paste details must offer complete, selectable original text in a bounded scroll view."
+require_pattern "$OVERLAY_FILE" \
+    'Text(interpretation.originalText)' \
+    "Smart-paste details must render the full original text."
+require_pattern "$OVERLAY_FILE" \
+    '.textSelection(.enabled)' \
+    "Smart-paste original text must be selectable."
+require_pattern "$OVERLAY_FILE" \
+    'let promptHeight = max(240, contentHeight - promptHeightBudget)' \
+    "Prompt composer must preserve the 240pt minimum prompt height."
 
 echo "Prompt smart-paste UI regression tests passed"

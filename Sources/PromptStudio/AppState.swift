@@ -346,6 +346,7 @@ final class AppState: ObservableObject {
     @Published var isImporting = false
     @Published var isPreviewPresented = false
     @Published var promptComposerMode: PromptComposerMode?
+    @Published var pendingSmartPasteRequest: PromptComposerPrefill?
     @Published var markdownEditorItemID: String?
     @Published var inlineRenamingFolderID: String?
     @Published var inspectorEditRequest: InspectorEditRequest?
@@ -682,7 +683,13 @@ final class AppState: ObservableObject {
         modal = nil
         isPreviewPresented = false
         markdownEditorItemID = nil
+        pendingSmartPasteRequest = nil
         promptComposerMode = .create(prefill: prefill.map { PromptComposerPrefill(interpretation: $0) })
+    }
+
+    func consumeSmartPasteRequest(token: UUID) {
+        guard pendingSmartPasteRequest?.token == token else { return }
+        pendingSmartPasteRequest = nil
     }
 
     /// Routes the app-level paste command while preserving native text-field paste behavior.
@@ -703,7 +710,15 @@ final class AppState: ObservableObject {
         case .importFiles:
             importFiles(fileURLs)
         case .smartPaste(let text):
-            openNewPromptComposer(prefill: PromptClipboardInterpreter.interpret(text))
+            let interpretation = PromptClipboardInterpreter.interpret(text)
+            switch promptComposerMode {
+            case .create:
+                pendingSmartPasteRequest = PromptComposerPrefill(interpretation: interpretation)
+            case .edit:
+                showToast("编辑模式不支持智能粘贴")
+            case nil:
+                openNewPromptComposer(prefill: interpretation)
+            }
         case .unavailable:
             showToast("剪贴板没有可粘贴内容")
         }
@@ -739,6 +754,7 @@ final class AppState: ObservableObject {
     }
 
     func closePromptComposer() {
+        pendingSmartPasteRequest = nil
         promptComposerMode = nil
     }
 

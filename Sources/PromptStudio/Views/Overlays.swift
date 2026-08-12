@@ -842,6 +842,9 @@ struct PromptComposerOverlay: View {
         .transition(.opacity)
         .onAppear(perform: loadDraft)
         .onChange(of: mode.id) { _, _ in loadDraft() }
+        .onChange(of: state.pendingSmartPasteRequest?.token) { _, _ in
+            handlePendingSmartPasteRequest()
+        }
         .confirmationDialog("放弃未保存的修改？", isPresented: $showCloseConfirmation) {
             Button("放弃修改", role: .destructive) {
                 state.closePromptComposer()
@@ -903,7 +906,7 @@ struct PromptComposerOverlay: View {
             let promptHeightBudget = isEditing
                 ? SmartPasteLayoutMetrics.regularPromptHeightBudget
                 : SmartPasteLayoutMetrics.smartPastePromptHeightBudget
-            let promptHeight = max(180, contentHeight - promptHeightBudget)
+            let promptHeight = max(240, contentHeight - promptHeightBudget)
 
             ZStack {
                 CreateComposerColor.workspace
@@ -1067,15 +1070,18 @@ struct PromptComposerOverlay: View {
                 Text("原始文本")
                     .font(StudioFont.font(11, weight: .semibold))
                     .foregroundStyle(CreateComposerColor.secondaryText)
-                Text(interpretation.originalText)
-                    .font(StudioFont.font(11))
-                    .foregroundStyle(CreateComposerColor.primaryText)
-                    .lineLimit(5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(CreateComposerColor.fieldBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .accessibilityLabel("原始剪贴板文本")
+                ScrollView {
+                    Text(interpretation.originalText)
+                        .font(StudioFont.font(11))
+                        .foregroundStyle(CreateComposerColor.primaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("原始剪贴板文本")
+                }
+                .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 140, alignment: .topLeading)
+                .padding(8)
+                .background(CreateComposerColor.fieldBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 Text("Negative Prompt")
                     .font(StudioFont.font(11, weight: .semibold))
@@ -2389,7 +2395,21 @@ struct PromptComposerOverlay: View {
 
     private func requestSmartPaste() {
         guard let interpretation = state.readSmartPasteFromPasteboard() else { return }
-        guard !isEditing else { return }
+        handleIncomingSmartPaste(interpretation)
+    }
+
+    private func handlePendingSmartPasteRequest() {
+        guard case .create = mode,
+              let request = state.pendingSmartPasteRequest else { return }
+        handleIncomingSmartPaste(request.interpretation)
+        state.consumeSmartPasteRequest(token: request.token)
+    }
+
+    private func handleIncomingSmartPaste(_ interpretation: PromptClipboardInterpretation) {
+        guard !isEditing else {
+            state.showToast("编辑模式不支持智能粘贴")
+            return
+        }
         if isDraftBlankForSmartPaste {
             applySmartPaste(interpretation)
         } else {
