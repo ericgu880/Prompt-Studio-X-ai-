@@ -1,6 +1,8 @@
 (function runPromptStudioBackground() {
+  importScripts('background-logic.js');
   const HOST_NAME = 'com.creatigo.promptstudio.capture';
-  const pendingTabs = new Map();
+  const logic = globalThis.PromptStudioBackgroundLogic;
+  const ledger = new logic.PendingCaptureLedger();
   let nativePort = null;
   let reconnectTimer = null;
   let reconnectAttempt = 0;
@@ -32,24 +34,40 @@
     }
     nativePort.onMessage.addListener((response) => {
       const captureID = response && response.captureID;
-      const tabID = pendingTabs.get(captureID);
-      if (captureID) pendingTabs.delete(captureID);
-      if (Number.isInteger(tabID)) {
-        chrome.tabs.sendMessage(tabID, { type: 'captureResult', result: response });
+      const entry = captureID && ledger.entries.get(captureID);
+      if (entry && Number.isInteger(entry.tabID)) {
+        chrome.tabs.sendMessage(entry.tabID, { type: 'captureResult', result: response });
       }
+      ledger.receive(response);
     });
     nativePort.onDisconnect.addListener(() => {
       nativePort = null;
       scheduleReconnect();
     });
     reconnectAttempt = 0;
+    replayPendingCaptures();
     return nativePort;
+  }
+
+  function replayPendingCaptures() {
+    if (!nativePort) return;
+    for (const entry of ledger.replayable()) {
+      if (!ledger.markSent(entry.candidate.captureID)) continue;
+      nativePort.postMessage({
+        type: 'capture',
+        origin: originForRuntime(),
+        candidate: entry.candidate,
+      });
+    }
   }
 
   function sendCandidate(candidate, tabID) {
     const port = connectNative();
-    if (!port) throw new Error('native-host-unavailable');
-    pendingTabs.set(candidate.captureID, tabID);
+    ledger.add(candidate, tabID);
+    // Keep the in-memory pending set bounded even if the browser never reconnects
+    // and no terminal response arrives.
+    setTimeout(() => ledger.expire(Date.now()), logic.CAPTURE_TTL_MS + 1);
+    if (!port || !ledger.markSent(candidate.captureID)) throw new Error('native-host-unavailable');
     port.postMessage({
       type: 'capture',
       origin: originForRuntime(),

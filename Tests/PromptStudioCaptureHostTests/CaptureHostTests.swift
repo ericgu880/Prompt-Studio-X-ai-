@@ -17,16 +17,107 @@ func nativeMessagingRejectsOversizedFrames() {
     }
 }
 
+@Test("stdout responses are framed JSON envelopes with no body leakage")
+func stdoutResponseUsesFramedProtocol() throws {
+    let response = CaptureHostResponse(
+        type: "saved",
+        captureID: "capture-1",
+        selectedText: "hello",
+        mouthScreenPoint: CaptureScreenPoint(x: 12, y: -4)
+    )
+    let payload = try JSONEncoder().encode(response)
+    let frame = try NativeMessagingFramer.encode(payload)
+    let decodedPayload = try NativeMessagingFramer.decode(frame)
+    let object = try #require(JSONSerialization.jsonObject(with: decodedPayload) as? [String: Any])
+    #expect(object["type"] as? String == "saved")
+    #expect(object["captureID"] as? String == "capture-1")
+    #expect(object["selectedText"] as? String == "hello")
+    #expect(object["pageURL"] == nil)
+}
+
+@Test("host validates argv origin and emits a framed terminal response")
+func hostRunUsesTrustedOriginAndStdoutFraming() throws {
+    let candidate = BrowserCaptureCandidate(
+        captureID: "capture-run",
+        selectedText: "hello",
+        pageTitle: "Page",
+        pageURL: "https://example.test/private?q=secret",
+        siteName: "example.test",
+        clickScreenPoint: CaptureScreenPoint(x: 4, y: 8),
+        capturedAt: "2026-08-12T00:00:00.000Z"
+    )
+    let request = CaptureEnvelope(origin: CaptureOriginAllowlist.developmentOrigin, candidate: candidate)
+    let inputURL = try temporaryFile(try NativeMessagingFramer.encode(JSONEncoder().encode(request)))
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-host-output-(UUID().uuidString)")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    defer {
+        try? FileManager.default.removeItem(at: inputURL)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+    let appResponse = CaptureHostResponse(type: "saved", captureID: candidate.captureID, selectedText: candidate.selectedText)
+    let appPayload = try JSONEncoder().encode(appResponse)
+    let forwarder = UnixSocketCaptureForwarder(exchange: { _, _, _ in appPayload })
+    let host = PromptStudioCaptureHost(
+        trustedOrigin: CaptureOriginAllowlist.developmentOrigin,
+        input: try FileHandle(forReadingFrom: inputURL),
+        output: try FileHandle(forWritingTo: outputURL),
+        forwarder: forwarder
+    )
+    try host.run()
+    let stdoutFrame = try NativeMessagingFramer.decode(Data(contentsOf: outputURL))
+    let response = try JSONDecoder().decode(CaptureHostResponse.self, from: stdoutFrame)
+    #expect(response.type == "saved")
+    #expect(response.captureID == candidate.captureID)
+    #expect(response.selectedText == candidate.selectedText)
+}
+
 @Test("origin validation is exact and rejects wildcard origins")
 func originAllowlistIsExact() {
     let allowlist = CaptureOriginAllowlist.default
-    #expect(allowlist.contains(CaptureOriginAllowlist.productionOrigin))
     #expect(allowlist.contains(CaptureOriginAllowlist.developmentOrigin))
+    // Deliberately unconfigured fixture; this is not a claimed Web Store ID.
+    let unconfiguredProductionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+    #expect(!allowlist.contains(unconfiguredProductionOrigin))
     #expect(!allowlist.contains("chrome-extension://*"))
     #expect(!allowlist.contains("chrome-extension://another-extension-id/"))
-    #expect(ProcessOrigin.parse(arguments: ["host", CaptureOriginAllowlist.productionOrigin]) == .allowed(CaptureOriginAllowlist.productionOrigin))
+    #expect(CaptureOriginAllowlist.origin(forExtensionID: "abcdefghijklmnopabcdefghijklmnop") == unconfiguredProductionOrigin)
+    #expect(CaptureOriginAllowlist.origin(forExtensionID: "abcdefghijklmnopabcdefghijklmnop!") == nil)
+    #expect(ProcessOrigin.parse(arguments: ["host", unconfiguredProductionOrigin]) == .rejected(unconfiguredProductionOrigin))
     #expect(ProcessOrigin.parse(arguments: ["host"]) == .missing)
     #expect(ProcessOrigin.parse(arguments: ["host", "chrome-extension://wrong/"]) == .rejected("chrome-extension://wrong/"))
+    #expect(ProcessOrigin.parse(arguments: ["host", CaptureOriginAllowlist.developmentOrigin, "--origin=chrome-extension://wrong/"]) == .allowed(CaptureOriginAllowlist.developmentOrigin))
+}
+
+@Test("direct execution spoof and argv/envelope mismatch are rejected")
+func trustedArgvOriginIsRequired() throws {
+    // Deliberately unconfigured fixture; this is not a claimed Web Store ID.
+    let unconfiguredProductionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+    let candidate = BrowserCaptureCandidate(
+        captureID: "capture-1", selectedText: "hello", pageTitle: "", pageURL: "", siteName: "",
+        clickScreenPoint: CaptureScreenPoint(x: 0, y: 0), capturedAt: "2026-08-12T00:00:00.000Z"
+    )
+    let envelope = CaptureEnvelope(origin: CaptureOriginAllowlist.developmentOrigin, candidate: candidate)
+    #expect(throws: CaptureRequestValidationError.originNotAllowed) {
+        try CaptureRequestValidator.validate(envelope, trustedOrigin: unconfiguredProductionOrigin)
+    }
+    let runtimeAllowlist = CaptureOriginAllowlist(origins: [CaptureOriginAllowlist.developmentOrigin, unconfiguredProductionOrigin])
+    #expect(throws: CaptureRequestValidationError.originMismatch) {
+        try CaptureRequestValidator.validate(envelope, trustedOrigin: unconfiguredProductionOrigin, allowlist: runtimeAllowlist)
+    }
+    #expect(ProcessOrigin.parse(arguments: ["PromptStudioCaptureHost"]) == .missing)
+    #expect(ProcessOrigin.parse(arguments: ["PromptStudioCaptureHost", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"]) == .rejected("chrome-extension://abcdefghijklmnopabcdefghijklmnop/"))
+}
+
+@Test("runtime allowlist loads a release origin from the helper-side signed config")
+func runtimeAllowlistLoadsExplicitProductionID() throws {
+    // Deliberately unconfigured fixture; this is not a claimed Web Store ID.
+    let unconfiguredProductionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+    let config = FileManager.default.temporaryDirectory.appendingPathComponent("PromptStudioCaptureHost.allowed-origins-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: config) }
+    try Data("{\"allowed_origins\":[\"\(unconfiguredProductionOrigin)\"]}".utf8).write(to: config)
+    let allowlist = CaptureOriginAllowlist.runtime(executablePath: "/tmp/PromptStudioCaptureHost", environment: ["PROMPTSTUDIO_CAPTURE_ALLOWED_ORIGINS_FILE": config.path])
+    #expect(allowlist.contains(CaptureOriginAllowlist.developmentOrigin))
+    #expect(allowlist.contains(unconfiguredProductionOrigin))
 }
 
 @Test("socket envelope keeps ISO-8601 capturedAt and core field names")
@@ -66,4 +157,55 @@ func browserRegistrationPathsCoverSupportedBrowsers() {
     #expect(directories.contains("/Users/tester/Library/Application Support/Microsoft Edge/NativeMessagingHosts"))
     #expect(directories.contains("/Users/tester/Library/Application Support/Arc/User Data/NativeMessagingHosts"))
     #expect(UnixCaptureSocket.defaultPath(homeDirectory: "/Users/tester").hasSuffix("/PromptStudio/web-capture.sock"))
+}
+
+@Test("framer rejects partial headers, truncated payloads, and invalid length")
+func nativeMessagingFramerRejectsMalformedFrames() throws {
+    #expect(throws: NativeMessagingError.truncatedFrame) {
+        try NativeMessagingFramer.decode(Data([1, 0, 0]))
+    }
+    #expect(throws: NativeMessagingError.invalidFrame) {
+        try NativeMessagingFramer.decode(Data([4, 0, 0, 0, 0]))
+    }
+    let partialURL = try temporaryFile(Data([4, 0, 0, 0, 0, 0]))
+    defer { try? FileManager.default.removeItem(at: partialURL) }
+    let partial = try FileHandle(forReadingFrom: partialURL)
+    #expect(throws: NativeMessagingError.truncatedFrame) {
+        try NativeMessagingFramer.readFrame(from: partial)
+    }
+    let partialDeadlineURL = try temporaryFile(Data([4, 0, 0, 0, 0, 0]))
+    defer { try? FileManager.default.removeItem(at: partialDeadlineURL) }
+    let partialWithDeadline = try FileHandle(forReadingFrom: partialDeadlineURL)
+    #expect(throws: NativeMessagingError.truncatedFrame) {
+        try NativeMessagingFramer.readFrame(from: partialWithDeadline, deadline: Date().addingTimeInterval(1))
+    }
+}
+
+@Test("forwarder separates five second cold connection from sixty second confirmation")
+func forwarderUsesBoundedDeadlines() throws {
+    let start = Date(timeIntervalSince1970: 10)
+    var observedConnectDeadline: Date?
+    var observedResponseDeadline: Date?
+    var launchCount = 0
+    let forwarder = UnixSocketCaptureForwarder(
+        socketPath: "/does/not/matter",
+        launchApp: { launchCount += 1 },
+        exchange: { payload, connectDeadline, responseDeadline in
+            observedConnectDeadline = connectDeadline
+            observedResponseDeadline = responseDeadline
+            return payload
+        },
+        clock: { start },
+        sleep: { _ in }
+    )
+    _ = try forwarder.forward(Data("ok".utf8))
+    #expect(launchCount == 0)
+    #expect(observedConnectDeadline == start.addingTimeInterval(5))
+    #expect(observedResponseDeadline == start.addingTimeInterval(60))
+}
+
+private func temporaryFile(_ data: Data) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("promptstudio-framer-\(UUID().uuidString)")
+    try data.write(to: url)
+    return url
 }

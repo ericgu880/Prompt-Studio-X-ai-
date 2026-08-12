@@ -1,6 +1,7 @@
 (function runPromptStudioContent() {
   const S = globalThis.PromptStudioSelection;
-  if (!S || !document.body) return;
+  const C = globalThis.PromptStudioContentCore;
+  if (!S || !C || !document.body) return;
 
   const restrictedPage = !['http:', 'https:'].includes(location.protocol);
   let feedButton = null;
@@ -9,7 +10,7 @@
   let removeTimer = null;
   let selectionRange = null;
   let selectionRect = null;
-  let selectionTextLength = 0;
+  const captureOrigins = new Map();
 
   function isPasswordNode(node) {
     const element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
@@ -33,7 +34,6 @@
     removeTimer = null;
     selectionRange = null;
     selectionRect = null;
-    selectionTextLength = 0;
     if (feedButton) {
       feedButton.remove();
       feedButton = null;
@@ -69,7 +69,7 @@
     feedButton.addEventListener('click', captureSelection, { once: true });
     feedButton.addEventListener('pointerdown', (event) => event.stopPropagation());
     document.documentElement.appendChild(feedButton);
-    removeTimer = setTimeout(clearSelectionUI, 5_000);
+    removeTimer = setTimeout(clearSelectionUI, C.FEED_BUTTON_TTL_MS);
   }
 
   function scheduleSelection() {
@@ -79,23 +79,21 @@
     const range = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
     const rect = range && range.getBoundingClientRect();
     if (!range || !rect || !rect.width && !rect.height) return clearSelectionUI();
-    const text = selection.toString();
-    selectionTextLength = text.trim().length;
-    if (S.selectionDecision({
-      textLength: selectionTextLength,
-      collapsed: selection.isCollapsed,
+    const presence = C.selectionPresence(selection, {
       passwordField: isPasswordSelection(selection),
       restrictedPage,
-    }) === 'hide') return clearSelectionUI();
-    selectionRange = range;
-    selectionRect = rect;
+    });
+    if (!presence.show) return clearSelectionUI();
+    selectionRange = presence.range;
+    selectionRect = presence.rect;
     if (selectionTimer) clearTimeout(selectionTimer);
-    selectionTimer = setTimeout(() => appendFeedButton(rect), 300);
+    selectionTimer = setTimeout(() => appendFeedButton(rect), C.FEED_BUTTON_DELAY_MS);
   }
 
   function captureSelection(event) {
     if (!selectionRange || !selectionRect) return;
-    const text = selectionRange.toString();
+    const selection = window.getSelection();
+    const text = C.readSelectionAtClick(selection);
     const warning = S.captureLengthMessage(text);
     if (warning) {
       showNotice(warning, S.feedButtonPosition(selectionRect, { width: window.innerWidth, height: window.innerHeight }));
@@ -115,6 +113,11 @@
       clearSelectionUI();
       return;
     }
+    const buttonRect = feedButton ? feedButton.getBoundingClientRect() : selectionRect;
+    captureOrigins.set(candidate.captureID, {
+      x: Number.isFinite(event.clientX) ? event.clientX : (buttonRect.left + buttonRect.width / 2),
+      y: Number.isFinite(event.clientY) ? event.clientY : (buttonRect.top + buttonRect.height / 2),
+    });
     clearSelectionUI();
     chrome.runtime.sendMessage({ type: 'captureCandidate', candidate }, (response) => {
       if (chrome.runtime.lastError || !response || !response.ok) {
@@ -123,40 +126,52 @@
     });
   }
 
-  function animateTextFlight(text, mouthScreenPoint) {
+  function animateTextFlight(text, mouthScreenPoint, messageCaptureID) {
     if (!mouthScreenPoint || !text) return;
-    const point = S.mapScreenPointToViewport(mouthScreenPoint, {
+    const point = C.mapScreenPointToViewport(mouthScreenPoint, {
       screenX: window.screenX,
       screenY: window.screenY,
+      outerHeight: window.outerHeight,
+      innerHeight: window.innerHeight,
       visualViewportOffsetX: globalThis.visualViewport ? visualViewport.offsetLeft : 0,
       visualViewportOffsetY: globalThis.visualViewport ? visualViewport.offsetTop : 0,
+      visualViewportScale: globalThis.visualViewport ? visualViewport.scale : 1,
+      devicePixelRatio: window.devicePixelRatio,
+      screenCoordinatesArePhysicalPixels: false,
     });
+    const origin = captureOrigins.get(messageCaptureID) || { x: point.x, y: point.y };
     const fragment = document.createElement('div');
     fragment.className = 'promptstudio-capture-flight';
     fragment.textContent = text.slice(0, 180);
-    fragment.style.left = `${Math.max(0, Math.min(window.innerWidth - 260, point.x))}px`;
-    fragment.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, point.y))}px`;
+    fragment.style.left = `${Math.max(0, Math.min(window.innerWidth - 260, origin.x))}px`;
+    fragment.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, origin.y))}px`;
     document.documentElement.appendChild(fragment);
     const reduceMotion = globalThis.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (reduceMotion || typeof fragment.animate !== 'function') {
       setTimeout(() => fragment.remove(), 300);
       return;
     }
-    fragment.animate([
-      { opacity: 1, transform: 'translate(0, 0) scale(1)' },
-      { opacity: 0, transform: 'translate(0, -12px) scale(0.6)' },
-    ], { duration: 620, easing: 'cubic-bezier(.22,.8,.32,1)', fill: 'forwards' }).finished
+    const frames = C.flightKeyframes({ x: origin.x, y: origin.y }, point, 8);
+    fragment.animate(frames.map((frame) => ({
+      opacity: frame.opacity,
+      transform: `translate(${frame.point.x - origin.x}px, ${frame.point.y - origin.y}px) scale(${frame.scale})`,
+    })), { duration: 620, easing: 'cubic-bezier(.22,.8,.32,1)', fill: 'forwards' }).finished
       .then(() => fragment.remove(), () => fragment.remove());
   }
 
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.type !== 'captureResult') return;
     const result = message.result || {};
+    const messageCaptureID = result.captureID;
     if ((result.type === 'saved' || result.type === 'animate') && result.mouthScreenPoint) {
-      animateTextFlight(result.selectedText || result.text || '', result.mouthScreenPoint);
-    } else if (result.type === 'failed' && (result.code || result.message)) {
-      const failureCode = result.code || result.message;
+      animateTextFlight(result.selectedText || result.text || '', result.mouthScreenPoint, messageCaptureID);
+      if (result.type === 'saved') captureOrigins.delete(messageCaptureID);
+    } else if (result.type === 'failed') {
+      const failureCode = result.code || result.message || '';
       showNotice(failureCode === 'selection-too-large' ? '所选内容超过 50,000 个字符。' : '采集失败，请重试。', { left: 12, top: 12 });
+      captureOrigins.delete(messageCaptureID);
+    } else if (result.type === 'cancelled') {
+      captureOrigins.delete(messageCaptureID);
     }
   });
 

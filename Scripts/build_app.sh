@@ -11,6 +11,10 @@ cd "$ROOT_DIR"
 
 source "$ROOT_DIR/Scripts/codesign_policy.sh"
 source "$ROOT_DIR/Scripts/swift_toolchain.sh"
+source "$ROOT_DIR/Scripts/extension_policy.sh"
+if [[ "$CONFIGURATION" == release ]]; then
+    validate_production_extension_id "${PROMPTSTUDIO_EXTENSION_ID:-}"
+fi
 validate_signing_configuration "$CONFIGURATION" "$SIGN_IDENTITY" "$EXPECTED_TEAM_ID"
 validate_release_entitlements "$CONFIGURATION" "$ENTITLEMENTS_PATH"
 
@@ -66,6 +70,11 @@ cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
 cp "$CAPTURE_HOST_EXECUTABLE" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 cp -R "$ROOT_DIR/BrowserExtension" "$STAGING_APP_PATH/Contents/Resources/BrowserExtension"
+if [[ "$CONFIGURATION" == release ]]; then
+    write_capture_host_allowed_origins_json \
+        "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost.allowed-origins.json" \
+        "$(extension_origin_for_id "$PROMPTSTUDIO_EXTENSION_ID")"
+fi
 
 BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
