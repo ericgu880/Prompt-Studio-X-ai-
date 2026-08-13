@@ -12,6 +12,8 @@ function config(): AppConfig {
   return {
     licenseCodePepper: "test-pepper",
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       dataEncryptionKeyB64: randomBytes(32).toString("base64"),
       publicBaseURL: "https://license.promptstudio.app",
       supportURL: "https://promptstudio.app/support",

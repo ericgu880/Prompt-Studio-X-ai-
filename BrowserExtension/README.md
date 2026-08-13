@@ -2,7 +2,8 @@
 
 This is a Manifest V3 extension for Chrome, Edge, and Arc. It runs the selection overlay locally
 and sends only user-approved selections to the bundled `PromptStudioCaptureHost` through Chrome
-Native Messaging. The extension does not make network requests.
+Native Messaging. Image bytes are fetched only after an explicit image menu action or image drag
+start, using the ordered page-context/extension fallback pipeline; text capture remains local.
 
 ## Explicit user installation
 
@@ -56,6 +57,18 @@ Clicking the button is the point at which the selected text and page metadata ar
 app includes a screen-space mouth point; the content script maps it to viewport coordinates and
 plays a short local text-flight animation.
 
+For images, right-click an `<img>`/`<picture>` and choose **收藏图片到 PromptStudio**, or
+right-click another element and choose **识别此处图片并收藏** for a CSS background image. The
+extension prefers the loaded original (`currentSrc`, `srcset`, data/blob/canvas/SVG, then CSS),
+then tries the current page context and extension fetch. If those fail, it crops the visible tab
+and labels the item as **截图采集**. Image bytes are split into 512 KiB chunks and the native host
+stages at most one 50 MiB image at a time; browser messages never contain a local filesystem path.
+
+Dragging an image toward the pet sends only hit-test previews until the final pointer position is
+acknowledged by the app. Releasing over the pet starts the same verified transfer and saves
+immediately; releasing elsewhere cancels the session. A hidden pet appears temporarily for either
+image flow and returns to its hidden state after completion or cancellation.
+
 ## Manual release checklist
 
 - Repeat Chrome, Edge, and Arc checks with PromptStudio already open and fully quit; cold launch
@@ -71,3 +84,7 @@ plays a short local text-flight animation.
   receives the retryable `pet-busy` result.
 - Move the app, toggle browser connection off/on to repair the absolute helper path, then remove
   the connection and verify PromptStudio's manifests are gone from all three browser locations.
+- For image capture, cover a public image, authenticated/hotlink-protected image, `srcset`, data
+  URL, blob, canvas, inline SVG, CSS background, cross-origin frame, and screenshot fallback.
+  Confirm right-click cancel leaves no item, drag-out cancels, drag-in saves exactly once, hidden
+  pet state is restored, and no file remains in `CaptureStaging` after a terminal response.

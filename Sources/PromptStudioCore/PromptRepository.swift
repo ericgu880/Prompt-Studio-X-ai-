@@ -649,6 +649,56 @@ public final class PromptRepository: @unchecked Sendable {
         return destination
     }
 
+    /// Writes capture-host-validated bytes without trusting or rereading the
+    /// browser-controlled staging path. The final move is atomic.
+    public func writeCapturedAsset(data: Data, preferredFilename: String, assetKind: AssetKind) throws -> URL {
+        guard !data.isEmpty else {
+            throw NSError(
+                domain: "PromptStudio.PromptRepository",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "captured asset data is empty"]
+            )
+        }
+        guard assetKind == .image else {
+            throw CocoaError(.fileWriteUnsupportedScheme)
+        }
+
+        let directory = libraryURL.appendingPathComponent("assets/images")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let basename = URL(fileURLWithPath: preferredFilename).lastPathComponent
+        let safeName = basename.isEmpty || basename == "." || basename == ".." ? "captured-image" : basename
+        let destination = directory.appendingPathComponent(UUID().uuidString + "-" + safeName)
+        let temporary = directory.appendingPathComponent(".capture-" + UUID().uuidString + ".tmp")
+        var createdTemporary = false
+        defer {
+            if createdTemporary {
+                try? FileManager.default.removeItem(at: temporary)
+            }
+        }
+
+        guard FileManager.default.createFile(
+            atPath: temporary.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        createdTemporary = true
+        let handle = try FileHandle(forWritingTo: temporary)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            createdTemporary = false
+            _ = chmod(destination.path, mode_t(0o600))
+            return destination
+        } catch {
+            try? handle.close()
+            throw error
+        }
+    }
+
     /// Writes a captured or migrated text prompt as a real Markdown primary
     /// asset. The temporary file is kept inside the library and moved into its
     /// final location only after the complete bytes are present.

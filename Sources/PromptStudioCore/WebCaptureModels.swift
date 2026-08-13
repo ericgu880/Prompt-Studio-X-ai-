@@ -16,24 +16,164 @@ public struct WebCapturePoint: Codable, Equatable, Sendable {
 /// Compatibility spelling for consumers that use the generic screen-coordinate name.
 public typealias ScreenPoint = WebCapturePoint
 
+/// The DOM representation that produced a browser image capture.
+public enum ImageDOMSourceKind: String, Codable, CaseIterable, Sendable {
+    case image
+    case picture
+    case srcset
+    case dataURL
+    case blob
+    case canvas
+    case inlineSVG
+    case cssBackground
+}
+
+/// The trusted browser-side acquisition path for an image's bytes.
+public enum ImageAcquisitionMethod: String, Codable, CaseIterable, Sendable {
+    case pageContext
+    case extensionFetch
+    case loadedBytes
+    case screenshot
+}
+
 /// Web-page metadata retained alongside a captured prompt.
 public struct CapturedSource: Codable, Equatable, Sendable {
     public var pageTitle: String
     public var pageURL: String
     public var siteName: String
     public var capturedAt: Date
+    public var resourceURL: String?
+    public var imageDOMSourceKind: ImageDOMSourceKind?
+    public var imageAcquisitionMethod: ImageAcquisitionMethod?
+    public var isScreenshotCapture: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case pageTitle
+        case pageURL
+        case siteName
+        case capturedAt
+        case resourceURL
+        case imageDOMSourceKind
+        case imageAcquisitionMethod
+        case isScreenshotCapture
+    }
 
     public init(
         pageTitle: String = "",
         pageURL: String = "",
         siteName: String = "",
-        capturedAt: Date = Date()
+        capturedAt: Date = Date(),
+        resourceURL: String? = nil,
+        imageDOMSourceKind: ImageDOMSourceKind? = nil,
+        imageAcquisitionMethod: ImageAcquisitionMethod? = nil,
+        isScreenshotCapture: Bool? = nil
     ) {
         self.pageTitle = pageTitle
         self.pageURL = pageURL
         self.siteName = siteName
         self.capturedAt = capturedAt
+        self.resourceURL = sanitizedWebResourceURL(resourceURL)
+        self.imageDOMSourceKind = imageDOMSourceKind
+        self.imageAcquisitionMethod = imageAcquisitionMethod
+        self.isScreenshotCapture = isScreenshotCapture
     }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.pageTitle = try values.decodeIfPresent(String.self, forKey: .pageTitle) ?? ""
+        self.pageURL = try values.decodeIfPresent(String.self, forKey: .pageURL) ?? ""
+        self.siteName = try values.decodeIfPresent(String.self, forKey: .siteName) ?? ""
+        self.capturedAt = try values.decodeIfPresent(Date.self, forKey: .capturedAt) ?? Date()
+        self.resourceURL = sanitizedWebResourceURL(try values.decodeIfPresent(String.self, forKey: .resourceURL))
+        self.imageDOMSourceKind = try values.decodeIfPresent(ImageDOMSourceKind.self, forKey: .imageDOMSourceKind)
+        self.imageAcquisitionMethod = try values.decodeIfPresent(ImageAcquisitionMethod.self, forKey: .imageAcquisitionMethod)
+        self.isScreenshotCapture = try values.decodeIfPresent(Bool.self, forKey: .isScreenshotCapture)
+    }
+}
+
+/// Metadata and integrity information for an image staged by the browser host.
+public struct WebImageCaptureCandidate: Codable, Equatable, Sendable {
+    public var captureID: String
+    public var pageTitle: String
+    public var pageURL: String
+    public var siteName: String
+    public var resourceURL: String?
+    public var altText: String
+    public var originalFileName: String
+    public var domSourceKind: ImageDOMSourceKind
+    public var acquisitionMethod: ImageAcquisitionMethod
+    public var isScreenshot: Bool
+    public var mimeType: String?
+    public var byteCount: Int64
+    public var sha256: String
+    public var pixelWidth: Int?
+    public var pixelHeight: Int?
+    public var clickScreenPoint: WebCapturePoint
+    public var capturedAt: Date
+
+    public init(
+        captureID: String,
+        domSourceKind: ImageDOMSourceKind,
+        acquisitionMethod: ImageAcquisitionMethod,
+        sha256: String,
+        pageTitle: String = "",
+        pageURL: String = "",
+        siteName: String = "",
+        resourceURL: String? = nil,
+        altText: String = "",
+        originalFileName: String = "",
+        isScreenshot: Bool = false,
+        mimeType: String? = nil,
+        byteCount: Int64 = 0,
+        pixelWidth: Int? = nil,
+        pixelHeight: Int? = nil,
+        clickScreenPoint: WebCapturePoint = .zero,
+        capturedAt: Date = Date()
+    ) {
+        self.captureID = captureID
+        self.pageTitle = pageTitle
+        self.pageURL = pageURL
+        self.siteName = siteName
+        self.resourceURL = sanitizedWebResourceURL(resourceURL)
+        self.altText = altText
+        self.originalFileName = originalFileName
+        self.domSourceKind = domSourceKind
+        self.acquisitionMethod = acquisitionMethod
+        self.isScreenshot = isScreenshot
+        self.mimeType = mimeType
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.clickScreenPoint = clickScreenPoint
+        self.capturedAt = capturedAt
+    }
+
+    public var capturedSource: CapturedSource {
+        CapturedSource(
+            pageTitle: pageTitle,
+            pageURL: pageURL,
+            siteName: siteName,
+            capturedAt: capturedAt,
+            resourceURL: sanitizedWebResourceURL(resourceURL),
+            imageDOMSourceKind: domSourceKind,
+            imageAcquisitionMethod: acquisitionMethod,
+            isScreenshotCapture: isScreenshot || acquisitionMethod == .screenshot
+        )
+    }
+}
+
+/// Removes credentials and fragments while retaining the resource URL query.
+internal func sanitizedWebResourceURL(_ rawValue: String?) -> String? {
+    guard let rawValue,
+          !rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          var components = URLComponents(string: rawValue) else {
+        return nil
+    }
+    components.user = nil
+    components.password = nil
+    components.fragment = nil
+    return components.string
 }
 
 /// A browser selection awaiting confirmation or persistence.

@@ -91,4 +91,38 @@ describe("production configuration", () => {
 
     expect(() => loadConfig()).toThrow(/COMMERCE_PRODUCT_MAPPINGS_JSON.*at least one/i);
   });
+
+  it("allows a production manual-sales deployment without Lemon Squeezy configuration", () => {
+    const signing = generateEd25519KeyFixture();
+    const environment: Record<string, string> = {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://promptstudio:secret@db/promptstudio",
+      LICENSE_CODE_PEPPER: "test-license-code-pepper",
+      LICENSE_SIGNING_PRIVATE_KEY_PKCS8_DER_B64: signing.privateKeyPKCS8DerB64,
+      LICENSE_SIGNING_PUBLIC_KEY_RAW_B64URL: signing.publicKeyRawB64URL,
+      LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64: signing.publicKeySPKIDerB64,
+      LICENSE_SIGNING_KEY_ID: "production-key-1",
+      DATA_ENCRYPTION_KEY_B64: Buffer.alloc(32, 1).toString("base64"),
+      COMMERCE_ENABLED: "false",
+      LEMON_SQUEEZY_WEBHOOK_SECRET: "",
+      COMMERCE_PRODUCT_MAPPINGS_JSON: "",
+      EMAIL_ENABLED: "false",
+      RESEND_API_KEY: "",
+      RESEND_WEBHOOK_SECRET: "",
+      ADMIN_SESSION_SECRET: "s".repeat(32),
+      ADMIN_CSRF_SECRET: "c".repeat(32),
+      ADMIN_HMAC_SECRET: "h".repeat(32),
+      ADMIN_WEB_ORIGIN: "https://admin.promptstudio.app",
+      LEGACY_ADMIN_ENABLED: "false",
+      WORKER_ENABLED: "true",
+      TRUST_PROXY_HOPS: "1",
+      PUBLIC_BASE_URL: "https://license.promptstudio.app",
+      SUPPORT_URL: "https://promptstudio.app/support",
+    };
+    for (const [name, value] of Object.entries(environment)) vi.stubEnv(name, value);
+
+    const config = loadConfig();
+    expect(config.commercial.commerceEnabled).toBe(false);
+    expect(config.commercial.emailEnabled).toBe(false);
+  });
 });

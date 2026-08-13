@@ -29,9 +29,14 @@ struct PromptStudioApp: App {
                     appDelegate.appState = appState
                     appDelegate.petCoordinator = petCoordinator
                     appState.configureDefaultPetCaptureHandler()
+                    appState.configureDefaultPetImageCaptureHandler()
                     petCoordinator.captureHandler = { [weak appState] request in
                         guard let appState else { throw PetCaptureError.unavailable }
                         return try await appState.handlePetCapture(request)
+                    }
+                    petCoordinator.imageCaptureHandler = { [weak appState] request, stagedURL in
+                        guard let appState else { throw PetCaptureError.unavailable }
+                        return try await appState.handlePetImageCapture(request, stagedFileURL: stagedURL)
                     }
                     petCoordinator.start()
                 }

@@ -15,6 +15,17 @@ public enum CaptureHostRuntimeError: Error, Equatable, CustomStringConvertible, 
     case responseTimedOut
     case responseDisconnected
     case appLaunchFailed
+    case imageBusy
+    case imageInvalid
+    case imagePathRejected
+    case imageTooLarge
+    case imageChunkInvalid
+    case imageOutOfOrder
+    case imageDuplicate
+    case imageTruncated
+    case imageHashMismatch
+    case imageTimeout
+    case imageStagingUnavailable
 
     public var description: String {
         switch self {
@@ -28,6 +39,17 @@ public enum CaptureHostRuntimeError: Error, Equatable, CustomStringConvertible, 
         case .responseTimedOut: return "capture response timed out"
         case .responseDisconnected: return "capture socket closed before terminal response"
         case .appLaunchFailed: return "unable to launch PromptStudio"
+        case .imageBusy: return "image session is busy"
+        case .imageInvalid: return "image request is invalid"
+        case .imagePathRejected: return "browser paths are not accepted"
+        case .imageTooLarge: return "image exceeds 50 MiB"
+        case .imageChunkInvalid: return "image chunk is invalid"
+        case .imageOutOfOrder: return "image chunks are out of order"
+        case .imageDuplicate: return "image chunk was duplicated"
+        case .imageTruncated: return "image bytes are truncated"
+        case .imageHashMismatch: return "image SHA-256 does not match"
+        case .imageTimeout: return "image transfer timed out"
+        case .imageStagingUnavailable: return "image staging is unavailable"
         }
     }
 }
@@ -89,10 +111,11 @@ public final class UnixSocketCaptureForwarder {
     public typealias Exchange = (Data, Date, Date) throws -> Data
     public typealias ResponseSink = (Data) throws -> Void
     public typealias StreamingExchange = (Data, Date, Date, ResponseSink) throws -> Void
+    public typealias TerminalStreamingExchange = (Data, Date, Date, Set<String>, ResponseSink) throws -> Void
     private let socketPath: String
     private let launchApp: () throws -> Void
     private let exchange: Exchange?
-    private let streamingExchange: StreamingExchange
+    private let terminalStreamingExchange: TerminalStreamingExchange
     private let clock: () -> Date
     private let sleep: (UInt32) -> Void
 
@@ -101,27 +124,33 @@ public final class UnixSocketCaptureForwarder {
         launchApp: @escaping () throws -> Void = { try PromptStudioLauncher().launch() },
         exchange: Exchange? = nil,
         streamingExchange: StreamingExchange? = nil,
+        terminalStreamingExchange: TerminalStreamingExchange? = nil,
         clock: @escaping () -> Date = Date.init,
         sleep: @escaping (UInt32) -> Void = { _ = usleep($0) }
     ) {
         self.socketPath = socketPath
         self.launchApp = launchApp
         self.exchange = exchange
-        if let streamingExchange {
-            self.streamingExchange = streamingExchange
+        if let terminalStreamingExchange {
+            self.terminalStreamingExchange = terminalStreamingExchange
+        } else if let streamingExchange {
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, _, sink in
+                try streamingExchange(payload, connectDeadline, responseDeadline, sink)
+            }
         } else if let exchange {
             // Preserve the single-frame injection seam used by callers/tests while
             // routing production instances through the real socket stream below.
-            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, _, sink in
                 try sink(exchange(payload, connectDeadline, responseDeadline))
             }
         } else {
-            self.streamingExchange = { payload, connectDeadline, responseDeadline, sink in
+            self.terminalStreamingExchange = { payload, connectDeadline, responseDeadline, terminalTypes, sink in
                 try UnixSocketCaptureForwarder.exchangeStreaming(
                     payload,
                     socketPath: socketPath,
                     connectDeadline: connectDeadline,
                     responseDeadline: responseDeadline,
+                    terminalTypes: terminalTypes,
                     responseSink: sink
                 )
             }
@@ -142,7 +171,11 @@ public final class UnixSocketCaptureForwarder {
         return lastResponse
     }
 
-    public func forwardStreaming(_ payload: Data, responseSink: @escaping ResponseSink) throws {
+    public func forwardStreaming(
+        _ payload: Data,
+        responseSink: @escaping ResponseSink,
+        terminalTypes: Set<String> = ["saved", "cancelled", "failed"]
+    ) throws {
         let connectionDeadline = clock().addingTimeInterval(5)
         var launched = false
         while clock() < connectionDeadline {
@@ -150,9 +183,9 @@ public final class UnixSocketCaptureForwarder {
             var sawTerminal = false
             var deliveredResponse = false
             do {
-                try streamingExchange(payload, connectionDeadline, currentResponseDeadline) { frame in
+                try terminalStreamingExchange(payload, connectionDeadline, currentResponseDeadline, terminalTypes) { frame in
                     deliveredResponse = true
-                    if Self.isTerminalResponse(frame) { sawTerminal = true }
+                    if Self.isTerminalResponse(frame, terminalTypes: terminalTypes) { sawTerminal = true }
                     try responseSink(frame)
                 }
                 if sawTerminal { return }
@@ -206,9 +239,11 @@ public final class UnixSocketCaptureForwarder {
         throw CaptureHostRuntimeError.connectionTimedOut
     }
 
-    private static func isTerminalResponse(_ payload: Data) -> Bool {
+    private static func isTerminalResponse(_ payload: Data, terminalTypes: Set<String> = [
+        "saved", "cancelled", "failed", "ack", "imageDragPreviewAck", "imageDragCancelAck"
+    ]) -> Bool {
         guard let response = try? JSONDecoder().decode(CaptureHostResponse.self, from: payload) else { return false }
-        return ["saved", "cancelled", "failed"].contains(response.type)
+        return terminalTypes.contains(response.type)
     }
 
     private static func exchangeStreaming(
@@ -216,6 +251,7 @@ public final class UnixSocketCaptureForwarder {
         socketPath: String,
         connectDeadline: Date,
         responseDeadline: Date,
+        terminalTypes: Set<String>,
         responseSink: ResponseSink
     ) throws {
         #if canImport(Darwin)
@@ -279,7 +315,7 @@ public final class UnixSocketCaptureForwarder {
                     throw CaptureHostRuntimeError.responseDisconnected
                 }
                 try responseSink(response)
-                if isTerminalResponse(response) { return }
+                if isTerminalResponse(response, terminalTypes: terminalTypes) { return }
             }
         } catch NativeMessagingError.deadlineExceeded {
             throw CaptureHostRuntimeError.responseTimedOut
@@ -302,13 +338,72 @@ public final class PromptStudioCaptureHost {
     private let trustedOrigin: String
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let stagingStore: ImageStagingStore
+
+    private struct ImageBeginWire: Decodable {
+        let type: String
+        let origin: String
+        let candidate: BrowserImageCaptureCandidate
+        let expectedByteCount: Int64
+        let sha256: String
+    }
+
+    private struct ImageChunkWire: Decodable {
+        let type: String
+        let origin: String
+        let captureID: String
+        let index: Int
+        let base64Data: String?
+        let data: String?
+    }
+
+    private struct ImageEndWire: Decodable {
+        let type: String
+        let origin: String
+        let captureID: String
+        let byteCount: Int64?
+        let sha256: String?
+    }
+
+    private struct ImageCancelWire: Decodable {
+        let type: String
+        let origin: String
+        let captureID: String
+    }
+
+    private struct ImageDragPreviewWire: Decodable {
+        let type: String
+        let origin: String
+        let captureID: String
+        let screenPoint: CaptureScreenPoint?
+        let point: CaptureScreenPoint?
+        let insidePet: Bool?
+        let drop: Bool?
+        let sequence: Int?
+    }
+
+    private struct SocketImageCaptureEnvelope: Encodable {
+        let type = "imageCapture"
+        let stagingToken: String
+        let candidate: BrowserImageCaptureCandidate
+    }
+
+    private struct SocketImageControlEnvelope: Encodable {
+        let type: String
+        let captureID: String
+        let screenPoint: CaptureScreenPoint?
+        let insidePet: Bool?
+        let drop: Bool?
+        let sequence: Int?
+    }
 
     public init(
         trustedOrigin: String,
         input: FileHandle = .standardInput,
         output: FileHandle = .standardOutput,
         forwarder: UnixSocketCaptureForwarder = UnixSocketCaptureForwarder(),
-        allowlist: CaptureOriginAllowlist = .default
+        allowlist: CaptureOriginAllowlist = .default,
+        stagingStore: ImageStagingStore = ImageStagingStore()
     ) {
         self.input = input
         self.output = output
@@ -317,49 +412,90 @@ public final class PromptStudioCaptureHost {
         self.trustedOrigin = trustedOrigin
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+        self.stagingStore = stagingStore
     }
 
     public func run() throws {
-        while let frame = try NativeMessagingFramer.readFrame(from: input) {
+        defer { stagingStore.disconnect() }
+        while true {
+            let frame: Data?
+            do {
+                if stagingStore.activeSession != nil {
+                    frame = try NativeMessagingFramer.readFrame(
+                        from: input,
+                        deadline: Date().addingTimeInterval(ImageStagingStore.transferTimeout)
+                    )
+                } else {
+                    frame = try NativeMessagingFramer.readFrame(from: input)
+                }
+            } catch NativeMessagingError.deadlineExceeded {
+                let captureID = stagingStore.activeSession?.captureID ?? "unknown"
+                stagingStore.disconnect()
+                try? writeResponse(CaptureHostResponse(type: "failed", captureID: captureID, code: "image-timeout", retryable: true, message: "image-timeout"))
+                throw CaptureHostRuntimeError.imageTimeout
+            }
+            guard let frame else { break }
             let started = Date()
-            var candidate: BrowserCaptureCandidate?
+            stagingStore.pruneExpired()
+            var textCandidate: BrowserCaptureCandidate?
+            let requestCaptureID = captureID(from: frame)
             var terminalSent = false
             do {
-                let request = try decodeAndValidate(frame)
-                candidate = request.candidate
-                let socketPayload = try encoder.encode(SocketCaptureEnvelope(candidate: request.candidate))
-                try forwarder.forwardStreaming(socketPayload) { forwarded in
-                    let appResponse = try self.decoder.decode(CaptureHostResponse.self, from: forwarded)
-                    let response = CaptureHostResponse(
-                        type: appResponse.type,
-                        captureID: appResponse.captureID.isEmpty ? request.candidate.captureID : appResponse.captureID,
-                        code: appResponse.code,
-                        selectedText: appResponse.selectedText ?? request.candidate.selectedText,
-                        message: appResponse.message,
-                        mouthScreenPoint: appResponse.mouthScreenPoint,
-                        clearSource: appResponse.clearSource
-                    )
-                    terminalSent = Self.isTerminal(response.type)
-                    try NativeMessagingFramer.writeFrame(self.encoder.encode(response), to: self.output)
+                switch try messageType(from: frame) {
+                case "capture":
+                    let request = try decodeAndValidate(frame)
+                    textCandidate = request.candidate
+                    let socketPayload = try encoder.encode(SocketCaptureEnvelope(candidate: request.candidate))
+                    try forwarder.forwardStreaming(socketPayload) { forwarded in
+                        let appResponse = try self.decoder.decode(CaptureHostResponse.self, from: forwarded)
+                        let response = CaptureHostResponse(
+                            type: appResponse.type,
+                            captureID: appResponse.captureID.isEmpty ? request.candidate.captureID : appResponse.captureID,
+                            code: appResponse.code,
+                            retryable: appResponse.retryable,
+                            selectedText: appResponse.selectedText ?? request.candidate.selectedText,
+                            message: appResponse.message,
+                            mouthScreenPoint: appResponse.mouthScreenPoint,
+                            clearSource: appResponse.clearSource,
+                            sequence: appResponse.sequence,
+                            insidePet: appResponse.insidePet
+                        )
+                        terminalSent = Self.isTerminal(response.type)
+                        try NativeMessagingFramer.writeFrame(self.encoder.encode(response), to: self.output)
+                    }
+                    guard terminalSent else { throw CaptureHostRuntimeError.responseDisconnected }
+                    CaptureHostLogger.status("forwarded", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: request.candidate.selectedText.count)
+                case "imageBegin":
+                    try handleImageBegin(frame)
+                case "imageChunk":
+                    try handleImageChunk(frame)
+                case "imageEnd":
+                    try handleImageEnd(frame)
+                case "imageCancel":
+                    try handleImageCancel(frame)
+                case "imageDragPreview":
+                    try handleImageDragPreview(frame)
+                case "imageDragCancel":
+                    try handleImageDragCancel(frame)
+                default:
+                    throw CaptureHostRuntimeError.invalidRequest
                 }
-                guard terminalSent else { throw CaptureHostRuntimeError.responseDisconnected }
-                CaptureHostLogger.status("forwarded", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: request.candidate.selectedText.count)
             } catch let error as CaptureHostRuntimeError {
-                if case .responseDisconnected = error {
-                    CaptureHostLogger.status("disconnected", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                if case .responseDisconnected = error, textCandidate != nil {
+                    CaptureHostLogger.status("disconnected", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: textCandidate?.selectedText.count)
                     throw error
                 }
                 if !terminalSent {
                     let code = errorCode(error)
-                    let response = CaptureHostResponse(type: "failed", captureID: candidate?.captureID ?? captureID(from: frame), code: code, message: code)
+                    let response = CaptureHostResponse(type: "failed", captureID: textCandidate?.captureID ?? requestCaptureID, code: code, retryable: isRetryable(error), message: code)
                     try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
-                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: textCandidate?.selectedText.count)
                 }
             } catch {
                 if !terminalSent {
-                    let response = CaptureHostResponse(type: "failed", captureID: candidate?.captureID ?? captureID(from: frame), code: "invalid-request", message: "invalid-request")
+                    let response = CaptureHostResponse(type: "failed", captureID: textCandidate?.captureID ?? requestCaptureID, code: "invalid-request", message: "invalid-request")
                     try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
-                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: candidate?.selectedText.count)
+                    CaptureHostLogger.status("failed", durationMilliseconds: Int(Date().timeIntervalSince(started) * 1_000), characterCount: textCandidate?.selectedText.count)
                 }
             }
         }
@@ -384,9 +520,214 @@ public final class PromptStudioCaptureHost {
         return request
     }
 
+    private func messageType(from frame: Data) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: frame) as? [String: Any],
+              let type = object["type"] as? String,
+              !type.isEmpty else { throw CaptureHostRuntimeError.invalidRequest }
+        return type
+    }
+
+    private func validateImageEnvelope(_ frame: Data) throws {
+        guard let object = try JSONSerialization.jsonObject(with: frame) as? [String: Any],
+              let origin = object["origin"] as? String else { throw CaptureHostRuntimeError.invalidOrigin }
+        guard allowlist.contains(trustedOrigin) else { throw CaptureHostRuntimeError.invalidOrigin }
+        guard origin == trustedOrigin else { throw CaptureHostRuntimeError.originMismatch }
+        guard allowlist.contains(origin) else { throw CaptureHostRuntimeError.invalidOrigin }
+        guard !containsForbiddenPathField(object) else { throw CaptureHostRuntimeError.imagePathRejected }
+    }
+
+    private func handleImageBegin(_ frame: Data) throws {
+        try validateImageEnvelope(frame)
+        let request: ImageBeginWire
+        do { request = try decoder.decode(ImageBeginWire.self, from: frame) }
+        catch { throw CaptureHostRuntimeError.imageInvalid }
+        guard (request.candidate.byteCount == 0 || request.candidate.byteCount == request.expectedByteCount),
+              (request.candidate.sha256.isEmpty || request.candidate.sha256.lowercased() == request.sha256.lowercased()) else {
+            throw CaptureHostRuntimeError.imageInvalid
+        }
+        do {
+            _ = try stagingStore.begin(candidate: request.candidate, expectedByteCount: request.expectedByteCount, sha256: request.sha256)
+            try writeResponse(CaptureHostResponse(type: "ack", captureID: request.candidate.captureID, code: "image-begin-accepted"))
+        } catch let error as ImageStagingError {
+            throw mapImageError(error)
+        }
+    }
+
+    private func handleImageChunk(_ frame: Data) throws {
+        try validateImageEnvelope(frame)
+        let request: ImageChunkWire
+        do { request = try decoder.decode(ImageChunkWire.self, from: frame) }
+        catch { throw CaptureHostRuntimeError.imageInvalid }
+        guard let encoded = request.base64Data ?? request.data else { throw CaptureHostRuntimeError.imageChunkInvalid }
+        do {
+            try stagingStore.appendChunk(captureID: request.captureID, index: request.index, base64Data: encoded)
+            try writeResponse(CaptureHostResponse(type: "ack", captureID: request.captureID, code: "image-chunk-accepted"))
+        } catch let error as ImageStagingError {
+            throw mapImageError(error)
+        }
+    }
+
+    private func handleImageEnd(_ frame: Data) throws {
+        try validateImageEnvelope(frame)
+        let request: ImageEndWire
+        do { request = try decoder.decode(ImageEndWire.self, from: frame) }
+        catch { throw CaptureHostRuntimeError.imageInvalid }
+        let staged: StagedImageCapture
+        do {
+            staged = try stagingStore.finish(captureID: request.captureID, byteCount: request.byteCount, sha256: request.sha256)
+        } catch let error as ImageStagingError {
+            throw mapImageError(error)
+        }
+        let payload = try encoder.encode(SocketImageCaptureEnvelope(
+            stagingToken: staged.stagingToken,
+            candidate: staged.candidate.withIntegrity(byteCount: staged.byteCount, sha256: staged.sha256)
+        ))
+        var terminalSent = false
+        do {
+            try forwarder.forwardStreaming(payload) { forwarded in
+                let appResponse = try self.decoder.decode(CaptureHostResponse.self, from: forwarded)
+                let response = self.forwardedResponse(appResponse, captureID: request.captureID, selectedText: nil)
+                terminalSent = Self.isTerminal(response.type)
+                try self.writeResponse(response)
+            }
+            guard terminalSent else { throw CaptureHostRuntimeError.responseDisconnected }
+            stagingStore.release(captureID: request.captureID)
+        } catch {
+            stagingStore.release(captureID: request.captureID)
+            throw error
+        }
+    }
+
+    private func handleImageCancel(_ frame: Data) throws {
+        try handleImageControl(frame, type: "imageCancel", terminalTypes: ["ack", "cancelled", "failed"]) { request in
+            stagingStore.cancel(captureID: request.captureID)
+        }
+    }
+
+    private func handleImageDragPreview(_ frame: Data) throws {
+        try validateImageEnvelope(frame)
+        let request: ImageDragPreviewWire
+        do { request = try decoder.decode(ImageDragPreviewWire.self, from: frame) }
+        catch { throw CaptureHostRuntimeError.imageInvalid }
+        let payload = try encoder.encode(SocketImageControlEnvelope(
+            type: "imageDragPreview",
+            captureID: request.captureID,
+            screenPoint: request.screenPoint ?? request.point,
+            insidePet: request.insidePet,
+            drop: request.drop,
+            sequence: request.sequence
+        ))
+        try forwardControl(payload, captureID: request.captureID, terminalTypes: ["ack", "imageDragPreviewAck", "failed"])
+    }
+
+    private func handleImageDragCancel(_ frame: Data) throws {
+        try handleImageControl(frame, type: "imageDragCancel", terminalTypes: ["ack", "imageDragCancelAck", "cancelled", "failed"]) { request in
+            stagingStore.cancel(captureID: request.captureID)
+        }
+    }
+
+    private func handleImageControl(
+        _ frame: Data,
+        type: String,
+        terminalTypes: Set<String>,
+        beforeForward: (ImageCancelWire) -> Void
+    ) throws {
+        try validateImageEnvelope(frame)
+        let request: ImageCancelWire
+        do { request = try decoder.decode(ImageCancelWire.self, from: frame) }
+        catch { throw CaptureHostRuntimeError.imageInvalid }
+        guard request.type == type else { throw CaptureHostRuntimeError.imageInvalid }
+        beforeForward(request)
+        let payload = try encoder.encode(SocketImageControlEnvelope(type: type, captureID: request.captureID, screenPoint: nil, insidePet: nil, drop: nil, sequence: nil))
+        try forwardControl(payload, captureID: request.captureID, terminalTypes: terminalTypes)
+    }
+
+    private func forwardControl(_ payload: Data, captureID: String, terminalTypes: Set<String>) throws {
+        var terminalSent = false
+        do {
+            try forwarder.forwardStreaming(payload, responseSink: { forwarded in
+                let appResponse = try self.decoder.decode(CaptureHostResponse.self, from: forwarded)
+                let response = self.forwardedResponse(appResponse, captureID: captureID, selectedText: nil)
+                terminalSent = terminalTypes.contains(response.type)
+                try self.writeResponse(response)
+            }, terminalTypes: terminalTypes)
+            guard terminalSent else { throw CaptureHostRuntimeError.responseDisconnected }
+        } catch let error as CaptureHostRuntimeError {
+            throw error
+        } catch {
+            throw CaptureHostRuntimeError.invalidRequest
+        }
+    }
+
+    private func forwardedResponse(_ appResponse: CaptureHostResponse, captureID: String, selectedText: String?) -> CaptureHostResponse {
+        CaptureHostResponse(
+            type: appResponse.type,
+            captureID: appResponse.captureID.isEmpty ? captureID : appResponse.captureID,
+            code: appResponse.code,
+            retryable: appResponse.retryable,
+            selectedText: appResponse.selectedText ?? selectedText,
+            message: appResponse.message,
+            mouthScreenPoint: appResponse.mouthScreenPoint,
+            clearSource: appResponse.clearSource,
+            sequence: appResponse.sequence,
+            insidePet: appResponse.insidePet
+        )
+    }
+
+    private func writeResponse(_ response: CaptureHostResponse) throws {
+        try NativeMessagingFramer.writeFrame(encoder.encode(response), to: output)
+    }
+
+    private func mapImageError(_ error: ImageStagingError) -> CaptureHostRuntimeError {
+        switch error {
+        case .imageBusy: return .imageBusy
+        case .invalidCaptureID, .invalidDigest, .unknownSession, .invalidBase64, .tokenRejected: return .imageInvalid
+        case .clientPathRejected: return .imagePathRejected
+        case .imageTooLarge: return .imageTooLarge
+        case .chunkTooLarge, .byteCountExceeded: return .imageChunkInvalid
+        case .duplicateChunk: return .imageDuplicate
+        case .outOfOrderChunk: return .imageOutOfOrder
+        case .truncatedImage: return .imageTruncated
+        case .hashMismatch: return .imageHashMismatch
+        case .transferTimedOut: return .imageTimeout
+        case .stagingDirectoryUnavailable, .stagingDirectoryInsecure, .stagingFileUnavailable, .stagingFileInsecure: return .imageStagingUnavailable
+        }
+    }
+
+    private func containsForbiddenPathField(_ object: Any) -> Bool {
+        if let dictionary = object as? [String: Any] {
+            for (key, value) in dictionary {
+                let normalized = key.lowercased()
+                if ["path", "filepath", "fileurl", "stagedfilepath", "localpath", "stagingtoken"].contains(normalized) {
+                    return true
+                }
+                if containsForbiddenPathField(value) { return true }
+            }
+        } else if let array = object as? [Any] {
+            return array.contains(where: containsForbiddenPathField)
+        }
+        return false
+    }
+
     private func captureID(from frame: Data) -> String {
-        guard let request = try? decoder.decode(CaptureEnvelope.self, from: frame) else { return "unknown" }
-        return request.candidate.captureID
+        if let request = try? decoder.decode(CaptureEnvelope.self, from: frame) {
+            return request.candidate.captureID
+        }
+        if let object = try? JSONSerialization.jsonObject(with: frame) as? [String: Any],
+           let captureID = object["captureID"] as? String { return captureID }
+        if let object = try? JSONSerialization.jsonObject(with: frame) as? [String: Any],
+           let candidate = object["candidate"] as? [String: Any],
+           let captureID = candidate["captureID"] as? String { return captureID }
+        return "unknown"
+    }
+
+    private func isRetryable(_ error: CaptureHostRuntimeError) -> Bool {
+        switch error {
+        case .imageBusy, .imageTimeout, .connectionTimedOut, .socketUnavailable, .responseTimedOut, .responseDisconnected:
+            return true
+        default:
+            return false
+        }
     }
 
     private func errorCode(_ error: CaptureHostRuntimeError) -> String {
@@ -401,6 +742,17 @@ public final class PromptStudioCaptureHost {
         case .responseTimedOut: return "app-response-timeout"
         case .responseDisconnected: return "app-response-disconnected"
         case .appLaunchFailed: return "app-launch-failed"
+        case .imageBusy: return "image-busy"
+        case .imageInvalid: return "image-invalid"
+        case .imagePathRejected: return "image-path-rejected"
+        case .imageTooLarge: return "image-too-large"
+        case .imageChunkInvalid: return "image-chunk-invalid"
+        case .imageOutOfOrder: return "image-out-of-order"
+        case .imageDuplicate: return "image-duplicate"
+        case .imageTruncated: return "image-truncated"
+        case .imageHashMismatch: return "image-sha-mismatch"
+        case .imageTimeout: return "image-timeout"
+        case .imageStagingUnavailable: return "image-staging-unavailable"
         }
     }
 }

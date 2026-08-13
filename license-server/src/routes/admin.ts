@@ -7,7 +7,7 @@ type FormBody = Record<string, string>;
 
 const createLicenseFormSchema = z.object({
   email: z.string().trim().email("购买邮箱格式不正确。"),
-  plan: z.string().trim().min(1, "方案不能为空。").max(80, "方案名称太长。"),
+  plan: z.enum(["pro_lifetime"], { errorMap: () => ({ message: "授权版本不受支持。" }) }),
   seats: z.coerce.number().int("设备数必须是整数。").min(1, "设备数至少为 1。").max(99, "设备数最多为 99。"),
   provider: z.string().trim().max(80, "订单来源太长。").optional(),
   orderId: z.string().trim().max(120, "订单 ID 太长。").optional()
@@ -24,6 +24,10 @@ function escapeHtml(value: unknown): string {
 
 function dateText(value: Date | null | undefined): string {
   return value ? value.toISOString().replace("T", " ").slice(0, 19) : "-";
+}
+
+function planLabel(plan: string): string {
+  return plan === "pro_lifetime" ? "PromptStudio Pro 永久版" : plan;
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -234,7 +238,7 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
         <td><a href="/admin/licenses/${escapeHtml(license.id)}"><code>${escapeHtml(license.id)}</code></a></td>
         <td>${escapeHtml(license.email)}</td>
         <td>${escapeHtml(license.code)}</td>
-        <td>${escapeHtml(license.plan)}</td>
+        <td>${escapeHtml(planLabel(license.plan))}</td>
         <td>${escapeHtml(license.status)}</td>
         <td>${license.activeDevices}/${license.seats}</td>
         <td>${dateText(license.createdAt)}</td>
@@ -248,7 +252,11 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
           <h2>创建授权</h2>
           <form method="post" action="/admin/licenses">
             <label>购买邮箱</label><input name="email" type="email" required />
-            <label>方案</label><input name="plan" value="pro_lifetime" required />
+            <label>授权版本</label>
+            <select name="plan" required>
+              <option value="pro_lifetime">PromptStudio Pro 永久版</option>
+            </select>
+            <p class="muted" style="margin:5px 0 0;">用于区分产品版本和授权期限</p>
             <label>设备数</label><input name="seats" type="number" min="1" max="99" value="2" required />
             <label>订单来源</label><input name="provider" placeholder="stripe / paddle / manual" />
             <label>订单 ID</label><input name="orderId" />
@@ -264,7 +272,7 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
             </form>
           </div>
           <table>
-            <thead><tr><th>ID</th><th>邮箱</th><th>激活码</th><th>方案</th><th>状态</th><th>设备</th><th>创建时间</th></tr></thead>
+            <thead><tr><th>ID</th><th>邮箱</th><th>激活码</th><th>授权版本</th><th>状态</th><th>设备</th><th>创建时间</th></tr></thead>
             <tbody>${listError ? `<tr><td colspan="7" class="muted">数据库连接后会显示真实授权列表。</td></tr>` : rows || `<tr><td colspan="7" class="muted">暂无授权</td></tr>`}</tbody>
           </table>
         </section>
@@ -303,7 +311,7 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
         <h1>激活码已生成</h1>
         <p class="muted">这个明文激活码只显示这一次。发送给用户后请不要再存明文。</p>
         <div class="code-box">${escapeHtml(result.licenseCode)}</div>
-        <p>邮箱：${escapeHtml(result.emailMasked)} · 方案：${escapeHtml(result.plan)} · 设备数：${result.seats}</p>
+        <p>邮箱：${escapeHtml(result.emailMasked)} · 授权版本：${escapeHtml(planLabel(result.plan))} · 设备数：${result.seats}</p>
         <div class="row"><a class="button primary" href="/admin/licenses/${escapeHtml(result.id)}">查看授权</a><a class="button" href="/admin">返回列表</a></div>
       </section>
     `));
@@ -334,7 +342,7 @@ export async function adminRoutes(app: FastifyInstance, config: AppConfig): Prom
     return reply.type("text/html").send(page("License detail", `
       <p><a href="/admin">← 返回列表</a></p>
       <section class="panel">
-        <h1>${escapeHtml(license.email)} · ${escapeHtml(license.plan)}</h1>
+        <h1>${escapeHtml(license.email)} · ${escapeHtml(planLabel(license.plan))}</h1>
         <div class="row">
           <span>状态：<code>${escapeHtml(license.status)}</code></span>
           <span>激活码：<code>${escapeHtml(license.code)}</code></span>

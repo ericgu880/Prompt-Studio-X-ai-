@@ -10,6 +10,8 @@ const enqueue = vi.fn();
 function config(): AppConfig {
   return {
     commercial: {
+      commerceEnabled: true,
+      emailEnabled: true,
       lemonSqueezyWebhookSecret: secret,
     },
   } as AppConfig;
