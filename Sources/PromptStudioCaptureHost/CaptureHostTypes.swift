@@ -180,40 +180,52 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
     public let type: String
     public let captureID: String
     public let code: String?
+    public let retryable: Bool?
     public let selectedText: String?
     public let message: String?
     public let mouthScreenPoint: CaptureScreenPoint?
     public let clearSource: Bool?
+    public let sequence: Int?
+    public let insidePet: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case type
         case status
         case captureID
         case code
+        case retryable
         case message
         case selectedText
         case text
         case mouthScreenPoint
         case mouthPoint
         case clearSource
+        case sequence
+        case insidePet
     }
 
     public init(
         type: String,
         captureID: String,
         code: String? = nil,
+        retryable: Bool? = nil,
         selectedText: String? = nil,
         message: String? = nil,
         mouthScreenPoint: CaptureScreenPoint? = nil,
-        clearSource: Bool? = nil
+        clearSource: Bool? = nil,
+        sequence: Int? = nil,
+        insidePet: Bool? = nil
     ) {
         self.type = type
         self.captureID = captureID
         self.code = code
+        self.retryable = retryable
         self.selectedText = selectedText
         self.message = message
         self.mouthScreenPoint = mouthScreenPoint
         self.clearSource = clearSource
+        self.sequence = sequence
+        self.insidePet = insidePet
     }
 
     public init(from decoder: Decoder) throws {
@@ -224,6 +236,7 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         type = rawType == "captureResult" ? "failed" : rawType
         captureID = try values.decodeIfPresent(String.self, forKey: .captureID) ?? ""
         code = try values.decodeIfPresent(String.self, forKey: .code)
+        retryable = try values.decodeIfPresent(Bool.self, forKey: .retryable)
         message = try values.decodeIfPresent(String.self, forKey: .message)
             ?? code
         let selectedTextValue = try values.decodeIfPresent(String.self, forKey: .selectedText)
@@ -233,6 +246,8 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         let mouthPointValue = try values.decodeIfPresent(CaptureScreenPoint.self, forKey: .mouthPoint)
         mouthScreenPoint = mouthScreenPointValue ?? mouthPointValue
         clearSource = try values.decodeIfPresent(Bool.self, forKey: .clearSource)
+        sequence = try values.decodeIfPresent(Int.self, forKey: .sequence)
+        insidePet = try values.decodeIfPresent(Bool.self, forKey: .insidePet)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -240,10 +255,13 @@ public struct CaptureHostResponse: Codable, Equatable, Sendable {
         try values.encode(type, forKey: .type)
         try values.encode(captureID, forKey: .captureID)
         try values.encodeIfPresent(code, forKey: .code)
+        try values.encodeIfPresent(retryable, forKey: .retryable)
         try values.encodeIfPresent(message, forKey: .message)
         try values.encodeIfPresent(selectedText, forKey: .selectedText)
         try values.encodeIfPresent(mouthScreenPoint, forKey: .mouthScreenPoint)
         try values.encodeIfPresent(clearSource, forKey: .clearSource)
+        try values.encodeIfPresent(sequence, forKey: .sequence)
+        try values.encodeIfPresent(insidePet, forKey: .insidePet)
     }
 }
 

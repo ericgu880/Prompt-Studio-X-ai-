@@ -48,3 +48,25 @@
   white-space: pre-wrap;
   font: 12px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
+
+.promptstudio-capture-mouth-duplicate {
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  width: 36px !important;
+  height: 36px !important;
+  object-fit: contain !important;
+  pointer-events: none !important;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(20, 16, 28, 0.3);
+  transform: scale(0.72);
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #promptstudio-capture-feed-button,
+  .promptstudio-capture-flight,
+  .promptstudio-capture-mouth-duplicate {
+    transition: none !important;
+    animation: none !important;
+  }
+}

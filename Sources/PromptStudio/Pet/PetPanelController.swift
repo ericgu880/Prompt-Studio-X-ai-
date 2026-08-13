@@ -131,6 +131,25 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    func hitTest(browserPoint: PetCaptureRequest.ScreenPoint?) -> (insidePet: Bool, mouthPoint: PetCaptureRequest.ScreenPoint?) {
+        guard let browserPoint,
+              let primaryScreen = NSScreen.screens.first else {
+            return (false, nil)
+        }
+        let appKitPoint = PetGeometry.appKitPoint(
+            fromBrowserScreenPoint: browserPoint,
+            primaryScreenMaxY: primaryScreen.frame.maxY
+        )
+        let petRect = NSRect(
+            x: panel.frame.minX,
+            y: panel.frame.minY,
+            width: min(panel.frame.width, compactSize.width),
+            height: panel.frame.height
+        )
+        let inside = petRect.contains(appKitPoint)
+        return (inside, inside ? mouthBrowserScreenPoint : nil)
+    }
+
     func snapNow() {
         guard let screen = targetScreen() else { return }
         let origin = PetGeometry.snappedOrigin(

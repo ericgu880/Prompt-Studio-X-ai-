@@ -1,4 +1,6 @@
 import AVFoundation
+import CryptoKit
+import Darwin
 import Foundation
 import ImageIO
 
@@ -242,6 +244,78 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
         return try repository.saveCapturedItem(item)
     }
 
+    /// Validates and persists an image staged by the trusted capture host.
+    ///
+    /// The staging URL is treated as untrusted input. The file is inspected before it is
+    /// copied, and all persisted metadata is derived from the bytes rather than the browser's
+    /// extension or MIME hint.
+    @discardableResult
+    public func createCapturedImage(
+        _ candidate: WebImageCaptureCandidate,
+        stagedFileURL: URL
+    ) throws -> PromptItem {
+        let captureID = candidate.captureID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !captureID.isEmpty else {
+            throw AutomationServiceError.invalidInput("采集 ID 不能为空")
+        }
+
+        // A retry may arrive after the host has already cleaned up its staging file. Return the
+        // winning row before touching the staged path so captureID remains idempotent.
+        if let existing = try repository.findItem(captureID: captureID) {
+            return existing
+        }
+
+        let inspection = try inspectStagedImage(candidate: candidate, stagedFileURL: stagedFileURL)
+        let model = try defaultModel(for: .image)
+        let folder = try ensureCaptureFolder()
+        let sortOrder = try nextTopSortOrder()
+        var destination: URL?
+        do {
+            let asset = try repository.writeCapturedAsset(
+                data: inspection.data,
+                preferredFilename: candidate.originalFileName,
+                assetKind: .image
+            )
+            destination = asset
+            let id = UUID().uuidString
+            let item = PromptItem(
+                id: id,
+                title: imageCaptureTitle(candidate),
+                type: .image,
+                assetKind: .image,
+                modelId: model.id,
+                modelName: model.name,
+                folderId: folder.id,
+                folderName: folder.name,
+                category: "图片",
+                assetPath: asset.path,
+                thumbnailPath: asset.path,
+                aspectRatio: normalizedAspectRatio(width: inspection.width, height: inspection.height),
+                width: inspection.width,
+                height: inspection.height,
+                format: inspection.format,
+                fileSize: inspection.fileSize,
+                sortOrder: sortOrder,
+                tags: imageCaptureTags(isScreenshot: candidate.isScreenshot || candidate.acquisitionMethod == .screenshot),
+                description: "网页图片",
+                captureID: captureID,
+                capturedSource: candidate.capturedSource
+            )
+            let saved = try repository.saveCapturedItem(item)
+            // Concurrent retries can both copy bytes before SQLite chooses one winner. Remove
+            // only the losing copy; never touch the row or asset selected by the winner.
+            if saved.id != item.id, saved.assetPath != asset.path {
+                try? FileManager.default.removeItem(at: asset)
+            }
+            return saved
+        } catch {
+            if let destination {
+                try? FileManager.default.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+
     @discardableResult
     public func updatePrompt(id: String, input: AutomationUpdatePromptInput) throws -> PromptItem {
         var item = try item(id: id)
@@ -433,6 +507,205 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
             }
         }
         return "网页采集"
+    }
+
+    private struct StagedImageInspection {
+        var data: Data
+        var width: Int
+        var height: Int
+        var fileSize: Int64
+        var format: String
+    }
+
+    private func inspectStagedImage(
+        candidate: WebImageCaptureCandidate,
+        stagedFileURL: URL
+    ) throws -> StagedImageInspection {
+        guard stagedFileURL.isFileURL,
+              stagedFileURL.path.hasPrefix("/") else {
+            throw AutomationServiceError.invalidInput("暂存图片路径无效")
+        }
+
+        var fileInfo = stat()
+        guard lstat(stagedFileURL.path, &fileInfo) == 0 else {
+            throw AutomationServiceError.fileNotFound("暂存图片")
+        }
+        let fileType = fileInfo.st_mode & S_IFMT
+        guard fileType == S_IFREG, fileInfo.st_uid == getuid() else {
+            throw AutomationServiceError.invalidInput("暂存图片必须是当前用户拥有的普通文件")
+        }
+
+        let fileSize = Int64(fileInfo.st_size)
+        let maximumFileSize: Int64 = 50 * 1024 * 1024
+        guard fileSize > 0, fileSize <= maximumFileSize else {
+            throw AutomationServiceError.invalidInput("图片不能超过 50 MB")
+        }
+        guard candidate.byteCount >= 0,
+              candidate.byteCount == 0 || candidate.byteCount == fileSize else {
+            throw AutomationServiceError.invalidInput("图片字节数校验失败")
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: stagedFileURL, options: [.mappedIfSafe])
+        } catch {
+            throw AutomationServiceError.invalidInput("暂存图片无法读取")
+        }
+        guard Int64(data.count) == fileSize else {
+            throw AutomationServiceError.invalidInput("暂存图片大小发生变化")
+        }
+
+        // Re-check the inode after reading so a path swap cannot make the copied bytes differ
+        // from the file whose ownership/type were checked above.
+        var rereadInfo = stat()
+        guard lstat(stagedFileURL.path, &rereadInfo) == 0,
+              rereadInfo.st_ino == fileInfo.st_ino,
+              rereadInfo.st_dev == fileInfo.st_dev,
+              rereadInfo.st_uid == getuid(),
+              (rereadInfo.st_mode & S_IFMT) == S_IFREG,
+              Int64(rereadInfo.st_size) == fileSize else {
+            throw AutomationServiceError.invalidInput("暂存图片路径发生变化")
+        }
+
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard !candidate.sha256.isEmpty,
+              candidate.sha256.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw AutomationServiceError.invalidInput("图片摘要校验失败")
+        }
+
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let sourceType = CGImageSourceGetType(source),
+              CGImageSourceGetCount(source) > 0,
+              let format = imageFormat(for: sourceType as String, data: data) else {
+            throw AutomationServiceError.invalidInput("暂存文件不是受支持的真实图片")
+        }
+        let isScreenshot = candidate.isScreenshot || candidate.acquisitionMethod == .screenshot
+        if isScreenshot, format != "PNG" {
+            throw AutomationServiceError.invalidInput("截图采集必须使用 PNG")
+        }
+
+        var firstWidth = 0
+        var firstHeight = 0
+        let frameCount = CGImageSourceGetCount(source)
+        for index in 0..<frameCount {
+            guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+                  let width = imageDimension(properties[kCGImagePropertyPixelWidth]),
+                  let height = imageDimension(properties[kCGImagePropertyPixelHeight]),
+                  width > 0,
+                  height > 0 else {
+                throw AutomationServiceError.invalidInput("图片像素尺寸无效")
+            }
+            if index == 0 {
+                firstWidth = width
+                firstHeight = height
+            }
+            let pixelCount = Int64(width) * Int64(height)
+            guard pixelCount <= 100_000_000 else {
+                throw AutomationServiceError.invalidInput("图片不能超过 100 MP")
+            }
+        }
+
+        if let pixelWidth = candidate.pixelWidth {
+            guard pixelWidth == firstWidth else {
+                throw AutomationServiceError.invalidInput("图片宽度校验失败")
+            }
+        }
+        if let pixelHeight = candidate.pixelHeight {
+            guard pixelHeight == firstHeight else {
+                throw AutomationServiceError.invalidInput("图片高度校验失败")
+            }
+        }
+        guard (candidate.pixelWidth == nil || candidate.pixelWidth ?? 0 > 0),
+              (candidate.pixelHeight == nil || candidate.pixelHeight ?? 0 > 0) else {
+            throw AutomationServiceError.invalidInput("图片像素尺寸无效")
+        }
+
+        return StagedImageInspection(data: data, width: firstWidth, height: firstHeight, fileSize: fileSize, format: format)
+    }
+
+    private func imageDimension(_ value: Any?) -> Int? {
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        return value as? Int
+    }
+
+    private func imageFormat(for sourceType: String, data: Data) -> String? {
+        let format: String?
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            format = "PNG"
+        } else if data.count >= 3, data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF {
+            format = "JPEG"
+        } else if data.count >= 6,
+                  (data.starts(with: Array("GIF87a".utf8)) || data.starts(with: Array("GIF89a".utf8))) {
+            format = "GIF"
+        } else if data.count >= 12,
+                  data.starts(with: Array("RIFF".utf8)),
+                  data[8..<12].elementsEqual(Array("WEBP".utf8)) {
+            format = "WEBP"
+        } else if data.starts(with: Array("BM".utf8)) {
+            format = "BMP"
+        } else if data.count >= 4,
+                  (data.starts(with: [0x49, 0x49, 0x2A, 0x00])
+                    || data.starts(with: [0x4D, 0x4D, 0x00, 0x2A])
+                    || data.starts(with: [0x49, 0x49, 0x2B, 0x00])
+                    || data.starts(with: [0x4D, 0x4D, 0x00, 0x2B])) {
+            format = "TIFF"
+        } else if data.count >= 12,
+                  data[4..<8].elementsEqual(Array("ftyp".utf8)) {
+            let brand = String(bytes: data[8..<12], encoding: .ascii)?.lowercased() ?? ""
+            if ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].contains(brand) {
+                format = "HEIC"
+            } else if ["avif", "avis"].contains(brand) {
+                format = "AVIF"
+            } else {
+                format = nil
+            }
+        } else if data.count >= 4, data.starts(with: Array("icns".utf8)) {
+            format = "ICNS"
+        } else if data.count >= 12,
+                  data.starts(with: [0x00, 0x00, 0x00, 0x0C]),
+                  data[4..<12].elementsEqual([0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A]) {
+            format = "JP2"
+        } else {
+            format = nil
+        }
+
+        // ImageIO is the parser of record; the UTI is deliberately only used as a second
+        // signal so a renamed file cannot be accepted by extension or MIME metadata alone.
+        guard let format,
+              !sourceType.isEmpty else {
+            return nil
+        }
+        return format
+    }
+
+    private func imageCaptureTitle(_ candidate: WebImageCaptureCandidate) -> String {
+        let altText = candidate.altText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !altText.isEmpty {
+            return altText
+        }
+
+        let originalFileName = candidate.originalFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !originalFileName.isEmpty {
+            return URL(fileURLWithPath: originalFileName).lastPathComponent
+        }
+
+        let pageTitle = candidate.pageTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pageTitle.isEmpty {
+            return pageTitle
+        }
+        return "网页图片"
+    }
+
+    private func imageCaptureTags(isScreenshot: Bool) -> [String] {
+        var tags = ["网页采集", "图片采集", "待整理"]
+        if isScreenshot {
+            tags.append("截图采集")
+        }
+        return tags
     }
 
     private func defaultModel(for assetKind: AssetKind) throws -> ModelProfile {

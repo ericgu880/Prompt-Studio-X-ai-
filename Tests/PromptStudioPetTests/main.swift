@@ -166,6 +166,61 @@ struct PromptStudioPetTests {
         server.stop()
         check(server.pendingCaptureIDs.isEmpty, "stop clears pending clients", failures: &failures)
 
+        // RED: Task 4 image envelopes must use the trusted staging token boundary,
+        // while retaining an independent image session from text capture.
+        let imageStageRoot = temporaryDirectory.appendingPathComponent("CaptureStaging", isDirectory: true)
+        try? FileManager.default.createDirectory(at: imageStageRoot, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: imageStageRoot.path)
+        let imageToken = UUID().uuidString
+        FileManager.default.createFile(atPath: imageStageRoot.appendingPathComponent(imageToken).path, contents: Data("staged".utf8))
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: imageStageRoot.appendingPathComponent(imageToken).path)
+        let imageServer = PetCaptureSocketServer(
+            socketURL: temporaryDirectory.appendingPathComponent("image.sock"),
+            stagingRootURL: imageStageRoot
+        ) { request in
+            .presented(captureID: request.id)
+        } imageHandler: { request, _ in
+            .presented(captureID: request.captureID)
+        }
+        imageServer.start()
+        let imageEnvelope = """
+        {"type":"imageCapture","stagingToken":"\(imageToken)","candidate":{"captureID":"image-red-1","pageTitle":"Page","pageURL":"https://example.test/image?q=1","siteName":"example.test","resourceURL":"https://example.test/assets/a.png","altText":"A","originalFileName":"a.png","domSourceKind":"image","acquisitionMethod":"pageContext","isScreenshot":false,"mimeType":"image/png","byteCount":0,"sha256":"\(String(repeating: "0", count: 64))","clickScreenPoint":{"x":12,"y":34},"capturedAt":"2026-08-13T00:00:00.000Z"}}
+        """
+        let imageResponse = await imageServer.handleMessage(Data(imageEnvelope.utf8))
+        let imageObject = (try? JSONSerialization.jsonObject(with: imageResponse)) as? [String: Any]
+        check(imageObject?["type"] as? String == "presented", "image socket presents tokenized image capture: \(String(decoding: imageResponse, as: UTF8.self))", failures: &failures)
+        let busyImageEnvelope = imageEnvelope.replacingOccurrences(of: "image-red-1", with: "image-red-2")
+        let busyImageResponse = await imageServer.handleMessage(Data(busyImageEnvelope.utf8))
+        let busyImageObject = (try? JSONSerialization.jsonObject(with: busyImageResponse)) as? [String: Any]
+        check(busyImageObject?["code"] as? String == "image-busy" && busyImageObject?["retryable"] as? Bool == true, "image socket rejects concurrent image session as retryable busy", failures: &failures)
+        let forgedImageEnvelope = imageEnvelope.replacingOccurrences(
+            of: #"stagingToken":"[^"]+"#,
+            with: #"stagingToken":"/tmp/forged-image"#,
+            options: .regularExpression
+        )
+        let forgedResponse = await imageServer.handleMessage(Data(forgedImageEnvelope.utf8))
+        let forgedObject = (try? JSONSerialization.jsonObject(with: forgedResponse)) as? [String: Any]
+        check(forgedObject?["code"] as? String == "staging-token-rejected", "image socket rejects forged staging paths", failures: &failures)
+        imageServer.stop()
+
+        // RED: image drag feedback must preserve exact sequence and perform native
+        // hit-testing rather than trusting browser-provided insidePet values.
+        var imageDrop = ImageDropPhase()
+        check(imageDrop.begin(captureID: "drag-red-1", temporarilyShown: true), "image drag begins independently", failures: &failures)
+        let previewSequence = imageDrop.preview(point: .init(x: 12, y: 34))
+        check(previewSequence == 1, "image drag preview starts at sequence one", failures: &failures)
+        check(imageDrop.consumePreviewAck(sequence: previewSequence, insidePet: true, mouthPoint: .init(x: 5, y: 6)), "image drag accepts matching preview ACK", failures: &failures)
+        let finalSequence = imageDrop.requestFinal(point: .init(x: 15, y: 36))
+        check(finalSequence == 2, "image drag final sequence increments exactly", failures: &failures)
+        check(imageDrop.consumeFinalAck(sequence: finalSequence - 1, insidePet: true, mouthPoint: .init(x: 5, y: 6)) == .waiting, "image drag rejects stale final ACK", failures: &failures)
+        check(imageDrop.consumeFinalAck(sequence: finalSequence, insidePet: true, mouthPoint: .init(x: 5, y: 6)) == .drop, "image drag drops only on exact native hit", failures: &failures)
+        check(imageDrop.shouldRestoreHiddenPet, "image drag restores temporary hidden presentation", failures: &failures)
+        check(PetImageCaptureAdmission.canBeginDrag(state: .idle, hasPendingText: false, hasPendingImage: false), "image drag is admitted from idle", failures: &failures)
+        check(!PetImageCaptureAdmission.canBeginDrag(state: .asking, hasPendingText: true, hasPendingImage: false), "image drag cannot corrupt an active text confirmation", failures: &failures)
+        check(!PetImageCaptureAdmission.canBeginDrag(state: .success, hasPendingText: false, hasPendingImage: false), "image drag waits for terminal animation reset", failures: &failures)
+        check(!PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "text-result"), "text outcomes cannot release an active image lock", failures: &failures)
+        check(PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "image-lock"), "matching image outcome releases its lock", failures: &failures)
+
         var consecutiveRequestCount = 0
         let consecutiveDirectory = URL(fileURLWithPath: "/tmp/pspet-consecutive-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let consecutiveServer = PetCaptureSocketServer(socketURL: consecutiveDirectory.appendingPathComponent("web-capture.sock")) { request in

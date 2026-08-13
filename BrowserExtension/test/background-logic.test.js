@@ -5,6 +5,7 @@ const {
   MAX_RETRY_ATTEMPTS,
   PendingCaptureLedger,
   isTerminalCaptureType,
+  captureRoute,
 } = require('../background-logic.js');
 
 test('presented and animate keep pending captures while terminal responses clear them', () => {
@@ -34,4 +35,11 @@ test('disconnect replay retries pending captures by ID with TTL and a finite ret
   assert.equal(ledger.replayable(CAPTURE_TTL_MS + 1).length, 0);
   ledger.expire(CAPTURE_TTL_MS + 1);
   assert.equal(ledger.has('expired'), false);
+});
+
+test('capture response routing preserves the originating frame and rejects unknown IDs', () => {
+  const entries = new Map([['image-1', { tabID: 11, frameID: 7 }]]);
+  assert.deepEqual(captureRoute(entries, { captureID: 'image-1', type: 'saved' }), { tabID: 11, frameID: 7 });
+  assert.equal(captureRoute(entries, { captureID: 'other', type: 'saved' }), null);
+  assert.equal(captureRoute(entries, { captureID: 'image-1', type: 'saved' }).frameID, 7);
 });
