@@ -23,6 +23,10 @@
   }
 
   function scheduleReconnect() {
+    // Native Messaging reports a visible extension error for every failed
+    // connection attempt. Reconnect only while an actual capture is in flight;
+    // idle extensions must not keep probing the host in the background.
+    if (!imageSessions.size && !dragSessions.size && !ledger.entries.size) return;
     if (reconnectTimer) return;
     const delay = globalThis.PromptStudioSelection
       ? globalThis.PromptStudioSelection.nextReconnectDelay(reconnectAttempt)
@@ -244,8 +248,16 @@
       scheduleReconnect();
       return null;
     }
-    nativePort.onMessage.addListener(routeNativeResponse);
-    nativePort.onDisconnect.addListener(() => {
+    const connectedPort = nativePort;
+    connectedPort.onMessage.addListener(routeNativeResponse);
+    connectedPort.onDisconnect.addListener(() => {
+      // Reading lastError inside the callback marks the native disconnect as
+      // handled. Without this, Chrome records an extension error every time a
+      // service worker reload closes its native host.
+      void chrome.runtime.lastError;
+      // A delayed callback from an older port must not tear down a newer
+      // connection that has already replaced it.
+      if (nativePort !== connectedPort) return;
       nativePort = null;
       failDisconnectedImageSessions();
       scheduleReconnect();
@@ -253,7 +265,7 @@
     reconnectAttempt = 0;
     replayPendingCaptures();
     replayImageSessions();
-    return nativePort;
+    return connectedPort;
   }
 
   function replayPendingCaptures() {
@@ -599,10 +611,24 @@
 
   function cancelDrag(captureID) {
     const session = dragSessions.get(captureID);
-    if (!session) return;
-    dragSessions.delete(captureID);
+    if (session) dragSessions.delete(captureID);
     if (nativePort) {
       try { nativePort.postMessage({ type: 'imageDragCancel', origin: originForRuntime(), captureID }); } catch { /* disconnect cleanup handles it */ }
+    }
+  }
+
+  function beginDragPreview(captureID, screenPoint, sequence) {
+    if (!captureID || !screenPoint || !Number.isInteger(Number(sequence)) || Number(sequence) <= 0) return false;
+    if (!nativePort && !connectNative()) return false;
+    try {
+      nativePort.postMessage({
+        type: 'imageDragPreview', origin: originForRuntime(), captureID,
+        screenPoint, insidePet: false, drop: false, sequence: Number(sequence),
+      });
+      return true;
+    } catch {
+      scheduleReconnect();
+      return false;
     }
   }
 
@@ -647,6 +673,10 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message && message.type === 'beginImageDragPreview') {
+      sendResponse({ ok: beginDragPreview(message.captureID, message.screenPoint, message.sequence) });
+      return false;
+    }
     if (message && message.type === 'startImageDrag') {
       startDrag(sender.tab && sender.tab.id, sender.frameId, message.descriptor || {})
         .then((session) => sendResponse({ ok: true, captureID: session.captureID }))
@@ -700,5 +730,7 @@
   });
 
   createContextMenus();
-  connectNative();
+  // Connect lazily from an explicit capture/drag request. Starting a service
+  // worker must not create a Chrome-visible error merely because PromptStudio
+  // is not running yet.
 }());

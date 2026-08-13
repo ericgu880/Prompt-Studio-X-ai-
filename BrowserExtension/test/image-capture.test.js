@@ -45,6 +45,34 @@ test('DOM metadata resolves data, blob, canvas, inline SVG, and only valid CSS b
   assert.deepEqual(Capture.selectDOMImageMetadata(backgroundElement, { allowCSSBackground: true }).backgroundLayers, ['/top.png', '/under.png']);
 });
 
+test('drag hit resolver finds the large image inside an interactive Pinterest-style overlay card', () => {
+  const image = {
+    tagName: 'IMG',
+    getBoundingClientRect: () => ({ left: 20, top: 30, right: 220, bottom: 330, width: 200, height: 300 }),
+  };
+  const smallIcon = {
+    tagName: 'IMG',
+    getBoundingClientRect: () => ({ left: 40, top: 50, right: 56, bottom: 66, width: 16, height: 16 }),
+  };
+  const card = {
+    tagName: 'A',
+    matches: (selector) => selector.includes('a'),
+    closest: () => null,
+    querySelectorAll: () => [smallIcon, image],
+  };
+  const overlay = {
+    tagName: 'DIV',
+    matches: () => false,
+    closest: (selector) => selector.includes('a') ? card : null,
+    querySelectorAll: () => [],
+  };
+
+  const result = Capture.resolveImageDragHit(overlay, [overlay, card], { x: 100, y: 120 });
+
+  assert.equal(result.imageElement, image);
+  assert.equal(result.dragRoot, card);
+});
+
 test('srcset data URLs with commas remain one candidate', () => {
   const candidates = Capture.parseSrcset('data:image/svg+xml,%3Csvg%3E%3C/svg%3E 1x, https://example.test/high.png 2x');
   assert.equal(candidates.length, 2);
@@ -169,6 +197,17 @@ test('dragend chooses native inside-pet drop and consumes late preview acknowled
   const missSequence = miss.preview({ x: 1, y: 2 });
   assert.equal(miss.consumePreviewAck({ captureID: 'drag-miss', type: 'imageDragPreviewAck', sequence: missSequence.sequence, insidePet: false }), true);
   assert.equal(miss.dragEnd(), 'cancel');
+});
+
+test('dragend uses the release screen point instead of the last in-page drag point', () => {
+  assert.deepEqual(
+    Capture.dragEndScreenPoint({ screenX: 48, screenY: 720 }, { x: 900, y: 600 }),
+    { x: 48, y: 720 },
+  );
+  assert.deepEqual(
+    Capture.dragEndScreenPoint({}, { x: 900, y: 600 }),
+    { x: 900, y: 600 },
+  );
 });
 
 test('native final-hit decisions require the exact final sequence and reject out-of-order ACKs', () => {

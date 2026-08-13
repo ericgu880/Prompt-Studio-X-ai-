@@ -1,10 +1,17 @@
-import Foundation
+import AppKit
 import Darwin
+import Foundation
 
 @main
 struct PromptStudioPetTests {
     static func main() async {
         var failures: [String] = []
+        if let petAssetPath = ProcessInfo.processInfo.environment["PROMPTSTUDIO_PET_ASSET"] {
+            let petImage = PetImageResource.load(from: URL(fileURLWithPath: petAssetPath))
+            check(petImage?.size == NSSize(width: 512, height: 512), "desktop pet image loads at its native size", failures: &failures)
+        } else {
+            failures.append("desktop pet asset path is unavailable")
+        }
         var machine = PetStateMachine()
         _ = machine.transition(.captureRequested)
         check(machine.state == .asking, "visible capture asks", failures: &failures)
@@ -140,6 +147,77 @@ struct PromptStudioPetTests {
             primaryScreenMaxY: 900
         )
         check(browserPoint == .init(x: 160, y: 220), "screen coordinate conversion round trips", failures: &failures)
+        let belowDragOrigin = PetGeometry.originBelowBrowserPoint(
+            .init(x: 160, y: 220),
+            panelSize: CGSize(width: 102, height: 118),
+            visibleFrame: screen,
+            primaryScreenMaxY: 800
+        )
+        check(belowDragOrigin == CGPoint(x: 109, y: 448), "pet is placed directly below the browser drag origin", failures: &failures)
+        let dragPreviewPoint = PetGeometry.dragHitPoint(
+            browserPoint: .init(x: 160, y: 220),
+            currentMouseLocation: CGPoint(x: 760, y: 540),
+            isFinalDrop: false,
+            primaryScreenMaxY: 900
+        )
+        check(dragPreviewPoint == CGPoint(x: 160, y: 680), "drag previews use the browser-reported point", failures: &failures)
+        let finalDropPoint = PetGeometry.dragHitPoint(
+            browserPoint: .init(x: 160, y: 220),
+            currentMouseLocation: CGPoint(x: 760, y: 540),
+            isFinalDrop: true,
+            primaryScreenMaxY: 900
+        )
+        check(finalDropPoint == CGPoint(x: 760, y: 540), "final drops use the native mouse point", failures: &failures)
+
+        check(
+            PetNativeImageDropSupport.canAccept(pasteboardTypeIdentifiers: [NSPasteboard.PasteboardType.URL.rawValue]),
+            "desktop pet accepts browser URL drags",
+            failures: &failures
+        )
+        check(
+            PetNativeImageDropSupport.canAccept(pasteboardTypeIdentifiers: NSFilePromiseReceiver.readableDraggedTypes),
+            "desktop pet accepts Chrome file promises",
+            failures: &failures
+        )
+        check(
+            !PetNativeImageDropSupport.canAccept(pasteboardTypeIdentifiers: [NSPasteboard.PasteboardType.string.rawValue]),
+            "desktop pet rejects plain text drags as images",
+            failures: &failures
+        )
+        check(
+            !PetNativeImageDropSupport.shouldImportNativeDrop(hasActiveExtensionDrag: true),
+            "native drop does not replace an active extension image drag",
+            failures: &failures
+        )
+        check(
+            PetNativeImageDropSupport.shouldImportNativeDrop(hasActiveExtensionDrag: false),
+            "native drop remains available for Finder and untracked browser drags",
+            failures: &failures
+        )
+        let nativeDropRoot = URL(fileURLWithPath: "/tmp/pspet-native-drop-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: nativeDropRoot, withIntermediateDirectories: true)
+            let source = nativeDropRoot.appendingPathComponent("source.png")
+            let sourceData = Data("native-image-drop".utf8)
+            try sourceData.write(to: source)
+            let stagingRoot = nativeDropRoot.appendingPathComponent("staging", isDirectory: true)
+            let staged = try PetNativeImageDropSupport.stageLocalFile(source, in: stagingRoot)
+            check(staged != source, "native drop copies rather than consuming the source file", failures: &failures)
+            check(try Data(contentsOf: staged) == sourceData, "native drop staging preserves bytes", failures: &failures)
+            check(FileManager.default.fileExists(atPath: source.path), "native drop leaves the dragged source intact", failures: &failures)
+            let candidate = try PetNativeImageDropSupport.candidate(
+                for: staged,
+                sourceURL: URL(string: "https://example.test/source.png"),
+                captureID: "native-drop-test"
+            )
+            check(candidate.captureID == "native-drop-test", "native drop candidate preserves capture ID", failures: &failures)
+            check(candidate.byteCount == Int64(sourceData.count), "native drop candidate records byte count", failures: &failures)
+            check(candidate.sha256.count == 64, "native drop candidate records SHA-256", failures: &failures)
+            check(candidate.originalFileName == "source.png", "native drop candidate preserves a useful filename", failures: &failures)
+        } catch {
+            failures.append("native image drop staging failed: \(error.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: nativeDropRoot)
 
         let temporaryDirectory = URL(fileURLWithPath: "/tmp/pspet-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let socketURL = temporaryDirectory.appendingPathComponent("web-capture.sock")
@@ -220,6 +298,42 @@ struct PromptStudioPetTests {
         check(!PetImageCaptureAdmission.canBeginDrag(state: .success, hasPendingText: false, hasPendingImage: false), "image drag waits for terminal animation reset", failures: &failures)
         check(!PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "text-result"), "text outcomes cannot release an active image lock", failures: &failures)
         check(PetImageCaptureAdmission.shouldReleaseActiveImage(activeCaptureID: "image-lock", outcomeCaptureID: "image-lock"), "matching image outcome releases its lock", failures: &failures)
+        check(
+            PetImageCaptureAdmission.shouldReplaceStaleDrag(
+                activeCaptureID: "stale-drag",
+                incomingCaptureID: "fresh-drag",
+                incomingSequence: 1,
+                state: .idle,
+                hasPendingText: false,
+                hasPendingImage: false
+            ),
+            "a fresh browser drag replaces a stale disconnected drag",
+            failures: &failures
+        )
+        check(
+            !PetImageCaptureAdmission.shouldReplaceStaleDrag(
+                activeCaptureID: "stale-drag",
+                incomingCaptureID: "fresh-drag",
+                incomingSequence: 2,
+                state: .idle,
+                hasPendingText: false,
+                hasPendingImage: false
+            ),
+            "only the first preview can replace a stale drag",
+            failures: &failures
+        )
+        check(
+            !PetImageCaptureAdmission.shouldReplaceStaleDrag(
+                activeCaptureID: "stale-drag",
+                incomingCaptureID: "fresh-drag",
+                incomingSequence: 1,
+                state: .asking,
+                hasPendingText: true,
+                hasPendingImage: false
+            ),
+            "a fresh drag cannot replace state while text confirmation is active",
+            failures: &failures
+        )
 
         var consecutiveRequestCount = 0
         let consecutiveDirectory = URL(fileURLWithPath: "/tmp/pspet-consecutive-\(UUID().uuidString.prefix(8))", isDirectory: true)

@@ -474,6 +474,30 @@ enum PetImageCaptureAdmission {
     ) -> Bool {
         activeCaptureID != nil && activeCaptureID == outcomeCaptureID
     }
+
+    /// Browser service workers can be stopped without delivering the matching
+    /// drag-cancel message. A brand-new sequence-one preview is authoritative
+    /// and may replace that orphaned drag as long as no confirmation or image
+    /// save is active.
+    static func shouldReplaceStaleDrag(
+        activeCaptureID: String?,
+        incomingCaptureID: String,
+        incomingSequence: Int,
+        state: PetState,
+        hasPendingText: Bool,
+        hasPendingImage: Bool
+    ) -> Bool {
+        guard let activeCaptureID,
+              activeCaptureID != incomingCaptureID,
+              incomingSequence == 1 else {
+            return false
+        }
+        return canBeginDrag(
+            state: state,
+            hasPendingText: hasPendingText,
+            hasPendingImage: hasPendingImage
+        )
+    }
 }
 
 enum PetCaptureNotifications {

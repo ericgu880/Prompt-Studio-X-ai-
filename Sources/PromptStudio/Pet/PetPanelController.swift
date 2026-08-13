@@ -12,7 +12,9 @@ final class PetPanelController: NSObject, NSWindowDelegate {
     weak var coordinator: PetCoordinator?
     let panel: PetPanel
 
-    private let compactSize = CGSize(width: 102, height: 102)
+    // Reserve a small header above the pet for transient status feedback so a
+    // success badge never escapes or clips against the transparent panel.
+    private let compactSize = CGSize(width: 102, height: 118)
     private let askingSize = CGSize(width: 320, height: 150)
     private var isAsking = false
     private var snapWorkItem: DispatchWorkItem?
@@ -20,7 +22,7 @@ final class PetPanelController: NSObject, NSWindowDelegate {
     init(coordinator: PetCoordinator) {
         self.coordinator = coordinator
         panel = PetPanel(
-            contentRect: NSRect(origin: .zero, size: CGSize(width: 102, height: 102)),
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 102, height: 118)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -39,7 +41,24 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: PetView(coordinator: coordinator))
+        let hostingView = NSHostingView(rootView: PetView(coordinator: coordinator))
+        let dropView = PetNativeDropView(contentView: hostingView)
+        dropView.shouldImportDrop = { [weak coordinator] in
+            guard let coordinator else { return true }
+            return PetNativeImageDropSupport.shouldImportNativeDrop(
+                hasActiveExtensionDrag: coordinator.hasActiveExtensionImageDrag
+            )
+        }
+        dropView.onDropFile = { [weak coordinator] fileURL, sourceURL in
+            coordinator?.receiveNativeImageDrop(fileURL: fileURL, sourceURL: sourceURL)
+        }
+        dropView.onDropData = { [weak coordinator] data, typeIdentifier in
+            coordinator?.receiveNativeImageDrop(data: data, typeIdentifier: typeIdentifier)
+        }
+        dropView.onDropRemoteURL = { [weak coordinator] url in
+            coordinator?.receiveNativeImageDrop(remoteURL: url)
+        }
+        panel.contentView = dropView
     }
 
     func show() {
@@ -111,15 +130,39 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Shows a stable target under the image's initial drag position. Keeping
+    /// it stationary after this move lets the user steer the drag onto it.
+    func moveBelowBrowserPoint(_ browserPoint: PetCaptureRequest.ScreenPoint?) {
+        guard let browserPoint,
+              let primaryScreen = NSScreen.screens.first else { return }
+        let appKitPoint = PetGeometry.appKitPoint(
+            fromBrowserScreenPoint: browserPoint,
+            primaryScreenMaxY: primaryScreen.frame.maxY
+        )
+        let target = NSScreen.screens.first(where: { $0.frame.contains(appKitPoint) })
+            ?? targetScreen()
+        guard let visibleFrame = target?.visibleFrame else { return }
+        let origin = PetGeometry.originBelowBrowserPoint(
+            browserPoint,
+            panelSize: compactSize,
+            visibleFrame: visibleFrame,
+            primaryScreenMaxY: primaryScreen.frame.maxY
+        )
+        // A drag preview can arrive several times per second. This one-time
+        // placement deliberately avoids an animation that could lag behind it.
+        panel.setFrameOrigin(origin)
+        panel.orderFrontRegardless()
+    }
+
     var mouthBrowserScreenPoint: PetCaptureRequest.ScreenPoint? {
         guard let primaryScreen = NSScreen.screens.first else { return nil }
-        // The pet occupies the leading 102 points in both layouts. SwiftUI's
-        // mouth is 11 points below its center; convert that flipped local
+        // The visible pet sits below the compact status header. Its mouth is
+        // 11 points below its center; convert that flipped local
         // coordinate into AppKit window coordinates before going back to the
         // browser's global top-left coordinate space.
         let localMouth = CGPoint(
             x: 51,
-            y: panel.frame.height - (panel.frame.height / 2 + 11)
+            y: 40
         )
         let appKitPoint = CGPoint(
             x: panel.frame.minX + localMouth.x,
@@ -131,15 +174,19 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         )
     }
 
-    func hitTest(browserPoint: PetCaptureRequest.ScreenPoint?) -> (insidePet: Bool, mouthPoint: PetCaptureRequest.ScreenPoint?) {
-        guard let browserPoint,
-              let primaryScreen = NSScreen.screens.first else {
+    func hitTest(
+        browserPoint: PetCaptureRequest.ScreenPoint?,
+        isFinalDrop: Bool = false
+    ) -> (insidePet: Bool, mouthPoint: PetCaptureRequest.ScreenPoint?) {
+        guard let primaryScreen = NSScreen.screens.first,
+              let appKitPoint = PetGeometry.dragHitPoint(
+                  browserPoint: browserPoint,
+                  currentMouseLocation: NSEvent.mouseLocation,
+                  isFinalDrop: isFinalDrop,
+                  primaryScreenMaxY: primaryScreen.frame.maxY
+              ) else {
             return (false, nil)
         }
-        let appKitPoint = PetGeometry.appKitPoint(
-            fromBrowserScreenPoint: browserPoint,
-            primaryScreenMaxY: primaryScreen.frame.maxY
-        )
         let petRect = NSRect(
             x: panel.frame.minX,
             y: panel.frame.minY,

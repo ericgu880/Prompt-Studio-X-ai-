@@ -81,6 +81,14 @@ test('native drag finalization keeps sequence and wire fields as a Task4 contrac
   assert.match(contentSource, /mouthScreenPoint/);
 });
 
+test('content prepares overlay cards for native image drag before dragstart', () => {
+  const contentSource = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
+  assert.match(contentSource, /function prepareImageDrag/);
+  assert.match(contentSource, /document\.addEventListener\('pointerdown', prepareImageDrag, true\)/);
+  assert.match(contentSource, /resolveImageDragHit/);
+  assert.match(contentSource, /preparedImageDrag/);
+});
+
 test('screenshot crop asks top frame for metrics and clamps against actual screenshot pixels', () => {
   const backgroundSource = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
   const contentSource = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
@@ -104,4 +112,18 @@ test('image capture does not request privileged browser bypass APIs or leak URL/
     assert.doesNotMatch(source, /\bdebugger\b|chrome\.cookies|chrome\.history|tabs\.create\s*\(|tabs\.update\s*\(/);
     assert.doesNotMatch(source, /console\.(log|debug|info|warn|error)\s*\(/);
   }
+});
+
+test('native disconnect consumes Chrome lastError and cannot clear a newer port', () => {
+  const source = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+  assert.match(source, /const connectedPort = nativePort/);
+  assert.match(source, /void chrome\.runtime\.lastError/);
+  assert.match(source, /if \(nativePort !== connectedPort\) return/);
+});
+
+test('content runtime messaging survives extension reload without calling an invalid runtime', () => {
+  const source = fs.readFileSync(path.join(extensionRoot, 'content.js'), 'utf8');
+  assert.match(source, /function sendRuntimeMessage/);
+  assert.match(source, /typeof runtime\.sendMessage !== 'function'/);
+  assert.doesNotMatch(source, /chrome\.runtime\.sendMessage\s*\(/);
 });

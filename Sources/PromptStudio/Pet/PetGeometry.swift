@@ -26,6 +26,52 @@ enum PetGeometry {
         .init(x: point.x, y: primaryScreenMaxY - point.y)
     }
 
+    /// Places the compact pet directly beneath the browser drag origin. The
+    /// pet is moved once when a drag begins, then stays put as a stable drop
+    /// target rather than chasing the pointer.
+    static func originBelowBrowserPoint(
+        _ browserPoint: PetCaptureRequest.ScreenPoint,
+        panelSize: CGSize,
+        visibleFrame: CGRect,
+        primaryScreenMaxY: CGFloat,
+        gap: CGFloat = 14,
+        inset: CGFloat = 8
+    ) -> CGPoint {
+        let point = appKitPoint(
+            fromBrowserScreenPoint: browserPoint,
+            primaryScreenMaxY: primaryScreenMaxY
+        )
+        return clampedOrigin(
+            proposed: CGPoint(
+                x: point.x - panelSize.width / 2,
+                y: point.y - panelSize.height - gap
+            ),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame,
+            inset: inset
+        )
+    }
+
+    /// Browser drag events stop receiving reliable screen coordinates once
+    /// the pointer leaves the browser window. Preview motion can use the
+    /// reported browser point, but the terminal drop must use AppKit's current
+    /// global mouse location so dropping on the floating pet remains reliable.
+    static func dragHitPoint(
+        browserPoint: PetCaptureRequest.ScreenPoint?,
+        currentMouseLocation: CGPoint,
+        isFinalDrop: Bool,
+        primaryScreenMaxY: CGFloat
+    ) -> CGPoint? {
+        if isFinalDrop {
+            return currentMouseLocation
+        }
+        guard let browserPoint else { return nil }
+        return appKitPoint(
+            fromBrowserScreenPoint: browserPoint,
+            primaryScreenMaxY: primaryScreenMaxY
+        )
+    }
+
     static func clampedOrigin(
         proposed: CGPoint,
         panelSize: CGSize,

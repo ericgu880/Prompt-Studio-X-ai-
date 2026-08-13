@@ -221,6 +221,61 @@
     return images;
   }
 
+  function imageCandidateArea(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return 0;
+    const rect = element.getBoundingClientRect();
+    const width = Math.max(0, finiteNumber(rect && rect.width, finiteNumber(rect && rect.right) - finiteNumber(rect && rect.left)));
+    const height = Math.max(0, finiteNumber(rect && rect.height, finiteNumber(rect && rect.bottom) - finiteNumber(rect && rect.top)));
+    return width * height;
+  }
+
+  function directImageElement(element) {
+    if (!element) return null;
+    const tagName = String(element.tagName || element.nodeName || '').toLowerCase();
+    if (tagName === 'img' || tagName === 'canvas' || tagName === 'svg') return element;
+    if (tagName === 'picture' && typeof element.querySelector === 'function') {
+      return element.querySelector('img, canvas, svg');
+    }
+    return null;
+  }
+
+  function imageElementsInside(element) {
+    const direct = directImageElement(element);
+    if (direct) return [direct];
+    if (!element || typeof element.querySelectorAll !== 'function') return [];
+    return Array.from(element.querySelectorAll('img, canvas, svg'));
+  }
+
+  // Sites such as Pinterest place a full-card link/button above the actual <img>. Native
+  // dragstart therefore targets the overlay instead of the image. Resolve the largest image
+  // inside that interactive card and make the hit card the temporary native drag root.
+  function resolveImageDragHit(target, elementsAtPoint = [], point = {}) {
+    let start = target;
+    if (start && start.nodeType === 3) start = start.parentElement;
+    if (!start) return null;
+    const directContainer = typeof start.closest === 'function'
+      ? start.closest('img, picture, canvas, svg') : null;
+    const direct = directImageElement(directContainer || start);
+    if (direct) return { imageElement: direct, dragRoot: direct };
+
+    const layers = [start, ...(Array.isArray(elementsAtPoint) ? elementsAtPoint : [])];
+    const visited = new Set();
+    for (const layer of layers) {
+      if (!layer || visited.has(layer)) continue;
+      visited.add(layer);
+      let root = null;
+      if (typeof layer.closest === 'function') {
+        root = layer.closest('a, button, [role="button"], [data-test-id*="pin" i]');
+      }
+      root = root || layer;
+      const candidates = imageElementsInside(root)
+        .filter((candidate) => imageCandidateArea(candidate) > 256)
+        .sort((left, right) => imageCandidateArea(right) - imageCandidateArea(left));
+      if (candidates.length) return { imageElement: candidates[0], dragRoot: root };
+    }
+    return null;
+  }
+
   function cropRectForVisibleElement(elementRect, viewport, devicePixelRatio = 1) {
     const rect = elementRect || {};
     const viewportWidth = Math.max(0, finiteNumber(viewport && viewport.width));
@@ -776,6 +831,15 @@
     }
   }
 
+  function dragEndScreenPoint(event, fallbackPoint) {
+    const screenX = Number(event && event.screenX);
+    const screenY = Number(event && event.screenY);
+    if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+      return { x: screenX, y: screenY };
+    }
+    return fallbackPoint || null;
+  }
+
   const api = {
     MAX_IMAGE_BYTES,
     IMAGE_CHUNK_BYTES,
@@ -786,6 +850,7 @@
     selectImageURL,
     classifyImageSource,
     parseCSSBackgroundImages,
+    resolveImageDragHit,
     cropRectForVisibleElement,
     resolveImageDescriptor,
     selectDOMImageMetadata,
@@ -804,6 +869,7 @@
     ImageMessageLedger,
     DragSessionState,
     ImageReplayController,
+    dragEndScreenPoint,
     shouldReduceMotion,
     sanitizeResourceURL,
     responseBytes,

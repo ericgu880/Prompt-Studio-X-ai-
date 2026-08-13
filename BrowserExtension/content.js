@@ -16,8 +16,37 @@
   const localByteStore = new I.FrameByteStore({ ttlMs: 300_000 });
   const screenshotAssemblies = new Map();
   let dragSession = null;
+  let preparedImageDrag = null;
   let mouthDuplicate = null;
   let lastPointerPoint = { x: 0, y: 0, screenX: null, screenY: null };
+
+  function sendRuntimeMessage(message, callback) {
+    let runtime = null;
+    try {
+      runtime = globalThis.chrome && globalThis.chrome.runtime;
+    } catch {
+      runtime = null;
+    }
+    if (!runtime || typeof runtime.sendMessage !== 'function') {
+      if (typeof callback === 'function') callback(null, { message: 'extension-context-invalidated' });
+      return false;
+    }
+    try {
+      runtime.sendMessage(message, (response) => {
+        let lastError = null;
+        try {
+          lastError = runtime.lastError || null;
+        } catch {
+          lastError = { message: 'extension-context-invalidated' };
+        }
+        if (typeof callback === 'function') callback(response, lastError);
+      });
+      return true;
+    } catch (error) {
+      if (typeof callback === 'function') callback(null, error);
+      return false;
+    }
+  }
 
   function elementAtPoint(x, y, srcUrl) {
     let element = Number.isFinite(x) && Number.isFinite(y) && document.elementFromPoint(x, y);
@@ -30,10 +59,42 @@
     return element || null;
   }
 
+  function clearPreparedImageDrag() {
+    if (!preparedImageDrag) return;
+    const prepared = preparedImageDrag;
+    preparedImageDrag = null;
+    if (!prepared.dragRoot) return;
+    if (prepared.hadDraggableAttribute) {
+      prepared.dragRoot.setAttribute('draggable', prepared.draggableAttribute);
+    } else {
+      prepared.dragRoot.removeAttribute('draggable');
+    }
+    if (prepared.dragRoot.style) prepared.dragRoot.style.webkitUserDrag = prepared.webkitUserDrag;
+  }
+
+  function prepareImageDrag(event) {
+    if (!event || event.button !== 0 || dragSession) return;
+    clearPreparedImageDrag();
+    const layers = typeof document.elementsFromPoint === 'function'
+      ? document.elementsFromPoint(event.clientX, event.clientY) : [];
+    const hit = I.resolveImageDragHit(event.target, layers, { x: event.clientX, y: event.clientY });
+    if (!hit || !hit.imageElement || !hit.dragRoot) return;
+    const root = hit.dragRoot;
+    preparedImageDrag = {
+      imageElement: hit.imageElement,
+      dragRoot: root,
+      hadDraggableAttribute: root.hasAttribute('draggable'),
+      draggableAttribute: root.getAttribute('draggable'),
+      webkitUserDrag: root.style ? root.style.webkitUserDrag : '',
+    };
+    root.setAttribute('draggable', 'true');
+    if (root.style) root.style.webkitUserDrag = 'element';
+  }
+
   async function descriptorForCapture(request) {
     const x = Number.isFinite(request.x) ? request.x : lastPointerPoint.x;
     const y = Number.isFinite(request.y) ? request.y : lastPointerPoint.y;
-    const element = elementAtPoint(x, y, request.srcUrl);
+    const element = request.element || elementAtPoint(x, y, request.srcUrl);
     let descriptor = I.resolveImageDescriptor(element, {
       viewportWidth: window.innerWidth,
       devicePixelRatio: window.devicePixelRatio,
@@ -141,13 +202,14 @@
   function clearDragSession() {
     clearMouthDuplicate();
     dragSession = null;
+    clearPreparedImageDrag();
   }
 
   function sendDragPreview(event) {
     if (!dragSession || !dragSession.captureID) return;
     dragSession.previewSequence = (dragSession.previewSequence || 0) + 1;
     dragSession.lastScreenPoint = { x: event.screenX, y: event.screenY };
-    chrome.runtime.sendMessage({
+    sendRuntimeMessage({
       type: 'previewImageDrag', captureID: dragSession.captureID,
       screenPoint: { x: event.screenX, y: event.screenY },
       sequence: dragSession.previewSequence,
@@ -155,8 +217,21 @@
   }
 
   function beginImageDrag(event) {
-    const element = event.target && event.target.closest && event.target.closest('img, canvas, svg');
+    const layers = typeof document.elementsFromPoint === 'function'
+      ? document.elementsFromPoint(event.clientX, event.clientY) : [];
+    const hit = I.resolveImageDragHit(event.target, layers, { x: event.clientX, y: event.clientY });
+    const element = preparedImageDrag && preparedImageDrag.imageElement
+      ? preparedImageDrag.imageElement : hit && hit.imageElement;
     if (!element || dragSession) return;
+    if (preparedImageDrag && preparedImageDrag.dragRoot !== element
+        && typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    if (event.dataTransfer && typeof event.dataTransfer.setDragImage === 'function') {
+      const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : null;
+      event.dataTransfer.setDragImage(element, rect ? Math.max(0, event.clientX - rect.left) : 0,
+        rect ? Math.max(0, event.clientY - rect.top) : 0);
+    }
     const captureID = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
       ? globalThis.crypto.randomUUID() : `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     dragSession = {
@@ -164,7 +239,9 @@
       element,
       dropped: false,
       started: true,
-      previewSequence: 0,
+      // Sequence 1 is sent immediately, before descriptor/byte prefetch.
+      // That lets the desktop pet appear under the source image right away.
+      previewSequence: 1,
       nativeInsidePet: false,
       nativeMouthScreenPoint: null,
       nativeSequence: 0,
@@ -173,25 +250,32 @@
       finalPending: false,
       finalTimer: null,
     };
-    descriptorForCapture({ captureID, context: 'image', x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, srcUrl: element.currentSrc || element.src || '' })
+    sendRuntimeMessage({
+      type: 'beginImageDragPreview',
+      captureID,
+      screenPoint: dragSession.lastScreenPoint,
+      sequence: dragSession.previewSequence,
+    }, (_response, lastError) => {
+      if (lastError) clearDragSession();
+    });
+    descriptorForCapture({ captureID, context: 'image', element, x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, srcUrl: element.currentSrc || element.src || '' })
       .then((descriptor) => {
         if (!dragSession || dragSession.captureID !== captureID || !descriptor) return;
         dragSession.descriptor = descriptor;
-        chrome.runtime.sendMessage({ type: 'startImageDrag', descriptor }, (response) => {
-          if (chrome.runtime.lastError || !response || !response.ok) {
+        sendRuntimeMessage({ type: 'startImageDrag', descriptor }, (response, lastError) => {
+          if (lastError || !response || !response.ok) {
+            sendRuntimeMessage({ type: 'cancelImageDrag', captureID });
             clearDragSession();
             showNotice(response && response.code === 'image-busy' ? 'PromptStudio 正在处理另一张图片。' : '图片预取失败，请重试。', { left: event.clientX, top: event.clientY });
           } else {
-            dragSession.previewSequence = Math.max(1, dragSession.previewSequence || 0);
-            chrome.runtime.sendMessage({
-              type: 'previewImageDrag', captureID,
-              screenPoint: { x: event.screenX, y: event.screenY },
-              sequence: dragSession.previewSequence,
-            });
+            sendDragPreview(event);
           }
         });
       })
-      .catch(() => clearDragSession());
+      .catch(() => {
+        sendRuntimeMessage({ type: 'cancelImageDrag', captureID });
+        clearDragSession();
+      });
   }
 
   function isPasswordNode(node) {
@@ -301,8 +385,8 @@
       y: Number.isFinite(event.clientY) ? event.clientY : (buttonRect.top + buttonRect.height / 2),
     });
     clearSelectionUI();
-    chrome.runtime.sendMessage({ type: 'captureCandidate', candidate }, (response) => {
-      if (chrome.runtime.lastError || !response || !response.ok) {
+    sendRuntimeMessage({ type: 'captureCandidate', candidate }, (response, lastError) => {
+      if (lastError || !response || !response.ok) {
         showNotice('PromptStudio 暂时不可用，请稍后重试。', { left: event.clientX, top: event.clientY });
       }
     });
@@ -423,11 +507,11 @@
             });
             if (dragSession.nativeInsidePet) {
               dragSession.dropped = true;
-              chrome.runtime.sendMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response) => {
-                if (chrome.runtime.lastError || !response || !response.ok) clearDragSession();
+              sendRuntimeMessage({ type: 'dropImageDrag', captureID: dragSession.captureID }, (response, lastError) => {
+                if (lastError || !response || !response.ok) clearDragSession();
               });
             } else {
-              chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+              sendRuntimeMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
               clearDragSession();
             }
             return false;
@@ -478,6 +562,13 @@
   });
 
   document.addEventListener('selectionchange', scheduleSelection, true);
+  document.addEventListener('pointerdown', prepareImageDrag, true);
+  document.addEventListener('pointerup', () => {
+    if (!dragSession) clearPreparedImageDrag();
+  }, true);
+  document.addEventListener('pointercancel', () => {
+    if (!dragSession) clearPreparedImageDrag();
+  }, true);
   document.addEventListener('pointermove', (event) => {
     lastPointerPoint = { x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY };
   }, true);
@@ -496,7 +587,7 @@
     dragSession.pageDropped = true;
     dragSession.lastScreenPoint = { x: event.screenX, y: event.screenY };
   }, true);
-  document.addEventListener('dragend', () => {
+  document.addEventListener('dragend', (event) => {
     if (!dragSession) return;
     if (dragSession.dropped) return;
     if (dragSession.finalPending) return;
@@ -504,17 +595,21 @@
     dragSession.finalSequence = dragSession.previewSequence;
     dragSession.finalPending = true;
     const finalSequence = dragSession.finalSequence;
-    const point = dragSession.lastScreenPoint || { x: window.screenX, y: window.screenY };
+    const point = I.dragEndScreenPoint(
+      event,
+      dragSession.lastScreenPoint || { x: window.screenX, y: window.screenY },
+    );
+    dragSession.lastScreenPoint = point;
     dragSession.finalTimer = setTimeout(() => {
       if (!dragSession || !dragSession.finalPending || dragSession.finalSequence !== finalSequence) return;
-      chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+      sendRuntimeMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
       clearDragSession();
     }, I.FINAL_HIT_TIMEOUT_MS);
-    chrome.runtime.sendMessage({ type: 'finalizeImageDrag', captureID: dragSession.captureID, sequence: finalSequence, screenPoint: point }, (response) => {
-      if (chrome.runtime.lastError || !response || !response.ok) {
+    sendRuntimeMessage({ type: 'finalizeImageDrag', captureID: dragSession.captureID, sequence: finalSequence, screenPoint: point }, (response, lastError) => {
+      if (lastError || !response || !response.ok) {
         if (dragSession && dragSession.finalSequence === finalSequence) {
           clearTimeout(dragSession.finalTimer);
-          chrome.runtime.sendMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
+          sendRuntimeMessage({ type: 'cancelImageDrag', captureID: dragSession.captureID });
           clearDragSession();
         }
       }

@@ -14,6 +14,10 @@ final class PetCoordinator: ObservableObject {
 
     var captureHandler: PetCaptureHandler?
     var imageCaptureHandler: PetImageCaptureHandler?
+
+    var hasActiveExtensionImageDrag: Bool {
+        imagePhase.isActive && imagePhase.captureID?.hasPrefix("native-image-") != true
+    }
     let hostRegistrationService: PetHostRegistrationService
 
     private let preferencesStore: PetPreferencesStore
@@ -322,6 +326,18 @@ final class PetCoordinator: ObservableObject {
     }
 
     func receiveImageDragPreview(_ preview: PetImageDragPreview) -> PetImageDragFeedback {
+        let replacesStaleDrag = PetImageCaptureAdmission.shouldReplaceStaleDrag(
+            activeCaptureID: imagePhase.captureID,
+            incomingCaptureID: preview.captureID,
+            incomingSequence: preview.sequence,
+            state: machine.state,
+            hasPendingText: pendingRequest != nil,
+            hasPendingImage: pendingImageRequest != nil
+        )
+        let preservesTemporaryPresentation = replacesStaleDrag && imagePhase.shouldRestoreHiddenPet
+        if replacesStaleDrag {
+            imagePhase.reset()
+        }
         if !imagePhase.isActive {
             guard PetImageCaptureAdmission.canBeginDrag(
                 state: machine.state,
@@ -330,11 +346,14 @@ final class PetCoordinator: ObservableObject {
             ) else {
                 return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
             }
-            let hidden = isSessionHidden || machine.state == .hidden
+            let hidden = preservesTemporaryPresentation || isSessionHidden || machine.state == .hidden
             guard imagePhase.begin(captureID: preview.captureID, temporarilyShown: hidden) else {
                 return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
             }
             if hidden { show() }
+            // Move only at the beginning of a web-image drag. The pet stays
+            // below that source position as a stable target for the drop.
+            panelController.moveBelowBrowserPoint(preview.screenPoint)
         }
         guard imagePhase.captureID == preview.captureID else {
             return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
@@ -345,7 +364,10 @@ final class PetCoordinator: ObservableObject {
         guard accepted else {
             return PetImageDragFeedback(captureID: preview.captureID, sequence: preview.sequence, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
         }
-        let hit = panelController.hitTest(browserPoint: preview.screenPoint)
+        let hit = panelController.hitTest(
+            browserPoint: preview.screenPoint,
+            isFinalDrop: preview.drop
+        )
         if preview.drop {
             _ = imagePhase.consumeFinalAck(sequence: preview.sequence, insidePet: hit.insidePet, mouthPoint: hit.mouthPoint)
         } else {
@@ -358,6 +380,101 @@ final class PetCoordinator: ObservableObject {
         guard imagePhase.captureID == captureID else { return }
         imagePhase.cancel()
         restoreHiddenAfterImageIfNeeded()
+    }
+
+    func receiveNativeImageDrop(fileURL: URL, sourceURL: URL?) {
+        do {
+            let stagedURL = try PetNativeImageDropSupport.stageLocalFile(fileURL, in: nativeDropStagingRoot)
+            try beginNativeImageDrop(stagedURL: stagedURL, sourceURL: sourceURL)
+        } catch {
+            postNativeImageDropFailure(error)
+        }
+    }
+
+    func receiveNativeImageDrop(data: Data, typeIdentifier: String) {
+        do {
+            try FileManager.default.createDirectory(at: nativeDropStagingRoot, withIntermediateDirectories: true)
+            let fileExtension = typeIdentifier == NSPasteboard.PasteboardType.tiff.rawValue ? "tiff" : "png"
+            let stagedURL = nativeDropStagingRoot.appendingPathComponent("native-\(UUID().uuidString).\(fileExtension)")
+            try data.write(to: stagedURL, options: .atomic)
+            try beginNativeImageDrop(stagedURL: stagedURL, sourceURL: nil)
+        } catch {
+            postNativeImageDropFailure(error)
+        }
+    }
+
+    func receiveNativeImageDrop(remoteURL: URL) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var request = URLRequest(url: remoteURL)
+                request.timeoutInterval = 15
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard data.count > 0, data.count <= 50 * 1024 * 1024,
+                      (response as? HTTPURLResponse)?.statusCode ?? 200 < 400 else {
+                    throw PetCaptureError.invalidSelection
+                }
+                try FileManager.default.createDirectory(at: nativeDropStagingRoot, withIntermediateDirectories: true)
+                let fileExtension = remoteURL.pathExtension.isEmpty ? "img" : remoteURL.pathExtension
+                let stagedURL = nativeDropStagingRoot.appendingPathComponent("native-\(UUID().uuidString).\(fileExtension)")
+                try data.write(to: stagedURL, options: .atomic)
+                try beginNativeImageDrop(stagedURL: stagedURL, sourceURL: remoteURL)
+            } catch {
+                postNativeImageDropFailure(error)
+            }
+        }
+    }
+
+    private var nativeDropStagingRoot: URL {
+        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return applicationSupport
+            .appendingPathComponent("PromptStudio", isDirectory: true)
+            .appendingPathComponent("CaptureStaging", isDirectory: true)
+    }
+
+    private func beginNativeImageDrop(stagedURL: URL, sourceURL: URL?) throws {
+        guard preferences.captureEnabled,
+              pendingRequest == nil,
+              pendingImageRequest == nil,
+              machine.state == .idle || machine.state == .hidden else {
+            try? FileManager.default.removeItem(at: stagedURL)
+            throw PetCaptureError.busy
+        }
+        if imagePhase.isActive {
+            imagePhase.cancel()
+        }
+        let captureID = "native-image-\(UUID().uuidString)"
+        let candidate = try PetNativeImageDropSupport.candidate(
+            for: stagedURL,
+            sourceURL: sourceURL,
+            captureID: captureID
+        )
+        let wasHidden = isSessionHidden || machine.state == .hidden
+        guard imagePhase.begin(captureID: captureID, temporarilyShown: wasHidden),
+              imagePhase.receiveFinal(sequence: 1) else {
+            try? FileManager.default.removeItem(at: stagedURL)
+            throw PetCaptureError.busy
+        }
+        _ = imagePhase.consumeFinalAck(sequence: 1, insidePet: true, mouthPoint: panelController.mouthBrowserScreenPoint)
+        if wasHidden { show() }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await receiveImageCapture(
+                PetImageCaptureRequest(stagingToken: "native-drop", candidate: candidate),
+                stagedFileURL: stagedURL
+            )
+        }
+    }
+
+    private func postNativeImageDropFailure(_ error: Error) {
+        let outcome = PetCaptureOutcome.failed(
+            captureID: "native-image-drop",
+            message: error.localizedDescription,
+            code: "native-image-drop-failed",
+            retryable: true
+        )
+        NotificationCenter.default.post(name: .petCaptureFailed, object: outcome)
     }
 
     /// Entry point for the native messaging/socket layer. A visible pet asks

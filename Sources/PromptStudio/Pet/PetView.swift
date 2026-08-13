@@ -25,9 +25,25 @@ struct PetView: View {
                 .frame(width: 304, height: 134)
                 .padding(8)
             } else {
-                petFace
-                    .frame(width: 86, height: 86)
-                    .padding(8)
+                ZStack(alignment: .top) {
+                    petFace
+                        .frame(width: 86, height: 86)
+                        .padding(.top, 28)
+                        .padding(.bottom, 4)
+                    if coordinator.machine.state == .success {
+                        Label("已保存", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(.green.opacity(0.92), in: Capsule())
+                            .shadow(color: .black.opacity(0.22), radius: 4, y: 2)
+                            .padding(.top, 4)
+                            .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
+                            .accessibilityLabel("图片已保存")
+                    }
+                }
+                .frame(width: 102, height: 118)
             }
         }
         .contentShape(Rectangle())
@@ -43,107 +59,16 @@ struct PetView: View {
         .accessibilityValue(accessibilityState)
     }
 
+    @ViewBuilder
     private var petFace: some View {
-        ZStack {
-            blob
-                .overlay(eyes)
-                .overlay(mouth)
+        if let image = PetImageResource.desktopPet() {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 86, height: 86)
+                .shadow(color: .black.opacity(0.24), radius: 9, y: 4)
         }
-        .frame(width: 86, height: 86)
-    }
-
-    private var blob: some View {
-        Canvas { context, size in
-            let phase: CGFloat
-            if reduceMotion {
-                phase = 0
-            } else {
-                phase = CGFloat(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 4))
-            }
-            let breathing = reduceMotion ? 1 : 1 + sin(phase * .pi / 2) * 0.018
-            let blobSize = min(size.width, size.height) * 0.84 * breathing
-            let rect = CGRect(
-                x: (size.width - blobSize) / 2,
-                y: (size.height - blobSize) / 2,
-                width: blobSize,
-                height: blobSize
-            )
-            var path = Path()
-            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-            path.addCurve(
-                to: CGPoint(x: rect.maxX, y: rect.midY),
-                control1: CGPoint(x: rect.maxX * 0.78, y: rect.minY),
-                control2: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.22)
-            )
-            path.addCurve(
-                to: CGPoint(x: rect.midX, y: rect.maxY),
-                control1: CGPoint(x: rect.maxX, y: rect.maxY * 0.82),
-                control2: CGPoint(x: rect.maxX * 0.80, y: rect.maxY)
-            )
-            path.addCurve(
-                to: CGPoint(x: rect.minX, y: rect.midY),
-                control1: CGPoint(x: rect.minX + rect.width * 0.18, y: rect.maxY),
-                control2: CGPoint(x: rect.minX, y: rect.maxY * 0.80)
-            )
-            path.addCurve(
-                to: CGPoint(x: rect.midX, y: rect.minY),
-                control1: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.20),
-                control2: CGPoint(x: rect.width * 0.22, y: rect.minY)
-            )
-            path.closeSubpath()
-
-            let fill: Color = coordinator.machine.state == .error ? Color(red: 0.26, green: 0.19, blue: 0.28) : Color(red: 0.12, green: 0.12, blue: 0.16)
-            context.fill(path, with: .color(fill))
-            context.stroke(path, with: .color(Color.white.opacity(0.10)), lineWidth: 1)
-        }
-        .frame(width: 86, height: 86)
-        .shadow(color: .black.opacity(0.24), radius: 9, y: 4)
-    }
-
-    private var eyes: some View {
-        HStack(spacing: 12) {
-            eye
-            eye
-        }
-        .offset(y: -10)
-    }
-
-    private var eye: some View {
-        Capsule(style: .continuous)
-            .fill(Color.white.opacity(0.94))
-            .frame(width: 8, height: coordinator.machine.state == .success ? 10 : 13)
-    }
-
-    private var mouth: some View {
-        Group {
-            switch coordinator.machine.state {
-            case .asking:
-                Capsule(style: .continuous)
-                    .stroke(Color(red: 0.52, green: 0.40, blue: 0.62), lineWidth: 2)
-                    .frame(width: 18, height: 10)
-            case .eating:
-                Circle()
-                    .fill(Color(red: 0.52, green: 0.40, blue: 0.62))
-                    .frame(width: 13, height: 13)
-            case .success:
-                Capsule(style: .continuous)
-                    .fill(Color(red: 0.52, green: 0.40, blue: 0.62))
-                    .frame(width: 21, height: 8)
-            case .cancelled:
-                Image(systemName: "minus")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.52, green: 0.40, blue: 0.62))
-            case .error:
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color(red: 0.78, green: 0.44, blue: 0.48))
-            case .idle, .hidden:
-                Capsule(style: .continuous)
-                    .fill(Color(red: 0.52, green: 0.40, blue: 0.62))
-                    .frame(width: 16, height: 6)
-            }
-        }
-        .offset(y: 11)
     }
 
     private func confirmationCard(_ request: PetCaptureRequest) -> some View {
