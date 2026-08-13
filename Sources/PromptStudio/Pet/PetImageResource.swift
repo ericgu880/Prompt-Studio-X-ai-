@@ -21,4 +21,17 @@ enum PetImageResource {
         #endif
         return desktopPet(in: .main)
     }
+
+    static func desktopPetAnimationURL(in bundle: Bundle) -> URL? {
+        bundle.url(forResource: "desktop-pet", withExtension: "json")
+    }
+
+    static func desktopPetAnimationURL() -> URL? {
+        #if SWIFT_PACKAGE
+        if let url = desktopPetAnimationURL(in: .module) {
+            return url
+        }
+        #endif
+        return desktopPetAnimationURL(in: .main)
+    }
 }

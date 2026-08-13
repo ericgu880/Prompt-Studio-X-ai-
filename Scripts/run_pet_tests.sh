@@ -11,8 +11,19 @@ TEST_BINARY="${TMPDIR:-/tmp}/promptstudio-pet-tests-$$"
 trap 'rm -f "$TEST_BINARY"' EXIT
 
 PET_ASSET="$ROOT_DIR/Sources/PromptStudio/Resources/desktop-pet.png"
+PET_ANIMATION="$ROOT_DIR/Sources/PromptStudio/Resources/desktop-pet.json"
 if [[ ! -f "$PET_ASSET" ]]; then
     echo "FAIL: desktop pet PNG is missing from app resources" >&2
+    exit 1
+fi
+
+if [[ ! -f "$PET_ANIMATION" ]]; then
+    echo "FAIL: desktop pet Lottie JSON is missing from app resources" >&2
+    exit 1
+fi
+
+if ! grep -q '\.frame(width: 68, height: 68)' "$ROOT_DIR/Sources/PromptStudio/Pet/PetView.swift"; then
+    echo "FAIL: desktop pet animation must render at the requested half-size 68x68" >&2
     exit 1
 fi
 
@@ -41,4 +52,4 @@ env PATH="$TOOLCHAIN_ROOT/usr/bin:$PATH" SDKROOT="$SDK_PATH" swiftc \
     "$ROOT_DIR/Tests/PromptStudioPetTests/main.swift" \
     -o "$TEST_BINARY"
 
-PROMPTSTUDIO_PET_ASSET="$PET_ASSET" "$TEST_BINARY"
+PROMPTSTUDIO_PET_ASSET="$PET_ASSET" PROMPTSTUDIO_PET_ANIMATION="$PET_ANIMATION" "$TEST_BINARY"

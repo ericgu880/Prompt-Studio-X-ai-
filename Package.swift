@@ -15,6 +15,9 @@ let package = Package(
         .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"]),
         .executable(name: "PromptStudioCaptureHost", targets: ["PromptStudioCaptureHost"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.6.0")
+    ],
     targets: [
         .target(
             name: "PromptStudioCore",
@@ -24,7 +27,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "PromptStudio",
-            dependencies: ["PromptStudioCore"],
+            dependencies: [
+                "PromptStudioCore",
+                .product(name: "Lottie", package: "lottie-spm")
+            ],
             resources: [
                 .process("Resources")
             ],

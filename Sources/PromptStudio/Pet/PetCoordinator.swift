@@ -351,9 +351,9 @@ final class PetCoordinator: ObservableObject {
                 return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)
             }
             if hidden { show() }
-            // Move only at the beginning of a web-image drag. The pet stays
-            // below that source position as a stable target for the drop.
-            panelController.moveBelowBrowserPoint(preview.screenPoint)
+            // Use the pointer-down image bounds rather than the later dragstart
+            // DOM bounds. Pinterest mutates its card before dragstart.
+            panelController.moveBesideBrowserSource(preview.sourceScreenRect)
         }
         guard imagePhase.captureID == preview.captureID else {
             return PetImageDragFeedback(captureID: preview.captureID, sequence: 0, insidePet: false, mouthScreenPoint: nil, terminal: preview.drop)

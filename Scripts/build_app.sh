@@ -64,11 +64,15 @@ RESOURCE_BUNDLE="$BUILD_DIR/PromptStudio_PromptStudio.bundle"
 CAPTURE_HOST_EXECUTABLE="$BUILD_DIR/PromptStudioCaptureHost"
 
 rm -rf "$STAGING_APP_PATH" "$PREVIOUS_APP_PATH"
-mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources" "$STAGING_APP_PATH/Contents/Helpers"
+mkdir -p "$STAGING_APP_PATH/Contents/MacOS" "$STAGING_APP_PATH/Contents/Resources" "$STAGING_APP_PATH/Contents/Helpers" "$STAGING_APP_PATH/Contents/Frameworks"
 
 cp "$ROOT_DIR/Packaging/Info.plist" "$STAGING_APP_PATH/Contents/Info.plist"
 cp "$EXECUTABLE_PATH" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
 cp "$CAPTURE_HOST_EXECUTABLE" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
+if [[ -d "$BUILD_DIR/Lottie.framework" ]]; then
+    cp -R "$BUILD_DIR/Lottie.framework" "$STAGING_APP_PATH/Contents/Frameworks/Lottie.framework"
+    /usr/bin/install_name_tool -add_rpath "@executable_path/../Frameworks" "$STAGING_APP_PATH/Contents/MacOS/PromptStudio"
+fi
 if [[ "$CONFIGURATION" != release ]]; then
     # The checked-in extension key is development-only. Production installs come
     # from the Web Store ID supplied below; bundling this tree in a release app
@@ -134,6 +138,9 @@ fi
 
 # Sign the nested stdio helper before signing the containing app. The helper intentionally has
 # no app entitlements or app designated requirement; the containing app is verified below.
+if [[ -d "$STAGING_APP_PATH/Contents/Frameworks/Lottie.framework" ]]; then
+    /usr/bin/codesign "${helper_codesign_args[@]}" "$STAGING_APP_PATH/Contents/Frameworks/Lottie.framework"
+fi
 /usr/bin/codesign "${helper_codesign_args[@]}" "$STAGING_APP_PATH/Contents/Helpers/PromptStudioCaptureHost"
 
 /usr/bin/codesign "${codesign_args[@]}" "$STAGING_APP_PATH"

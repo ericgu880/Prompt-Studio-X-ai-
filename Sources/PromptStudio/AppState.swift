@@ -480,6 +480,15 @@ final class AppState: ObservableObject {
         petCaptureHandler = { [weak self] request in
             do {
                 guard let self else { throw PetCaptureError.unavailable }
+                let decision = self.licenseManager.featureGate.evaluate(.proCreatePrompt)
+                guard decision.allowed else {
+                    return .failed(
+                        captureID: request.captureID,
+                        message: decision.message ?? "当前 License 仅支持预览",
+                        code: "feature-denied",
+                        retryable: false
+                    )
+                }
                 // Resolve the authorized library for every request. Users can
                 // reconnect a different library while the app remains open;
                 // capturing must follow that live context instead of the URL
@@ -521,6 +530,16 @@ final class AppState: ObservableObject {
         petImageCaptureHandler = { [weak self] request, stagedFileURL in
             do {
                 guard let self else { throw PetCaptureError.unavailable }
+                let decision = self.licenseManager.featureGate.evaluate(.proCreatePrompt)
+                guard decision.allowed else {
+                    try? FileManager.default.removeItem(at: stagedFileURL)
+                    return .failed(
+                        captureID: request.captureID,
+                        message: decision.message ?? "当前 License 仅支持预览",
+                        code: "feature-denied",
+                        retryable: false
+                    )
+                }
                 let service = try PromptStudioAutomationService(libraryURL: self.libraryURL)
                 let candidate = WebImageCaptureCandidate(
                     captureID: request.captureID,
@@ -1192,6 +1211,7 @@ final class AppState: ObservableObject {
     }
 
     func copySelectedPrompt() {
+        guard requireFeature(.baseCopyPrompt) else { return }
         guard let prompt = selectedItem?.currentVersion?.prompt.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else {
             showToast("当前素材没有 Prompt")
             return
@@ -1204,6 +1224,7 @@ final class AppState: ObservableObject {
     }
 
     func copyPromptFragment(_ fragment: String) {
+        guard requireFeature(.baseCopyPrompt) else { return }
         let text = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         AppKitBridge.copyToPasteboard(text)
@@ -1222,6 +1243,7 @@ final class AppState: ObservableObject {
     }
 
     func copyMarkdownDocumentText(_ text: String) {
+        guard requireFeature(.baseCopyPrompt) else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             showToast("当前文档没有内容")
@@ -1264,6 +1286,7 @@ final class AppState: ObservableObject {
     }
 
     func openSelectedInDefaultApplication() {
+        guard requireFeature(.baseBasicExport) else { return }
         guard let item = selectedItem else { return }
         guard item.hasAvailablePrimaryAsset else {
             showToast("当前 Prompt 尚未添加主素材")
@@ -1278,6 +1301,7 @@ final class AppState: ObservableObject {
     }
 
     func copySelectedFilePath() {
+        guard requireFeature(.baseCopyPrompt) else { return }
         guard let item = selectedItem else { return }
         guard item.hasAvailablePrimaryAsset else {
             showToast("当前 Prompt 尚未添加主素材")
@@ -1293,6 +1317,7 @@ final class AppState: ObservableObject {
     }
 
     func copySelectedFileForPasteboard() {
+        guard requireFeature(.baseCopyPrompt) else { return }
         let selectedItems = orderedSelectedItems()
         let realItems = selectedItems.filter(\.hasAvailablePrimaryAsset)
         guard !realItems.isEmpty else {
@@ -1333,6 +1358,7 @@ final class AppState: ObservableObject {
     /// sessions use this so AppKit selection changes after mouse-down cannot reduce
     /// a multi-selection to a single item before the action executes.
     func moveItemsToTrash(_ itemIDs: [String]) {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         let ids = Set(PromptItemDragPayload(itemIDs: itemIDs).itemIDs)
         guard !ids.isEmpty else { return }
         do {
@@ -1345,6 +1371,7 @@ final class AppState: ObservableObject {
     }
 
     func restoreSelected() {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         let ids = selectedIDs.isEmpty ? selectedID.map { Set([$0]) } ?? [] : selectedIDs
         guard !ids.isEmpty else { return }
         do {
@@ -1357,6 +1384,7 @@ final class AppState: ObservableObject {
     }
 
     func restoreAllTrashItems() {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         let deletedItems = items.filter(\.isDeleted)
         guard !deletedItems.isEmpty else {
             showToast("回收站为空")
@@ -1372,6 +1400,7 @@ final class AppState: ObservableObject {
     }
 
     func beginPermanentDeleteSelectedTrashItems() {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         let ids = selectedTrashItemIDs()
         guard !ids.isEmpty else { return }
         let title = ids.count == 1 ? ids.first.flatMap { itemsByID[$0]?.title } : nil
@@ -1381,10 +1410,12 @@ final class AppState: ObservableObject {
     }
 
     func confirmPermanentDelete(_ request: PermanentDeleteRequest) {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         permanentlyDeleteTrashItems(withIDs: request.itemIDs, emptyTrashMessage: false)
     }
 
     func emptyTrash() {
+        guard requireFeature(.baseDeleteLocalData) else { return }
         let deletedItems = items.filter(\.isDeleted)
         guard !deletedItems.isEmpty else {
             showToast("回收站为空")
@@ -1911,6 +1942,7 @@ final class AppState: ObservableObject {
     }
 
     func exportSelected(options: ExportOptions = ExportOptions(promptMarkdown: true, pngImage: false, jpegImage: false)) {
+        guard requireFeature(.baseBasicExport) else { return }
         guard options.hasSelection else {
             showToast("请选择导出内容")
             return
@@ -1958,6 +1990,7 @@ final class AppState: ObservableObject {
     }
 
     func exportSelected(format: PromptStudioExportFormat) {
+        guard requireFeature(.baseBasicExport) else { return }
         guard let item = selectedItem else { return }
         guard item.hasAvailablePrimaryAsset else {
             showToast("当前 Prompt 尚未添加主素材")
@@ -2005,6 +2038,7 @@ final class AppState: ObservableObject {
     }
 
     func revealSelectedInFinder() {
+        guard requireFeature(.baseBasicExport) else { return }
         guard let item = selectedItem, item.hasAvailablePrimaryAsset,
               FileManager.default.fileExists(atPath: item.assetPath) else {
             showToast("源文件不存在")
@@ -2016,10 +2050,8 @@ final class AppState: ObservableObject {
 
     func previewSelected() {
         guard let item = selectedItem else { return }
-        guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike else {
-            openEditPromptComposer(for: item)
-            return
-        }
+        guard requireFeature(.baseViewPrompt) else { return }
+        guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike || item.isMediaPromptPlaceholder else { return }
         referenceLightbox = nil
         modal = nil
         promptComposerMode = nil
@@ -2467,6 +2499,7 @@ final class AppState: ObservableObject {
     }
 
     func beginDeleteFolders(_ folderIDs: [String]) {
+        guard requireFeature(.proManageCollections) else { return }
         let normalizedIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
             selectedFolderIDs: folderIDs,
             folders: folders
@@ -2647,6 +2680,7 @@ final class AppState: ObservableObject {
     }
 
     func deleteFoldersMovingItemsToTrash(ids: [String]) {
+        guard requireFeature(.proManageCollections) else { return }
         guard let repository else { return }
         do {
             let deletedAt = Date()

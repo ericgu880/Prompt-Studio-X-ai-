@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(Lottie)
+import Lottie
+#endif
 
 struct PetView: View {
     @ObservedObject var coordinator: PetCoordinator
@@ -27,7 +30,7 @@ struct PetView: View {
             } else {
                 ZStack(alignment: .top) {
                     petFace
-                        .frame(width: 86, height: 86)
+                        .frame(width: 68, height: 68)
                         .padding(.top, 28)
                         .padding(.bottom, 4)
                     if coordinator.machine.state == .success {
@@ -61,14 +64,29 @@ struct PetView: View {
 
     @ViewBuilder
     private var petFace: some View {
+        #if canImport(Lottie)
+        if let animationURL = PetImageResource.desktopPetAnimationURL() {
+            DesktopPetLottieView(animationURL: animationURL)
+                .frame(width: 68, height: 68)
+                .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
+        } else if let image = PetImageResource.desktopPet() {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 68, height: 68)
+                .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
+        }
+        #else
         if let image = PetImageResource.desktopPet() {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
                 .scaledToFit()
-                .frame(width: 86, height: 86)
-                .shadow(color: .black.opacity(0.24), radius: 9, y: 4)
+                .frame(width: 68, height: 68)
+                .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
         }
+        #endif
     }
 
     private func confirmationCard(_ request: PetCaptureRequest) -> some View {
@@ -164,3 +182,63 @@ struct PetView: View {
         }
     }
 }
+
+#if canImport(Lottie)
+private struct DesktopPetLottieView: NSViewRepresentable {
+    let animationURL: URL
+
+    private let displaySize = CGSize(width: 68, height: 68)
+
+    func makeNSView(context: Context) -> DesktopPetLottieContainer {
+        DesktopPetLottieContainer(animationURL: animationURL)
+    }
+
+    func updateNSView(_ view: DesktopPetLottieContainer, context: Context) {
+        guard !view.animationView.isAnimationPlaying else { return }
+        view.animationView.play()
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: DesktopPetLottieContainer,
+        context: Context
+    ) -> CGSize? {
+        displaySize
+    }
+}
+
+private final class DesktopPetLottieContainer: NSView {
+    let animationView = LottieAnimationView()
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 68, height: 68)
+    }
+
+    init(animationURL: URL) {
+        super.init(frame: .zero)
+        clipsToBounds = true
+        animationView.animation = LottieAnimation.filepath(animationURL.path)
+        animationView.contentMode = .scaleAspectFit
+        animationView.loopMode = .loop
+        animationView.backgroundBehavior = .pauseAndRestore
+        animationView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        animationView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        animationView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        animationView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        animationView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(animationView)
+        NSLayoutConstraint.activate([
+            animationView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            animationView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            animationView.topAnchor.constraint(equalTo: topAnchor),
+            animationView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        animationView.play()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+#endif

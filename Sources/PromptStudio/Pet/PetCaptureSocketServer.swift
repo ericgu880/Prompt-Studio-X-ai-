@@ -102,6 +102,7 @@ final class PetCaptureSocketServer {
         let captureID: String
         let sequence: Int?
         let screenPoint: PetCaptureRequest.ScreenPoint?
+        let sourceScreenRect: PetCaptureRequest.ScreenRect?
         let insidePet: Bool?
         let drop: Bool?
     }
@@ -334,6 +335,7 @@ final class PetCaptureSocketServer {
                     captureID: dragEnvelope.captureID,
                     sequence: dragEnvelope.sequence ?? 0,
                     screenPoint: dragEnvelope.screenPoint,
+                    sourceScreenRect: dragEnvelope.sourceScreenRect,
                     drop: dragEnvelope.drop ?? false
                 )
             )

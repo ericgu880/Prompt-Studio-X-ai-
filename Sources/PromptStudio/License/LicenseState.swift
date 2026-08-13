@@ -41,7 +41,7 @@ enum LicenseState: Equatable {
         case .trialActive:
             "试用期间可使用 Pro 功能。"
         case .trialExpired:
-            "你仍可以打开、查看、搜索、复制和基础导出已有数据。"
+            "当前仅可打开、查看和搜索已有数据。"
         case .proActive(let certificate):
             certificate.licenseType == "lifetime"
                 ? "永久授权已生效；联网只用于安全刷新本地离线凭证。"
@@ -51,9 +51,9 @@ enum LicenseState: Equatable {
                 ? "永久授权仍保留，请在 \(certificate.graceUntil.formatted(date: .abbreviated, time: .omitted)) 前联网刷新本地凭证。"
                 : "请联网刷新授权。最迟刷新日为 \(certificate.graceUntil.formatted(date: .abbreviated, time: .omitted))。"
         case .limited(let reason):
-            "\(reason.localizedDescription) 你仍可以打开、查看、搜索、复制和基础导出已有数据。"
+            "\(reason.localizedDescription) 当前仅可打开、查看和搜索已有数据。"
         case .revoked(let reason):
-            reason ?? "如认为这是误判，请联系支持。你仍可以查看和导出已有数据。"
+            reason ?? "如认为这是误判，请联系支持。当前仅可查看已有数据。"
         }
     }
 }

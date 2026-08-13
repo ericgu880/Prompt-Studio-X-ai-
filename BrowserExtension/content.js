@@ -80,9 +80,18 @@
     const hit = I.resolveImageDragHit(event.target, layers, { x: event.clientX, y: event.clientY });
     if (!hit || !hit.imageElement || !hit.dragRoot) return;
     const root = hit.dragRoot;
+    const elementRect = typeof hit.imageElement.getBoundingClientRect === 'function'
+      ? hit.imageElement.getBoundingClientRect() : null;
+    const sourceScreenRect = elementRect ? I.screenRectFromPointerRect(elementRect, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }) : null;
     preparedImageDrag = {
       imageElement: hit.imageElement,
       dragRoot: root,
+      sourceScreenRect,
       hadDraggableAttribute: root.hasAttribute('draggable'),
       draggableAttribute: root.getAttribute('draggable'),
       webkitUserDrag: root.style ? root.style.webkitUserDrag : '',
@@ -209,11 +218,12 @@
     if (!dragSession || !dragSession.captureID) return;
     dragSession.previewSequence = (dragSession.previewSequence || 0) + 1;
     dragSession.lastScreenPoint = { x: event.screenX, y: event.screenY };
-    sendRuntimeMessage({
-      type: 'previewImageDrag', captureID: dragSession.captureID,
+    sendRuntimeMessage(I.makeDragPreviewMessage({
+      captureID: dragSession.captureID,
       screenPoint: { x: event.screenX, y: event.screenY },
+      sourceScreenRect: dragSession.sourceScreenRect,
       sequence: dragSession.previewSequence,
-    });
+    }));
   }
 
   function beginImageDrag(event) {
@@ -232,6 +242,18 @@
       event.dataTransfer.setDragImage(element, rect ? Math.max(0, event.clientX - rect.left) : 0,
         rect ? Math.max(0, event.clientY - rect.top) : 0);
     }
+    const elementRect = typeof element.getBoundingClientRect === 'function'
+      ? element.getBoundingClientRect() : null;
+    const dragStartScreenRect = elementRect ? I.screenRectFromPointerRect(elementRect, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }) : null;
+    const sourceScreenRect = I.preferredDragSourceScreenRect(
+      preparedImageDrag && preparedImageDrag.sourceScreenRect,
+      dragStartScreenRect,
+    );
     const captureID = globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
       ? globalThis.crypto.randomUUID() : `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     dragSession = {
@@ -240,7 +262,7 @@
       dropped: false,
       started: true,
       // Sequence 1 is sent immediately, before descriptor/byte prefetch.
-      // That lets the desktop pet appear under the source image right away.
+      // That lets the desktop pet appear beside the source image right away.
       previewSequence: 1,
       nativeInsidePet: false,
       nativeMouthScreenPoint: null,
@@ -249,11 +271,13 @@
       finalSequence: null,
       finalPending: false,
       finalTimer: null,
+      sourceScreenRect,
     };
     sendRuntimeMessage({
       type: 'beginImageDragPreview',
       captureID,
       screenPoint: dragSession.lastScreenPoint,
+      sourceScreenRect,
       sequence: dragSession.previewSequence,
     }, (_response, lastError) => {
       if (lastError) clearDragSession();

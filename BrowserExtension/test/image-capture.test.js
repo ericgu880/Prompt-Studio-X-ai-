@@ -266,3 +266,16 @@ test('screen rect mapping handles negative displays and nested frame offsets wit
     { width: 800, height: 600 },
   ), { left: 0, top: 40, width: 800, height: 560 });
 });
+
+test('drag source keeps the pointerdown rect when a site mutates its DOM before dragstart', () => {
+  const pointerDownRect = { left: 120, top: 80, right: 420, bottom: 380 };
+  const mutatedDragStartRect = { left: 0, top: 0, right: 0, bottom: 0 };
+  assert.deepEqual(
+    Capture.preferredDragSourceScreenRect(pointerDownRect, mutatedDragStartRect),
+    pointerDownRect,
+  );
+  assert.deepEqual(
+    Capture.preferredDragSourceScreenRect(null, pointerDownRect),
+    pointerDownRect,
+  );
+});

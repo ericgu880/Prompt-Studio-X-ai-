@@ -77,6 +77,20 @@ public struct CaptureScreenPoint: Codable, Equatable, Sendable {
     }
 }
 
+public struct CaptureScreenRect: Codable, Equatable, Sendable {
+    public let left: Double
+    public let top: Double
+    public let right: Double
+    public let bottom: Double
+
+    public init(left: Double, top: Double, right: Double, bottom: Double) {
+        self.left = left
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+    }
+}
+
 /// Browser-side and app-side JSON use an ISO-8601 string for capturedAt. The host validates and
 /// forwards this value unchanged; the app decoder owns the date strategy.
 public struct BrowserCaptureCandidate: Codable, Equatable, Sendable {

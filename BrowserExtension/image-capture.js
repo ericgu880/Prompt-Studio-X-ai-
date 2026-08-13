@@ -229,6 +229,18 @@
     return width * height;
   }
 
+  function imageContainsPoint(element, point = {}) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+    const rect = element.getBoundingClientRect();
+    const x = Number(point.x);
+    const y = Number(point.y);
+    return Number.isFinite(x) && Number.isFinite(y)
+      && x >= finiteNumber(rect && rect.left)
+      && x <= finiteNumber(rect && rect.right)
+      && y >= finiteNumber(rect && rect.top)
+      && y <= finiteNumber(rect && rect.bottom);
+  }
+
   function directImageElement(element) {
     if (!element) return null;
     const tagName = String(element.tagName || element.nodeName || '').toLowerCase();
@@ -269,7 +281,7 @@
       }
       root = root || layer;
       const candidates = imageElementsInside(root)
-        .filter((candidate) => imageCandidateArea(candidate) > 256)
+        .filter((candidate) => imageCandidateArea(candidate) > 256 && imageContainsPoint(candidate, point))
         .sort((left, right) => imageCandidateArea(right) - imageCandidateArea(left));
       if (candidates.length) return { imageElement: candidates[0], dragRoot: root };
     }
@@ -561,6 +573,18 @@
     };
   }
 
+  function preferredDragSourceScreenRect(pointerDownRect, dragStartRect) {
+    const isUsable = (rect) => rect
+      && Number.isFinite(Number(rect.left))
+      && Number.isFinite(Number(rect.top))
+      && Number.isFinite(Number(rect.right))
+      && Number.isFinite(Number(rect.bottom))
+      && Number(rect.right) > Number(rect.left)
+      && Number(rect.bottom) > Number(rect.top);
+    if (isUsable(pointerDownRect)) return pointerDownRect;
+    return isUsable(dragStartRect) ? dragStartRect : null;
+  }
+
   function makeImageCandidate(values = {}) {
     const domSourceKind = VALID_DOM_SOURCE_KINDS.has(values.domSourceKind) ? values.domSourceKind : 'image';
     const acquisitionMethod = VALID_ACQUISITION_METHODS.has(values.acquisitionMethod) ? values.acquisitionMethod : 'pageContext';
@@ -840,6 +864,16 @@
     return fallbackPoint || null;
   }
 
+  function makeDragPreviewMessage({ captureID, screenPoint, sourceScreenRect, sequence } = {}) {
+    return {
+      type: 'previewImageDrag',
+      captureID: String(captureID || ''),
+      screenPoint: screenPoint || null,
+      sourceScreenRect: sourceScreenRect || null,
+      sequence: Number(sequence),
+    };
+  }
+
   const api = {
     MAX_IMAGE_BYTES,
     IMAGE_CHUNK_BYTES,
@@ -864,12 +898,14 @@
     accumulateFrameCoordinates,
     cropRectFromScreenRect,
     screenRectFromPointerRect,
+    preferredDragSourceScreenRect,
     makeImageCandidate,
     buildImageMessages,
     ImageMessageLedger,
     DragSessionState,
     ImageReplayController,
     dragEndScreenPoint,
+    makeDragPreviewMessage,
     shouldReduceMotion,
     sanitizeResourceURL,
     responseBytes,

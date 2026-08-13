@@ -546,7 +546,8 @@
     try {
       nativePort.postMessage({
         type: 'imageDragPreview', origin: originForRuntime(), captureID: session.captureID,
-        screenPoint: session.latestPoint, insidePet: session.insidePet, drop: Boolean(drop),
+        screenPoint: session.latestPoint, sourceScreenRect: session.sourceScreenRect,
+        insidePet: session.insidePet, drop: Boolean(drop),
         sequence: Number(sequence),
       });
     } catch {
@@ -581,6 +582,7 @@
       pendingPreviews: new Map(),
       finalSequence: null,
       finalPending: false,
+      sourceScreenRect: descriptor.screenRect || null,
     };
     dragSessions.set(session.captureID, session);
     const tabPromise = chrome.tabs && typeof chrome.tabs.get === 'function'
@@ -617,13 +619,13 @@
     }
   }
 
-  function beginDragPreview(captureID, screenPoint, sequence) {
+  function beginDragPreview(captureID, screenPoint, sourceScreenRect, sequence) {
     if (!captureID || !screenPoint || !Number.isInteger(Number(sequence)) || Number(sequence) <= 0) return false;
     if (!nativePort && !connectNative()) return false;
     try {
       nativePort.postMessage({
         type: 'imageDragPreview', origin: originForRuntime(), captureID,
-        screenPoint, insidePet: false, drop: false, sequence: Number(sequence),
+        screenPoint, sourceScreenRect, insidePet: false, drop: false, sequence: Number(sequence),
       });
       return true;
     } catch {
@@ -674,7 +676,7 @@
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && message.type === 'beginImageDragPreview') {
-      sendResponse({ ok: beginDragPreview(message.captureID, message.screenPoint, message.sequence) });
+      sendResponse({ ok: beginDragPreview(message.captureID, message.screenPoint, message.sourceScreenRect, message.sequence) });
       return false;
     }
     if (message && message.type === 'startImageDrag') {
@@ -687,6 +689,7 @@
       const session = dragSessions.get(message.captureID);
       if (!session) { sendResponse({ ok: false, code: 'image-session-not-found' }); return false; }
       session.latestPoint = message.screenPoint || message.point || null;
+      session.sourceScreenRect = message.sourceScreenRect || session.sourceScreenRect || null;
       const sequence = Number(message.sequence);
       if (!Number.isInteger(sequence) || sequence <= session.latestSequence) {
         sendResponse({ ok: false, code: 'stale-preview-sequence' });

@@ -4,7 +4,7 @@ struct FeatureGate {
     let state: LicenseState
 
     func evaluate(_ feature: FeatureKey) -> FeatureDecision {
-        if feature.isBaseFeature {
+        if feature.isBaseFeature && isPreviewOnlyFeature(feature) {
             return .allowed(feature)
         }
 
@@ -12,6 +12,9 @@ struct FeatureGate {
         case .trialActive:
             return .allowed(feature)
         case .proActive(let certificate), .grace(let certificate, _):
+            if feature.isBaseFeature {
+                return .allowed(feature)
+            }
             return certificate.features.contains(feature.rawValue)
                 ? .allowed(feature)
                 : denied(feature, reason: .featureNotIncluded)
@@ -37,6 +40,19 @@ struct FeatureGate {
         }
     }
 
+    private func isPreviewOnlyFeature(_ feature: FeatureKey) -> Bool {
+        switch feature {
+        case .baseOpenLibrary, .baseViewPrompt, .baseBasicSearch, .baseLicenseSettings:
+            true
+        case .baseCopyPrompt, .baseBasicExport, .baseDeleteLocalData,
+             .proCreatePrompt, .proEditPrompt, .proDuplicatePrompt,
+             .proManageTags, .proManageCollections, .proTemplates,
+             .proCustomVariables, .proSingleImport, .proBatchImport,
+             .proAdvancedSearch, .proAIAssist, .proAdvancedExport, .proAutomation:
+            false
+        }
+    }
+
     func assertAllowed(_ feature: FeatureKey) throws {
         let decision = evaluate(feature)
         if !decision.allowed {
@@ -52,19 +68,19 @@ struct FeatureGate {
         switch reason {
         case .trialExpired:
             title = "\(featureName)需要 PromptStudio Pro"
-            message = "试用已结束。你仍可以打开、搜索、复制和基础导出已有数据。"
+            message = "试用已结束。当前仅可打开、搜索和预览已有数据。"
             action = .activate
         case .licenseExpired:
             title = "需要刷新 PromptStudio Pro"
-            message = "本地授权已过宽限期。你仍可以打开、搜索、复制和基础导出已有数据。"
+            message = "本地授权已过宽限期。当前仅可打开、搜索和预览已有数据。"
             action = .refreshLicense
         case .licenseRevoked:
             title = "授权当前不可用"
-            message = "你仍可以打开、搜索、复制和基础导出已有数据。如认为这是误判，请联系支持。"
+            message = "当前仅可打开、搜索和预览已有数据。如认为这是误判，请联系支持。"
             action = .contactSupport
         case .licenseRequired:
             title = "\(featureName)需要 PromptStudio Pro"
-            message = "该功能属于 Pro 功能。你仍可以打开、搜索、复制和基础导出已有数据。"
+            message = "该功能需要有效试用或 License。当前仅可打开、搜索和预览已有数据。"
             action = .activate
         case .keychainAccessRequired:
             title = "需要恢复 License 钥匙串访问"

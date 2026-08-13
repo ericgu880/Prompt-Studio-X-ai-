@@ -993,6 +993,7 @@ struct InspectorView: View {
     }
 
     private func startEditing(_ item: PromptItem) {
+        guard state.requireFeature(.proEditPrompt) else { return }
         if item.isTextDocumentLike {
             state.openMarkdownEditor(for: item)
             return

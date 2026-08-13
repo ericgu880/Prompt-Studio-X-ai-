@@ -21,6 +21,17 @@ struct PetCaptureRequest: Codable, Equatable, Identifiable, Sendable {
         var cgPoint: CGPoint { CGPoint(x: x, y: y) }
     }
 
+    struct ScreenRect: Codable, Equatable, Sendable {
+        let left: Double
+        let top: Double
+        let right: Double
+        let bottom: Double
+
+        var cgRect: CGRect {
+            CGRect(x: left, y: top, width: max(0, right - left), height: max(0, bottom - top))
+        }
+    }
+
     let id: String
     let selectedText: String
     let pageTitle: String
@@ -321,7 +332,22 @@ struct PetImageDragPreview: Codable, Equatable, Sendable {
     let captureID: String
     let sequence: Int
     let screenPoint: PetCaptureRequest.ScreenPoint?
+    let sourceScreenRect: PetCaptureRequest.ScreenRect?
     let drop: Bool
+
+    init(
+        captureID: String,
+        sequence: Int,
+        screenPoint: PetCaptureRequest.ScreenPoint?,
+        sourceScreenRect: PetCaptureRequest.ScreenRect? = nil,
+        drop: Bool
+    ) {
+        self.captureID = captureID
+        self.sequence = sequence
+        self.screenPoint = screenPoint
+        self.sourceScreenRect = sourceScreenRect
+        self.drop = drop
+    }
 }
 
 struct PetImageDragFeedback: Codable, Equatable, Sendable {

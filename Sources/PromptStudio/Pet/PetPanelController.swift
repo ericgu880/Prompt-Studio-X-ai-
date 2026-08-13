@@ -154,6 +154,34 @@ final class PetPanelController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
     }
 
+    /// Places the compact pet beside the image bounds captured at pointer-down.
+    /// A right-side target is easier to see than one underneath a tall Pinterest pin.
+    func moveBesideBrowserSource(_ browserRect: PetCaptureRequest.ScreenRect?) {
+        guard let browserRect,
+              let primaryScreen = NSScreen.screens.first else { return }
+        let source = browserRect.cgRect
+        let appKitSource = CGRect(
+            x: source.minX,
+            y: primaryScreen.frame.maxY - source.maxY,
+            width: source.width,
+            height: source.height
+        )
+        let target = NSScreen.screens.first(where: { $0.frame.intersects(appKitSource) }) ?? targetScreen()
+        guard let visibleFrame = target?.visibleFrame else { return }
+        let proposed = CGPoint(
+            x: appKitSource.maxX + 20,
+            y: appKitSource.midY - compactSize.height / 2
+        )
+        let origin = PetGeometry.clampedOrigin(
+            proposed: proposed,
+            panelSize: compactSize,
+            visibleFrame: visibleFrame,
+            inset: 8
+        )
+        panel.setFrameOrigin(origin)
+        panel.orderFrontRegardless()
+    }
+
     var mouthBrowserScreenPoint: PetCaptureRequest.ScreenPoint? {
         guard let primaryScreen = NSScreen.screens.first else { return nil }
         // The visible pet sits below the compact status header. Its mouth is

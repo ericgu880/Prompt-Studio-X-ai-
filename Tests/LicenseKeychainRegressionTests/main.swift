@@ -399,6 +399,7 @@ private enum LicenseKeychainRegressionTests {
         try repairRunsOneInteractiveSessionAndReloadsState()
         try preservationRecoveryWithoutTrialDoesNotIssueANewTrial()
         try featureGateOffersKeychainRepair()
+        try inactiveLicenseIsPreviewOnly()
         try await activationFailureKeepsRecoveryBlocked()
         try await successfulActivationCompletesRecovery()
         try releaseRuntimeConfigurationFailsClosed()
@@ -1625,6 +1626,22 @@ private enum LicenseKeychainRegressionTests {
         guard decision.reason == .keychainAccessRequired,
               decision.primaryAction == .chooseKeychainRecovery else {
             throw Failure("keychain access failures must open the recovery choice without touching secrets")
+        }
+    }
+
+    private static func inactiveLicenseIsPreviewOnly() throws {
+        let gate = FeatureGate(state: .limited(reason: .noLicense))
+        guard gate.evaluate(.baseOpenLibrary).allowed,
+              gate.evaluate(.baseViewPrompt).allowed,
+              gate.evaluate(.baseBasicSearch).allowed,
+              gate.evaluate(.baseLicenseSettings).allowed,
+              !gate.evaluate(.baseCopyPrompt).allowed,
+              !gate.evaluate(.baseBasicExport).allowed,
+              !gate.evaluate(.baseDeleteLocalData).allowed,
+              !gate.evaluate(.proCreatePrompt).allowed,
+              !gate.evaluate(.proEditPrompt).allowed,
+              !gate.evaluate(.proSingleImport).allowed else {
+            throw Failure("an inactive license must allow preview/navigation only")
         }
     }
 

@@ -2212,6 +2212,7 @@ func testCapturedPromptUsesUnifiedClassificationAndIsIdempotent() throws {
         ("capture-video", "生成 6 秒视频，连续动作和运镜", .video, .video),
         ("capture-audio", "生成旁白和配音，温暖声线", .audio, .audio),
         ("capture-text", "分析数据并输出 JSON", .text, .markdown),
+        ("capture-visual-description", "背景为柔和光晕天空，C4D 风漩涡半透明材质，粒子系统与动态模糊", .image, .image),
         ("capture-fallback", "随便写点什么", .image, .image)
     ]
     for (captureID, selectedText, expectedType, expectedKind) in candidates {

@@ -377,6 +377,7 @@ public final class PromptStudioCaptureHost {
         let captureID: String
         let screenPoint: CaptureScreenPoint?
         let point: CaptureScreenPoint?
+        let sourceScreenRect: CaptureScreenRect?
         let insidePet: Bool?
         let drop: Bool?
         let sequence: Int?
@@ -392,6 +393,7 @@ public final class PromptStudioCaptureHost {
         let type: String
         let captureID: String
         let screenPoint: CaptureScreenPoint?
+        let sourceScreenRect: CaptureScreenRect?
         let insidePet: Bool?
         let drop: Bool?
         let sequence: Int?
@@ -613,6 +615,7 @@ public final class PromptStudioCaptureHost {
             type: "imageDragPreview",
             captureID: request.captureID,
             screenPoint: request.screenPoint ?? request.point,
+            sourceScreenRect: request.sourceScreenRect,
             insidePet: request.insidePet,
             drop: request.drop,
             sequence: request.sequence
@@ -638,7 +641,7 @@ public final class PromptStudioCaptureHost {
         catch { throw CaptureHostRuntimeError.imageInvalid }
         guard request.type == type else { throw CaptureHostRuntimeError.imageInvalid }
         beforeForward(request)
-        let payload = try encoder.encode(SocketImageControlEnvelope(type: type, captureID: request.captureID, screenPoint: nil, insidePet: nil, drop: nil, sequence: nil))
+        let payload = try encoder.encode(SocketImageControlEnvelope(type: type, captureID: request.captureID, screenPoint: nil, sourceScreenRect: nil, insidePet: nil, drop: nil, sequence: nil))
         try forwardControl(payload, captureID: request.captureID, terminalTypes: terminalTypes)
     }
 
