@@ -5,6 +5,7 @@ enum LicenseRuntimeConfiguration {
 
     static var serverURL: URL {
         resolvedServerURL(
+            bundledValue: Bundle.main.object(forInfoDictionaryKey: "PromptStudioLicenseServerURL") as? String,
             allowsRuntimeOverrides: runtimeOverridesAllowed,
             environment: ProcessInfo.processInfo.environment,
             userDefaultsValue: UserDefaults.standard.string(forKey: "PromptStudioLicenseServerURL")
@@ -16,16 +17,21 @@ enum LicenseRuntimeConfiguration {
     }
 
     static func resolvedServerURL(
+        bundledValue: String? = nil,
         allowsRuntimeOverrides: Bool,
         environment: [String: String],
         userDefaultsValue: String?
     ) -> URL {
-        guard allowsRuntimeOverrides else { return productionServerURL }
-        if let raw = environment["PROMPTSTUDIO_LICENSE_SERVER_URL"],
-           let url = validatedHTTPSURL(raw) {
-            return url
+        if allowsRuntimeOverrides {
+            if let raw = environment["PROMPTSTUDIO_LICENSE_SERVER_URL"],
+               let url = validatedRuntimeOverrideURL(raw) {
+                return url
+            }
+            if let url = validatedRuntimeOverrideURL(userDefaultsValue) {
+                return url
+            }
         }
-        if let url = validatedHTTPSURL(userDefaultsValue) {
+        if let url = validatedHTTPSURL(bundledValue) {
             return url
         }
         return productionServerURL
@@ -40,6 +46,23 @@ enum LicenseRuntimeConfiguration {
               let components = URLComponents(string: rawValue),
               components.scheme == "https",
               components.host != nil,
+              components.user == nil,
+              components.password == nil,
+              let url = components.url else {
+            return nil
+        }
+        return url
+    }
+
+    private static func validatedRuntimeOverrideURL(_ rawValue: String?) -> URL? {
+        if let url = validatedHTTPSURL(rawValue) {
+            return url
+        }
+        guard let rawValue,
+              let components = URLComponents(string: rawValue),
+              components.scheme?.lowercased() == "http",
+              let host = components.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host),
               components.user == nil,
               components.password == nil,
               let url = components.url else {

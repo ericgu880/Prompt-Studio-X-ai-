@@ -4,11 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="$ROOT_DIR/.build/license-keychain-tests"
 SDK_PATH="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+BUILD_SCRIPT="$ROOT_DIR/Scripts/build_app.sh"
 
 source "$ROOT_DIR/Scripts/swift_toolchain.sh"
 SWIFT_EXEC="$(find_compatible_swift_tool swiftc "${SWIFT_EXEC:-}")"
 
 mkdir -p "$OUTPUT_DIR"
+
+if ! /usr/bin/grep -q 'LICENSE_SERVER_URL="${PROMPTSTUDIO_LICENSE_SERVER_URL:-}"' "$BUILD_SCRIPT" \
+    || ! /usr/bin/grep -q 'validate_optional_https_url "PROMPTSTUDIO_LICENSE_SERVER_URL" "$LICENSE_SERVER_URL"' "$BUILD_SCRIPT" \
+    || ! /usr/bin/grep -q 'PromptStudioLicenseServerURL string $LICENSE_SERVER_URL' "$BUILD_SCRIPT"; then
+    echo "Release packaging must support an explicitly configured HTTPS license QA server." >&2
+    exit 1
+fi
 
 "$SWIFT_EXEC" \
     -parse-as-library \

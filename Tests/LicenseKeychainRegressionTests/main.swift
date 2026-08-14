@@ -403,6 +403,7 @@ private enum LicenseKeychainRegressionTests {
         try await activationFailureKeepsRecoveryBlocked()
         try await successfulActivationCompletesRecovery()
         try releaseRuntimeConfigurationFailsClosed()
+        try licenseRuntimeConfigurationSupportsSafeQAOverrides()
         try lifetimeLicensePresentationBuildsTrust()
         try await serverRevocationPersistsUntilAValidReactivation()
         try await explicitDeactivationPersistsBeforeLocalCleanup()
@@ -861,6 +862,7 @@ private enum LicenseKeychainRegressionTests {
 
     private static func releaseRuntimeConfigurationFailsClosed() throws {
         let resolved = LicenseRuntimeConfiguration.resolvedServerURL(
+            bundledValue: nil,
             allowsRuntimeOverrides: false,
             environment: ["PROMPTSTUDIO_LICENSE_SERVER_URL": "https://attacker.example"],
             userDefaultsValue: "https://another-attacker.example"
@@ -875,6 +877,68 @@ private enum LicenseKeychainRegressionTests {
         }
         guard !AppRuntimePolicy.includesDemoLibraryContent else {
             throw Failure("release builds must not write demo content into an empty user library")
+        }
+    }
+
+    private static func licenseRuntimeConfigurationSupportsSafeQAOverrides() throws {
+        let productionURL = "https://license.promptstudio.app"
+        let debugLoopbackURLs = [
+            "http://localhost:8787",
+            "http://127.0.0.1:8787",
+            "http://[::1]:8787"
+        ]
+        for rawURL in debugLoopbackURLs {
+            let resolved = LicenseRuntimeConfiguration.resolvedServerURL(
+                bundledValue: nil,
+                allowsRuntimeOverrides: true,
+                environment: ["PROMPTSTUDIO_LICENSE_SERVER_URL": rawURL],
+                userDefaultsValue: nil
+            )
+            guard resolved.absoluteString == rawURL else {
+                throw Failure("debug loopback override \(rawURL) resolved as \(resolved.absoluteString)")
+            }
+        }
+
+        let defaultsLoopback = LicenseRuntimeConfiguration.resolvedServerURL(
+            bundledValue: nil,
+            allowsRuntimeOverrides: true,
+            environment: [:],
+            userDefaultsValue: "http://localhost:8787"
+        )
+        guard defaultsLoopback.absoluteString == "http://localhost:8787" else {
+            throw Failure("debug UserDefaults must allow a loopback HTTP license-server override")
+        }
+
+        for rejectedURL in ["http://qa.example", "https://user:password@qa.example"] {
+            let resolved = LicenseRuntimeConfiguration.resolvedServerURL(
+                bundledValue: nil,
+                allowsRuntimeOverrides: true,
+                environment: ["PROMPTSTUDIO_LICENSE_SERVER_URL": rejectedURL],
+                userDefaultsValue: nil
+            )
+            guard resolved.absoluteString == productionURL else {
+                throw Failure("remote HTTP and credential-bearing license-server overrides must be rejected")
+            }
+        }
+
+        let bundledQA = LicenseRuntimeConfiguration.resolvedServerURL(
+            bundledValue: "https://qa-license.promptstudio.app",
+            allowsRuntimeOverrides: false,
+            environment: ["PROMPTSTUDIO_LICENSE_SERVER_URL": "https://ignored.example"],
+            userDefaultsValue: "https://also-ignored.example"
+        )
+        guard bundledQA.absoluteString == "https://qa-license.promptstudio.app" else {
+            throw Failure("release builds must accept an explicitly bundled HTTPS QA server")
+        }
+
+        let invalidBundledQA = LicenseRuntimeConfiguration.resolvedServerURL(
+            bundledValue: "http://localhost:8787",
+            allowsRuntimeOverrides: false,
+            environment: [:],
+            userDefaultsValue: nil
+        )
+        guard invalidBundledQA.absoluteString == productionURL else {
+            throw Failure("release builds must reject bundled HTTP servers and fall back to production")
         }
     }
 
