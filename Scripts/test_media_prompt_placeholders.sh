@@ -39,6 +39,23 @@ require_pattern "$APP_STATE" 'failedCount' "Migration failures must be logged wi
 require_pattern "$PROMPT_VIEW" 'hasAvailablePrimaryAsset' "Thumbnail prefetch and native image cards must require an available file."
 require_pattern "$APP_STATE" 'appendingPathComponent\("\\\(UUID\(\)\.uuidString\)-\\\(baseName\)\.md"\)' "Text prompts must persist a real Markdown primary asset."
 
+PREVIEW_SELECTED="$({
+    /usr/bin/awk '
+        /func previewSelected\(\)/ { capture = 1 }
+        capture { print }
+        capture && /^    }$/ { exit }
+    ' "$APP_STATE"
+})"
+if ! /usr/bin/grep -q 'guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike else' <<<"$PREVIEW_SELECTED" \
+    || ! /usr/bin/grep -q 'openEditPromptComposer(for: item)' <<<"$PREVIEW_SELECTED"; then
+    echo "Media placeholders must open the Prompt editor instead of immersive preview." >&2
+    exit 1
+fi
+if /usr/bin/grep -q 'isMediaPromptPlaceholder' <<<"$PREVIEW_SELECTED"; then
+    echo "Media placeholders must not enter immersive preview." >&2
+    exit 1
+fi
+
 if /usr/bin/grep -q 'textPromptFileExtension' "$APP_STATE"; then
     echo "Text prompt primary assets must not vary away from Markdown." >&2
     exit 1

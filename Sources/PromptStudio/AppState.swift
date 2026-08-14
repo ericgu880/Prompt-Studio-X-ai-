@@ -2051,8 +2051,11 @@ final class AppState: ObservableObject {
     func previewSelected() {
         guard let item = selectedItem else { return }
         guard requireFeature(.baseViewPrompt) else { return }
-        guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike || item.isMediaPromptPlaceholder else { return }
         referenceLightbox = nil
+        guard item.hasAvailablePrimaryAsset || item.isTextDocumentLike else {
+            openEditPromptComposer(for: item)
+            return
+        }
         modal = nil
         promptComposerMode = nil
         markdownEditorItemID = nil
