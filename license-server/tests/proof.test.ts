@@ -8,7 +8,7 @@ describe("proof messages", () => {
       licenseCode: "ps 7k4d",
       installIdHash: "install",
       devicePublicKey: "pub",
-      bundleId: "com.promptstudio.app",
+      bundleId: "com.creatigo.promptstudio",
       appVersion: "1.0.0",
       osVersion: "macOS 15.5",
       clientNonce: "nonce",
@@ -19,7 +19,7 @@ describe("proof messages", () => {
       "licenseCodeSha256:aZmwkQchVEemBtWQSYXK96lhBHEM4Twixkb9gZieKPM",
       "installIdHash:install",
       "devicePublicKey:pub",
-      "bundleId:com.promptstudio.app",
+      "bundleId:com.creatigo.promptstudio",
       "appVersion:1.0.0",
       "osVersion:macOS 15.5",
       "clientNonce:nonce",
@@ -32,13 +32,13 @@ describe("proof messages", () => {
       activationId: "act",
       challengeId: "ch",
       nonce: "nonce",
-      bundleId: "com.promptstudio.app"
+      bundleId: "com.creatigo.promptstudio"
     })).toBe([
       "PromptStudio-Device-Proof-v1",
       "activationId:act",
       "challengeId:ch",
       "nonce:nonce",
-      "bundleId:com.promptstudio.app"
+      "bundleId:com.creatigo.promptstudio"
     ].join("\n"));
   });
 });

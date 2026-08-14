@@ -893,7 +893,7 @@ LICENSE_SIGNING_PUBLIC_KEY_SPKI_DER_B64=optional-test-only-spki-der-base64
 LICENSE_SIGNING_KEY_ID=dev-key-1
 LICENSE_CERTIFICATE_ISSUER=promptstudio-license-server
 LICENSE_CERTIFICATE_AUDIENCE=promptstudio-macos
-LICENSE_BUNDLE_ID=com.promptstudio.app
+LICENSE_BUNDLE_ID=com.creatigo.promptstudio
 LICENSE_CERT_DAYS=30
 LICENSE_GRACE_DAYS=14
 LICENSE_REFRESH_AFTER_DAYS=7
@@ -1427,7 +1427,7 @@ PromptStudioTests/LicenseFixtures/license_certificate_valid.txt
 {
   "iss": "promptstudio-license-server",
   "aud": "promptstudio-macos",
-  "bundleId": "com.promptstudio.app",
+  "bundleId": "com.creatigo.promptstudio",
   "licenseId": "lic_...",
   "activationId": "act_...",
   "customerEmailHash": "...",
@@ -1686,7 +1686,7 @@ HTTP 状态码建议：
     "signature": "base64url-ed25519-signature"
   },
   "deviceLabel": "MacBook Pro - macOS 15",
-  "bundleId": "com.promptstudio.app",
+  "bundleId": "com.creatigo.promptstudio",
   "appVersion": "1.0.0",
   "osVersion": "macOS 15.5"
 }

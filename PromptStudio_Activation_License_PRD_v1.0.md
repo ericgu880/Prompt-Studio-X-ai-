@@ -737,7 +737,7 @@ UTF-8
   "version": 1,
   "iss": "promptstudio-license-server",
   "aud": "promptstudio-macos",
-  "bundleId": "com.promptstudio.app",
+  "bundleId": "com.creatigo.promptstudio",
   "kid": "license_signing_key_2026_01",
   "licenseId": "lic_01J...",
   "activationId": "act_01J...",
@@ -1029,7 +1029,7 @@ DATA_ENCRYPTION_KEY_B64
 LICENSE_SIGNING_PRIVATE_KEY_B64
 LICENSE_SIGNING_PUBLIC_KEY_B64
 LICENSE_SIGNING_KEY_ID
-APP_BUNDLE_ID=com.promptstudio.app
+APP_BUNDLE_ID=com.creatigo.promptstudio
 LICENSE_CERT_TTL_DAYS=30
 LICENSE_CERT_GRACE_DAYS=14
 LICENSE_REFRESH_AFTER_DAYS=7

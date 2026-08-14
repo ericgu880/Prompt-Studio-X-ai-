@@ -11,7 +11,7 @@ describe("license certificates", () => {
       {
         iss: "promptstudio-license-server",
         aud: "promptstudio-macos",
-        bundleId: "com.promptstudio.app",
+        bundleId: "com.creatigo.promptstudio",
         licenseId: "lic_test",
         activationId: "act_test",
         customerEmailHash: "email_hash",
