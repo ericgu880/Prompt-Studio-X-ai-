@@ -777,10 +777,13 @@ struct GlobalTextFocusMonitor: NSViewRepresentable {
         return NSView(frame: .zero)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.ownerWindow = nsView.window
+    }
 
     final class Coordinator: @unchecked Sendable {
         private var monitor: Any?
+        weak var ownerWindow: NSWindow?
 
         deinit {
             if let monitor {
@@ -794,8 +797,15 @@ struct GlobalTextFocusMonitor: NSViewRepresentable {
                 let windowNumber = event.windowNumber
                 let locationInWindow = event.locationInWindow
                 MainActor.assumeIsolated {
-                    if AppKitBridge.isTextInputActive(),
-                       !Self.isClickInsideEditableTextInput(windowNumber: windowNumber, locationInWindow: locationInWindow) {
+                    if TextInputFocusPolicy.shouldClearFocus(
+                        isTextInputActive: AppKitBridge.isTextInputActive(),
+                        eventWindowNumber: windowNumber,
+                        ownerWindowNumber: self.ownerWindow?.windowNumber,
+                        clickIsInsideEditableInput: Self.isClickInsideEditableTextInput(
+                            windowNumber: windowNumber,
+                            locationInWindow: locationInWindow
+                        )
+                    ) {
                         clearTextFocus()
                     }
                 }

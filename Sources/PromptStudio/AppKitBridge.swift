@@ -239,15 +239,25 @@ enum AppKitBridge {
 
     @MainActor
     static func isTextInputActive() -> Bool {
-        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-        if let textView = responder as? NSTextView {
-            return textView.isEditable
+        var responder = NSApp.keyWindow?.firstResponder
+        var visited = Set<ObjectIdentifier>()
+        while let current = responder {
+            let identifier = ObjectIdentifier(current)
+            guard visited.insert(identifier).inserted else { return false }
+
+            if let textView = current as? NSTextView, textView.isEditable {
+                return true
+            }
+            if let textField = current as? NSTextField, textField.isEnabled {
+                return true
+            }
+            let responderName = String(describing: type(of: current))
+            if responderName.contains("FieldEditor") || responderName.contains("TextField") {
+                return true
+            }
+            responder = current.nextResponder
         }
-        if responder is NSTextField {
-            return true
-        }
-        let responderName = String(describing: type(of: responder))
-        return responderName.contains("FieldEditor") || responderName.contains("TextField")
+        return false
     }
 
     @MainActor
