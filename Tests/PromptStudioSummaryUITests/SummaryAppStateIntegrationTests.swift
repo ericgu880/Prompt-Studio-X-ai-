@@ -761,7 +761,7 @@ func summarySurfaceRetainsResidentRowsForAppendErrors() {
 }
 
 @MainActor
-@Test("Normal AppState startup observes the real loadItems boundary only for explicit legacy mode")
+@Test("Production AppState startup migrates a legacy repository before its first Summary query")
 func normalAppStateStartupObservesRealLoadItemsBoundary() async throws {
     let libraryURL = URL(fileURLWithPath: "/tmp/PromptStudio-SummaryNormalStartup-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: libraryURL) }
@@ -769,7 +769,13 @@ func normalAppStateStartupObservesRealLoadItemsBoundary() async throws {
     let repository = try PromptRepository(libraryURL: libraryURL)
     try repository.bootstrap()
     try repository.saveFolder(LibraryFolder(id: "folder-startup", name: "Startup"))
-    try repository.saveItem(appStatePromptFixture(id: "item-startup", title: "Startup"))
+    var startupItem = appStatePromptFixture(id: "item-startup", title: "Startup")
+    startupItem.tags = ["startup-tag"]
+    startupItem.favorite = true
+    try repository.saveItem(startupItem)
+    #expect(!repository.tagRelationsReady)
+    #expect(!repository.versionSequenceMigrationReady)
+    #expect(!repository.itemSequenceMigrationReady)
 
     let state = AppState(libraryURL: libraryURL)
     let normalLoadObservation = PromptRepositoryLoadInstrumentation.beginObservation(for: libraryURL)
@@ -779,6 +785,34 @@ func normalAppStateStartupObservesRealLoadItemsBoundary() async throws {
     let normalLegacyDelta = normalLegacyObservation.delta
     #expect(normalLoadDelta == 0)
     #expect(normalLegacyDelta == 0)
+    #expect(repository.tagRelationsReady)
+    #expect(repository.versionSequenceMigrationReady)
+    #expect(repository.itemSequenceMigrationReady)
+    let paginator = try #require(state.summaryPaginator)
+    await waitForSummaryCommit(paginator)
+    #expect(paginator.error == nil)
+    #expect(paginator.summaries.map(\.id) == ["item-startup"])
+    await paginator.replace(query: .favorite(pageSize: 300))
+    #expect(paginator.error == nil)
+    #expect(paginator.summaries.map(\.id) == ["item-startup"])
+    await paginator.replace(query: .tag("startup-tag", pageSize: 300))
+    #expect(paginator.error == nil)
+    #expect(paginator.summaries.map(\.id) == ["item-startup"])
+
+    let backupDirectory = libraryURL.appendingPathComponent("backups", isDirectory: true)
+    let firstLaunchBackups = try FileManager.default.contentsOfDirectory(
+        at: backupDirectory,
+        includingPropertiesForKeys: nil
+    ).map(\.lastPathComponent).sorted()
+    await state.startLibraryLoadForTesting(repository: repository)
+    let secondLaunchBackups = try FileManager.default.contentsOfDirectory(
+        at: backupDirectory,
+        includingPropertiesForKeys: nil
+    ).map(\.lastPathComponent).sorted()
+    #expect(secondLaunchBackups == firstLaunchBackups)
+    #expect(repository.tagRelationsReady)
+    #expect(repository.versionSequenceMigrationReady)
+    #expect(repository.itemSequenceMigrationReady)
 
     let explicitLoadObservation = PromptRepositoryLoadInstrumentation.beginObservation(for: libraryURL)
     let explicitLegacyObservation = SummaryStartupBoundaryInstrumentation.beginObservation(for: libraryURL)
@@ -795,6 +829,95 @@ func normalAppStateStartupObservesRealLoadItemsBoundary() async throws {
         let data = try JSONSerialization.data(withJSONObject: metrics, options: [.sortedKeys])
         try data.write(to: URL(fileURLWithPath: metricsPath), options: .atomic)
     }
+    await state.stopLibraryBackgroundWorkForTesting()
+}
+
+@MainActor
+@Test("Production startup resumes an interrupted migration and coalesces concurrent launches")
+func productionStartupResumesInterruptedMigrationAndCoalescesLaunches() async throws {
+    let libraryURL = URL(fileURLWithPath: "/tmp/PromptStudio-SummaryInterruptedStartup-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    try PromptRepository.createLibraryDirectories(at: libraryURL)
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    try repository.bootstrap()
+    try repository.saveFolder(LibraryFolder(id: "folder-interrupted", name: "Interrupted"))
+    for index in 0..<4 {
+        try repository.saveItem(appStatePromptFixture(id: "item-interrupted-\(index)", title: "Item \(index)"))
+    }
+
+    _ = try repository.prepareVersionSequenceMigration()
+    let partial = try repository.runVersionSequenceMigration(batchSize: 1, maxBatches: 1)
+    #expect(!partial.completed)
+    #expect(!repository.versionSequenceMigrationReady)
+    #expect(!repository.itemSequenceMigrationReady)
+
+    let secondRepository = try PromptRepository(libraryURL: libraryURL)
+    let firstState = AppState(libraryURL: libraryURL)
+    let secondState = AppState(libraryURL: libraryURL)
+    async let firstLaunch: Void = firstState.startLibraryLoadForTesting(repository: repository)
+    async let secondLaunch: Void = secondState.startLibraryLoadForTesting(repository: secondRepository)
+    _ = await (firstLaunch, secondLaunch)
+
+    #expect(repository.tagRelationsReady)
+    #expect(repository.versionSequenceMigrationReady)
+    #expect(repository.itemSequenceMigrationReady)
+    #expect(firstState.isLibraryReady)
+    #expect(secondState.isLibraryReady)
+    let firstPaginator = try #require(firstState.summaryPaginator)
+    let secondPaginator = try #require(secondState.summaryPaginator)
+    await waitForSummaryCommit(firstPaginator)
+    await waitForSummaryCommit(secondPaginator)
+    #expect(firstPaginator.error == nil)
+    #expect(secondPaginator.error == nil)
+    let expectedIDs = Set((0..<4).map { "item-interrupted-\($0)" })
+    #expect(Set(firstPaginator.summaries.map(\.id)) == expectedIDs)
+    #expect(Set(secondPaginator.summaries.map(\.id)) == expectedIDs)
+
+    let backups = try FileManager.default.contentsOfDirectory(
+        at: libraryURL.appendingPathComponent("backups", isDirectory: true),
+        includingPropertiesForKeys: nil
+    ).map(\.lastPathComponent)
+    #expect(backups.filter { $0.hasPrefix("promptstudio-tag-relations-") && $0.hasSuffix(".sqlite") }.count == 1)
+    #expect(backups.filter { $0.hasPrefix("promptstudio-version-sequence-") && $0.hasSuffix(".sqlite") }.count == 1)
+    #expect(backups.filter { $0.hasPrefix("promptstudio-item-sequence-") && $0.hasSuffix(".sqlite") }.count == 1)
+    await firstState.stopLibraryBackgroundWorkForTesting()
+    await secondState.stopLibraryBackgroundWorkForTesting()
+}
+
+@MainActor
+@Test("Production startup Retry reruns migration orchestration after a transient failure")
+func productionStartupRetryRerunsMigrationOrchestration() async throws {
+    let libraryURL = URL(fileURLWithPath: "/tmp/PromptStudio-SummaryMigrationRetry-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    try PromptRepository.createLibraryDirectories(at: libraryURL)
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    try repository.bootstrap()
+    try repository.saveFolder(LibraryFolder(id: "folder-retry", name: "Retry"))
+    try repository.saveItem(appStatePromptFixture(id: "item-retry", title: "Retry"))
+
+    let backupsURL = libraryURL.appendingPathComponent("backups", isDirectory: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: backupsURL.path)
+    let state = AppState(libraryURL: libraryURL)
+    await state.startLibraryLoadForTesting(repository: repository)
+    guard case .failed = state.libraryAccessState else {
+        Issue.record("A migration backup failure should keep the library in its retryable load-error state")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: backupsURL.path)
+        return
+    }
+    #expect(state.summaryPaginator == nil)
+    #expect(!repository.tagRelationsReady)
+    #expect(!repository.versionSequenceMigrationReady)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: backupsURL.path)
+    await state.startLibraryLoadForTesting(repository: repository)
+    #expect(state.isLibraryReady)
+    #expect(repository.tagRelationsReady)
+    #expect(repository.versionSequenceMigrationReady)
+    #expect(repository.itemSequenceMigrationReady)
+    let paginator = try #require(state.summaryPaginator)
+    await waitForSummaryCommit(paginator)
+    #expect(paginator.error == nil)
+    #expect(paginator.summaries.map(\.id) == ["item-retry"])
     await state.stopLibraryBackgroundWorkForTesting()
 }
 

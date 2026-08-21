@@ -2796,7 +2796,7 @@ private struct ModelTabsView: View {
         case .assetKind(let assetKindFilter, _):
             state.filter.assetKindFilter == assetKindFilter
         case .tag(let tag):
-            state.filter.requiredTag == tag
+            state.filter.collection == .tag(tag)
         }
     }
 
@@ -3060,7 +3060,7 @@ private struct CompactFilterChip: View {
                 case .assetKind(let assetKindFilter, _):
                     state.setAssetKindFilter(assetKindFilter)
                 case .tag(let tag):
-                    state.setRequiredTag(tag)
+                    state.setCollection(.tag(tag))
                 }
             }
         } label: {
@@ -7701,7 +7701,7 @@ private struct LibraryAccessRecoveryView: View {
     private var title: String {
         switch state.libraryAccessState {
         case .loading:
-            "正在加载资料库"
+            "正在准备资料库…"
         case .needsAuthorization(let reason, _):
             reason.title
         case .missing:
@@ -7720,7 +7720,7 @@ private struct LibraryAccessRecoveryView: View {
     private var message: String {
         switch state.libraryAccessState {
         case .loading:
-            "正在检查本地数据库和素材目录。"
+            "正在检查并准备本地数据库和素材目录。"
         case .needsAuthorization(let reason, _):
             reason.message
         case .missing:

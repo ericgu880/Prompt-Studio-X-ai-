@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIGRATION_FILE="$ROOT_DIR/Sources/PromptStudioCore/TagRelationMigration.swift"
 APP_STATE_FILE="$ROOT_DIR/Sources/PromptStudio/AppState.swift"
+STARTUP_COORDINATOR_FILE="$ROOT_DIR/Sources/PromptStudio/SummaryStartupMigrationCoordinator.swift"
 REPOSITORY_FILE="$ROOT_DIR/Sources/PromptStudioCore/PromptRepository.swift"
+
+test -f "$STARTUP_COORDINATOR_FILE"
 
 gate_body="$(awk '
     /var tagRelationsReady: Bool/ { capture = 1 }
@@ -18,8 +21,20 @@ if grep -Eq 'integrity_check|foreign_key_check|SELECT[[:space:]]+\*[^;]*prompt_i
     exit 1
 fi
 
+startup_coordinator_body="$(awk '
+    /actor SummaryStartupMigrationCoordinator/ { capture = 1 }
+    capture { print }
+' "$STARTUP_COORDINATOR_FILE")"
+
+for required in 'Task.detached' 'prepareTagRelationMigration' 'runTagRelationBackfill' 'validateTagRelationConsistency'; do
+    if ! grep -q "$required" <<<"$startup_coordinator_body"; then
+        echo "Summary startup coordinator must run the complete tag migration off MainActor: missing $required" >&2
+        exit 1
+    fi
+done
+
 if grep -Eq 'validateTagRelationConsistency|tagRelationStructureIsValid|prepareTagRelationMigration|runTagRelationBackfill' "$APP_STATE_FILE"; then
-    echo "AppState startup must not invoke migration or deep tag validation" >&2
+    echo "MainActor AppState methods must delegate tag migration to the background startup coordinator" >&2
     exit 1
 fi
 
@@ -45,4 +60,4 @@ if grep -Eq 'loadItems(ByID)?\(|loadVersions\(' <(awk '
     exit 1
 fi
 
-echo "tag relation readiness gate is lightweight and startup-safe"
+echo "tag relation readiness gate is lightweight and background-startup-safe"

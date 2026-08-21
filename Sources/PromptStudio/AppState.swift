@@ -766,9 +766,16 @@ final class AppState: ObservableObject {
             guard let self else { return }
             do {
                 let context = try makeContext()
+                let repository = context.repository
+                try await SummaryStartupMigrationCoordinator.shared.prepare(repository: repository)
+                guard generation == self.loadGeneration, !Task.isCancelled else { return }
                 let data = try self.loadRepositoryData(repository: context.repository, includeLegacyItems: false)
                 guard generation == self.loadGeneration, !Task.isCancelled else { return }
-                await self.installLibraryContext(context, data: data)
+                await self.installLibraryContext(
+                    context,
+                    data: data,
+                    expectedLoadGeneration: generation
+                )
             } catch let error as LibraryLoadError {
                 guard generation == self.loadGeneration, !Task.isCancelled else { return }
                 self.handleLibraryLoadError(error)
@@ -863,8 +870,15 @@ final class AppState: ObservableObject {
         return nil
     }
 
-    private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) async {
+    private func installLibraryContext(
+        _ context: AuthorizedLibraryContext,
+        data: LoadedLibraryData,
+        expectedLoadGeneration: Int? = nil
+    ) async {
         await stopLibraryBackgroundWork()
+        if let expectedLoadGeneration {
+            guard expectedLoadGeneration == loadGeneration, !Task.isCancelled else { return }
+        }
         libraryGeneration &+= 1
         let thumbnailOwner = ThumbnailLibraryOwnerToken(
             generation: libraryGeneration,
