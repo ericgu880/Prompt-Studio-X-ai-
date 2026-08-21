@@ -288,18 +288,28 @@ final class AppState: ObservableObject {
     }
 
     let licenseManager = LicenseManager()
+    let libraryFilterController = LibraryFilterController()
+    let libraryStatisticsCache = LibraryStatisticsCache()
+    let thumbnailUpdateState = ThumbnailUpdateState()
+    let importProgressState = ImportProgressState()
 
     @Published var items: [PromptItem] = [] {
         didSet {
             rebuildItemLookup()
-            refreshFilteredItems()
+            handleItemsChanged(from: oldValue)
         }
     }
     @Published var tags: [Tag] = []
     @Published var models: [ModelProfile] = SeedData.models
-    @Published var folders: [LibraryFolder] = []
+    @Published var folders: [LibraryFolder] = [] {
+        didSet {
+            masonryDatasetRevision.folderRevision &+= 1
+            libraryStatisticsCache.recomputeFolderHierarchy(folders)
+        }
+    }
     @Published var filter = PromptFilter() {
         didSet {
+            libraryFilterController.setDraftWithoutSubmitting(filter.query)
             if !isBatchingFilterUpdate {
                 refreshFilteredItems()
             }
@@ -362,7 +372,8 @@ final class AppState: ObservableObject {
     @Published var modal: Modal?
     @Published var toast: String?
     @Published var isListView = false
-    @Published var isImporting = false
+    var importProgress: MediaImportProgress? { importProgressState.progress }
+    var importFailures: [MediaImportFailure] { importProgressState.failures }
     @Published var isPreviewPresented = false
     @Published var referenceLightbox: ReferenceAsset?
     @Published var promptComposerMode: PromptComposerMode?
@@ -390,6 +401,12 @@ final class AppState: ObservableObject {
         authorizedLibraryContext?.repository
     }
     private var itemsByID: [String: PromptItem] = [:]
+    private var itemIndexByID: [String: Int] = [:]
+    private var libraryFilterSnapshot: LibraryFilterSnapshot?
+    private var filterTask: Task<Void, Never>?
+    private var filterSnapshotTask: Task<Void, Never>?
+    private var filterGeneration: UInt64 = 0
+    private var thumbnailPathBatcher: ThumbnailPathBatcher?
     private var pendingLastUsedTask: Task<Void, Never>?
     private var libraryLoadTask: Task<Void, Never>?
     private var loadGeneration = 0
@@ -399,6 +416,10 @@ final class AppState: ObservableObject {
     private var referenceThumbnailService: ReferenceThumbnailService?
     private var referenceThumbnailBackfillTask: Task<Void, Never>?
     private var referenceThumbnailPriorityTask: Task<Void, Never>?
+    private var mediaImportService: MediaImportService?
+    private var mediaImportTask: Task<Void, Never>?
+    private var importStatusDismissTask: Task<Void, Never>?
+    private var mediaImportSessionID: UUID?
     private var inspectorSelectionStartedAt: [String: Double] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private var isBatchingFilterUpdate = false
@@ -406,14 +427,23 @@ final class AppState: ObservableObject {
     private var navigationForwardStack: [NavigationSnapshot] = []
     private var lastExternalOpenSignature: String?
     private var lastExternalOpenAt: Date?
+    private(set) var masonryDatasetRevision = MasonryDatasetRevision()
 
     var libraryURL: URL {
         authorizedLibraryContext?.url ?? configuredLibraryURL
     }
 
+    var isImporting: Bool {
+        mediaImportTask != nil
+    }
+
     init(libraryURL: URL = PromptRepository.defaultLibraryURL()) {
         self.configuredLibraryURL = libraryURL
         self.libraryAccessCoordinator = LibraryAccessCoordinator(defaultURL: libraryURL)
+        libraryFilterController.configure(initialQuery: "") { [weak self] query in
+            guard let self, self.filter.query != query else { return }
+            self.filter.query = query
+        }
         licenseManager.objectWillChange
             .sink { [weak self] _ in
                 Task { @MainActor in
@@ -442,15 +472,15 @@ final class AppState: ObservableObject {
     var masonryLayoutItems: [PromptItem] { filteredItems }
 
     var trashCount: Int {
-        items.filter(\.isDeleted).count
+        libraryStatisticsCache.statistics.trashCount
     }
 
     var favoriteCount: Int {
-        items.filter { $0.favorite && !$0.isDeleted }.count
+        libraryStatisticsCache.statistics.favoriteCount
     }
 
     var recentCount: Int {
-        items.filter { !$0.isDeleted && Self.hasRecentUse($0) }.count
+        libraryStatisticsCache.statistics.recentCount
     }
 
     var isLibraryReady: Bool {
@@ -591,6 +621,10 @@ final class AppState: ObservableObject {
     }
 
     func reconnectExistingLibrary() {
+        guard !isImporting else {
+            showToast("请等待当前导入完成")
+            return
+        }
         let defaultURL = libraryAccessState.lastKnownURL ?? libraryAccessCoordinator.preferredPanelURL
         guard let panelURL = AppKitBridge.chooseExistingLibraryDirectory(defaultURL: defaultURL) else { return }
         startLibraryLoad { [libraryAccessCoordinator] in
@@ -708,6 +742,16 @@ final class AppState: ObservableObject {
                 Self.recordReferenceThumbnailProbe(event)
             }
         )
+        let repository = context.repository
+        thumbnailPathBatcher = ThumbnailPathBatcher { [weak self] updates in
+            try await Task.detached(priority: .utility) {
+                try repository.updateThumbnailPaths(updates)
+            }.value
+            await MainActor.run {
+                self?.commitThumbnailPaths(updates)
+            }
+        }
+        mediaImportService = Self.makeMediaImportService(libraryURL: context.url)
         models = data.models
         folders = data.folders
         expandedFolderIDs = Set(data.folders.map(\.id))
@@ -726,8 +770,7 @@ final class AppState: ObservableObject {
                 isSandboxed: libraryAccessCoordinator.isSandboxed
             )
         )
-        prepareMissingThumbnails()
-        scheduleReferenceThumbnailBackfill()
+        libraryStatisticsCache.invalidate(repository: context.repository, folders: data.folders)
     }
 
     private func stopLibraryBackgroundWork() {
@@ -742,6 +785,24 @@ final class AppState: ObservableObject {
         referenceThumbnailPriorityTask = nil
         referenceThumbnailService?.cancelPendingRequests()
         referenceThumbnailService = nil
+        mediaImportTask?.cancel()
+        mediaImportTask = nil
+        mediaImportService = nil
+        importStatusDismissTask?.cancel()
+        importStatusDismissTask = nil
+        mediaImportSessionID = nil
+        importProgressState.reset()
+        filterTask?.cancel()
+        filterTask = nil
+        filterSnapshotTask?.cancel()
+        filterSnapshotTask = nil
+        libraryFilterController.cancel()
+        libraryStatisticsCache.cancel()
+        if let thumbnailPathBatcher {
+            Task { await thumbnailPathBatcher.cancel() }
+        }
+        thumbnailPathBatcher = nil
+        thumbnailUpdateState.reset()
     }
 
     private func handleLibraryLoadError(_ error: LibraryLoadError) {
@@ -1866,78 +1927,83 @@ final class AppState: ObservableObject {
     }
 
     func importFiles(_ urls: [URL], targetFolderID: String? = nil, acceptedType: PromptType? = nil) {
-        guard let repository else { return }
-        let sourceFiles = expandedImportURLs(urls)
-        guard !sourceFiles.isEmpty else {
+        guard repository != nil else { return }
+        guard mediaImportTask == nil else {
+            showToast("已有导入任务正在进行")
+            return
+        }
+        guard !urls.isEmpty else {
             showToast("未导入素材")
             return
         }
-        guard requireFeature(sourceFiles.count > 1 ? .proBatchImport : .proSingleImport) else { return }
-        isImporting = true
-        defer { isImporting = false }
-        do {
-            var importedIDs: [String] = []
-            var skippedCount = 0
-            var nextSortOrder = nextSortOrderForNewItem() - max(0, sourceFiles.count - 1)
-            let targetFolder = targetFolderID.flatMap(folder(withID:)) ?? currentImportFolder()
-            for url in sourceFiles {
-                let assetKind = AppKitBridge.assetKind(for: url)
-                let type = assetKind.promptType
-                if let acceptedType, !Self.assetKind(assetKind, matches: acceptedType) {
-                    skippedCount += 1
-                    continue
-                }
-                let copied = try repository.copyAssetIntoLibrary(from: url, assetKind: assetKind)
-                let info = AppKitBridge.fileInfo(for: copied, assetKind: assetKind)
-                let parsed = parsedPromptMetadata(for: copied, assetKind: assetKind)
-                let model = defaultModel(for: assetKind)
-                let id = UUID().uuidString
-                let item = PromptItem(
-                    id: id,
-                    title: url.deletingPathExtension().lastPathComponent,
-                    type: type,
-                    assetKind: assetKind,
-                    modelId: model.id,
-                    modelName: model.name,
-                    folderId: targetFolder.id,
-                    folderName: targetFolder.name,
-                    category: assetKind.displayName,
-                    assetPath: copied.path,
-                    aspectRatio: Self.normalizedAspectRatio(width: info.width, height: info.height),
-                    width: info.width,
-                    height: info.height,
-                    format: info.format,
-                    fileSize: info.fileSize,
-                    sortOrder: nextSortOrder,
-                    tags: parsed.tags,
-                    versions: [
-                        PromptVersion(
-                            promptItemId: id,
-                            version: "V1.0",
-                            prompt: parsed.prompt,
-                            negativePrompt: parsed.negativePrompt,
-                            parameters: parsed.parameters,
-                            note: parsed.prompt.isEmpty ? "导入后待完善" : "导入时自动识别"
-                        )
-                    ],
-                    description: "从 Finder 导入 · \(assetKind.displayName)"
-                )
-                nextSortOrder += 1
-                try repository.saveItem(item)
-                importedIDs.append(id)
-            }
-            guard !importedIDs.isEmpty else {
-                showToast(skippedCount > 0 ? "没有符合当前文件夹类型的素材" : "未导入素材")
+
+        let targetFolder = targetFolderID.flatMap(folder(withID:)) ?? currentImportFolder()
+        let mediaImportService = mediaImportService ?? Self.makeMediaImportService(libraryURL: libraryURL)
+        self.mediaImportService = mediaImportService
+        let sessionID = UUID()
+        let totalStartedAt = DebugPerformanceProbe.now()
+        mediaImportSessionID = sessionID
+        importStatusDismissTask?.cancel()
+        importStatusDismissTask = nil
+        importProgressState.update(progress: MediaImportProgress(
+            phase: .scanning,
+            current: 0,
+            total: nil,
+            currentFileName: nil,
+            successCount: 0,
+            failureCount: 0
+        ), failures: [])
+        DebugPerformanceProbe.recordDuration("import.drop_to_status.ms", startedAt: totalStartedAt)
+
+        mediaImportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await Task.yield()
+
+            let scanStartedAt = DebugPerformanceProbe.now()
+            let sourceFiles = await mediaImportService.scan(urls)
+            DebugPerformanceProbe.recordDuration("import.scan.ms", startedAt: scanStartedAt)
+            DebugPerformanceProbe.record("import.file_count", value: Double(sourceFiles.count))
+            guard !Task.isCancelled, self.mediaImportSessionID == sessionID else { return }
+            guard !sourceFiles.isEmpty else {
+                self.finishMediaImportWithoutResult(sessionID: sessionID, message: "未导入素材")
                 return
             }
-            if let firstImportedID = importedIDs.first {
-                reload(selecting: firstImportedID)
-                ensureImportedItemVisible(firstImportedID)
+            guard self.requireFeature(sourceFiles.count > 1 ? .proBatchImport : .proSingleImport) else {
+                self.finishMediaImportWithoutResult(sessionID: sessionID)
+                return
             }
-            prepareMissingThumbnails()
-            showToast(skippedCount > 0 ? "导入完成，已跳过 \(skippedCount) 个不匹配文件" : "导入完成")
-        } catch {
-            modal = .error(error.localizedDescription)
+
+            let firstSortOrder = self.nextSortOrderForNewItem() - max(0, sourceFiles.count - 1)
+            let request = MediaImportRequest(
+                sourceFiles: sourceFiles,
+                targetFolderID: targetFolder.id,
+                targetFolderName: targetFolder.name,
+                acceptedType: acceptedType,
+                firstSortOrder: firstSortOrder,
+                modelsByType: self.mediaImportModels()
+            )
+
+            do {
+                let result = try await mediaImportService.importFiles(request) { progress in
+                    await MainActor.run { [weak self] in
+                        guard let self, self.mediaImportSessionID == sessionID else { return }
+                        self.importProgressState.update(progress: progress)
+                    }
+                }
+                guard !Task.isCancelled, self.mediaImportSessionID == sessionID else { return }
+                DebugPerformanceProbe.record("import.prepare.ms", value: result.metrics.prepareMilliseconds)
+                DebugPerformanceProbe.record("import.persist.ms", value: result.metrics.persistMilliseconds)
+                let applyStartedAt = DebugPerformanceProbe.now()
+                self.applyMediaImportResult(result)
+                DebugPerformanceProbe.recordDuration("import.ui_apply.ms", startedAt: applyStartedAt)
+                DebugPerformanceProbe.recordDuration("import.total.ms", startedAt: totalStartedAt)
+                self.finishMediaImport(result: result, sessionID: sessionID)
+            } catch is CancellationError {
+                self.finishMediaImportWithoutResult(sessionID: sessionID)
+            } catch {
+                self.finishMediaImportWithoutResult(sessionID: sessionID)
+                self.modal = .error(error.localizedDescription)
+            }
         }
     }
 
@@ -2502,6 +2568,10 @@ final class AppState: ObservableObject {
     }
 
     func beginDeleteFolders(_ folderIDs: [String]) {
+        guard !isImporting else {
+            showToast("请等待当前导入完成")
+            return
+        }
         guard requireFeature(.proManageCollections) else { return }
         let normalizedIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
             selectedFolderIDs: folderIDs,
@@ -2683,6 +2753,10 @@ final class AppState: ObservableObject {
     }
 
     func deleteFoldersMovingItemsToTrash(ids: [String]) {
+        guard !isImporting else {
+            showToast("请等待当前导入完成")
+            return
+        }
         guard requireFeature(.proManageCollections) else { return }
         guard let repository else { return }
         do {
@@ -2702,6 +2776,10 @@ final class AppState: ObservableObject {
     }
 
     func importFiles(to folder: LibraryFolder) {
+        guard !isImporting else {
+            showToast("已有导入任务正在进行")
+            return
+        }
         selectFolder(folder)
         let urls = AppKitBridge.chooseImportFiles()
         guard !urls.isEmpty else { return }
@@ -2743,8 +2821,10 @@ final class AppState: ObservableObject {
     }
 
     private func itemCount(in folder: LibraryFolder, includingDescendants: Bool = false) -> Int {
-        let folderIDs = includingDescendants ? descendantFolderIDs(of: folder.id, includingSelf: true) : [folder.id]
-        return items.filter { !$0.isDeleted && folderIDs.contains($0.folderId) }.count
+        if includingDescendants {
+            return libraryStatisticsCache.count(includingDescendants: folder.id)
+        }
+        return libraryStatisticsCache.statistics.folderCounts[folder.id] ?? 0
     }
 
     func saveModelFilterLabel(id: String, name: String, type: PromptType) {
@@ -3000,6 +3080,134 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func mediaImportModels() -> [String: MediaImportModel] {
+        let image = defaultModel(for: .image)
+        let video = defaultModel(for: .video)
+        let audio = defaultModel(for: .audio)
+        let text = defaultModel(for: .text)
+        return [
+            PromptType.image.rawValue: MediaImportModel(id: image.id, name: image.name),
+            PromptType.video.rawValue: MediaImportModel(id: video.id, name: video.name),
+            PromptType.audio.rawValue: MediaImportModel(id: audio.id, name: audio.name),
+            PromptType.text.rawValue: MediaImportModel(id: text.id, name: text.name)
+        ]
+    }
+
+    private static func makeMediaImportService(libraryURL: URL) -> MediaImportService {
+        MediaImportService(
+            libraryURL: libraryURL,
+            maxConcurrentFileTasks: 2,
+            dependencies: MediaImportDependencies(
+                resolveAssetKind: { AppKitBridge.assetKind(for: $0) },
+                inspectFile: { url, assetKind in
+                    let info = AppKitBridge.fileInfo(for: url, assetKind: assetKind)
+                    return MediaImportFileInfo(
+                        width: info.width,
+                        height: info.height,
+                        fileSize: info.fileSize,
+                        format: info.format
+                    )
+                },
+                parsePrompt: { url, assetKind in
+                    let support = AssetFormatCatalog.support(forFileExtension: url.pathExtension)
+                    guard assetKind.isTextDocumentLike || support.canExtractPrompt else {
+                        return ParsedPromptMetadata()
+                    }
+                    guard let text = AppKitBridge.readDocumentText(from: url) ?? Self.readImportTextFile(url) else {
+                        return ParsedPromptMetadata()
+                    }
+                    return PromptImportParser.parse(text: text, assetKind: assetKind)
+                }
+            )
+        )
+    }
+
+    private nonisolated static func readImportTextFile(_ url: URL) -> String? {
+        let maxBytes = 2 * 1024 * 1024
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count <= maxBytes else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(data: data, encoding: .isoLatin1)
+    }
+
+    private func applyMediaImportResult(_ result: MediaImportResult) {
+        guard !result.importedItems.isEmpty else {
+            tags = result.tags
+            return
+        }
+
+        let firstImportedItem = result.importedItems[0]
+        if !itemWouldBeVisibleUnderCurrentFilter(firstImportedItem) {
+            isBatchingFilterUpdate = true
+            filter = PromptFilter()
+            isBatchingFilterUpdate = false
+        }
+
+        items = items + result.importedItems
+        tags = result.tags
+        updateSelection(ids: [firstImportedItem.id], primaryID: firstImportedItem.id)
+        libraryStatisticsCache.invalidate(repository: repository, folders: folders)
+    }
+
+    private func itemWouldBeVisibleUnderCurrentFilter(_ item: PromptItem) -> Bool {
+        if case .folder(let folderID) = filter.collection, item.folderId != folderID {
+            return false
+        }
+        var adjustedFilter = filter
+        adjustedFilter.collection = .all
+        return PromptFiltering.apply([item], filter: adjustedFilter).contains(where: { $0.id == item.id })
+    }
+
+    private func finishMediaImport(result: MediaImportResult, sessionID: UUID) {
+        guard mediaImportSessionID == sessionID else { return }
+        mediaImportTask = nil
+        importProgressState.update(progress: MediaImportProgress(
+            phase: .completed,
+            current: result.importedItems.count + result.failures.count + result.skippedCount,
+            total: result.importedItems.count + result.failures.count + result.skippedCount,
+            currentFileName: nil,
+            successCount: result.importedItems.count,
+            failureCount: result.failures.count
+        ), failures: result.failures)
+
+        if result.failures.isEmpty {
+            if result.importedItems.isEmpty {
+                showToast(result.skippedCount > 0 ? "没有符合当前文件夹类型的素材" : "未导入素材")
+            } else if result.skippedCount > 0 {
+                showToast("导入完成，已跳过 \(result.skippedCount) 个不匹配文件")
+            } else {
+                showToast("已导入 \(result.importedItems.count) 个素材")
+            }
+            importStatusDismissTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, self?.mediaImportSessionID == sessionID else { return }
+                self?.dismissImportStatus()
+            }
+        } else {
+            showToast("成功导入 \(result.importedItems.count) 个，\(result.failures.count) 个失败")
+        }
+    }
+
+    private func finishMediaImportWithoutResult(sessionID: UUID, message: String? = nil) {
+        guard mediaImportSessionID == sessionID else { return }
+        mediaImportTask = nil
+        mediaImportSessionID = nil
+        importProgressState.reset()
+        if let message {
+            showToast(message)
+        }
+    }
+
+    func dismissImportStatus() {
+        guard mediaImportTask == nil else { return }
+        importStatusDismissTask?.cancel()
+        importStatusDismissTask = nil
+        mediaImportSessionID = nil
+        importProgressState.reset()
+    }
+
     private func parsedPromptMetadata(for fileURL: URL, assetKind: AssetKind) -> ParsedPromptMetadata {
         let support = AssetFormatCatalog.support(forFileExtension: fileURL.pathExtension)
         guard assetKind.isTextDocumentLike || support.canExtractPrompt else {
@@ -3128,30 +3336,79 @@ final class AppState: ObservableObject {
             items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
             refreshFilteredItems(selecting: id)
-            scheduleReferenceThumbnailBackfill()
+            libraryStatisticsCache.invalidate(repository: repository, folders: folders)
         } catch {
             modal = .error(error.localizedDescription)
         }
     }
 
-    private func filteredItems(for filter: PromptFilter) -> [PromptItem] {
-        guard case .folder(let folderID) = filter.collection else {
-            return PromptFiltering.apply(items, filter: filter)
-        }
-        // Folder navigation is a single level at a time. Child folders are rendered as
-        // folder cards by `childFolderRowsForCurrentCollection`; their assets should only
-        // appear after the user opens that child folder, not alongside the parent assets.
-        let folderIDs: Set<String> = [folderID]
-        var adjustedFilter = filter
-        adjustedFilter.collection = .all
-        return PromptFiltering.apply(
-            items.filter { folderIDs.contains($0.folderId) },
-            filter: adjustedFilter
-        )
-    }
-
     private func rebuildItemLookup() {
         itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        itemIndexByID = Dictionary(uniqueKeysWithValues: items.indices.map { (items[$0].id, $0) })
+    }
+
+    private func handleItemsChanged(from oldItems: [PromptItem]) {
+        masonryDatasetRevision.dataRevision &+= 1
+
+        let oldByID = Dictionary(uniqueKeysWithValues: oldItems.map { ($0.id, $0) })
+        let removedIDs = Set(oldByID.keys).subtracting(itemsByID.keys)
+        let changedItems = items.filter { oldByID[$0.id] != $0 }
+        let requiresFullBuild = libraryFilterSnapshot == nil
+            || oldItems.isEmpty
+            || filterSnapshotTask != nil
+            || changedItems.count + removedIDs.count > max(1_000, items.count / 3)
+        filterSnapshotTask?.cancel()
+        if requiresFullBuild {
+            let currentItems = items
+            let startedAt = DebugPerformanceProbe.now()
+            filterSnapshotTask = Task { [weak self] in
+                let snapshot = await Task.detached(priority: .userInitiated) {
+                    LibraryFilterSnapshot(items: currentItems)
+                }.value
+                guard !Task.isCancelled, let self else { return }
+                self.libraryFilterSnapshot = snapshot
+                self.filterSnapshotTask = nil
+                DebugPerformanceProbe.recordDuration("filter.snapshot.build.ms", startedAt: startedAt)
+                DebugPerformanceProbe.record("filter.snapshot.item_count", value: Double(snapshot.count))
+                self.refreshFilteredItems()
+            }
+        } else if let snapshot = libraryFilterSnapshot, !changedItems.isEmpty || !removedIDs.isEmpty {
+            filterSnapshotTask = Task { [weak self] in
+                await Task.detached(priority: .utility) {
+                    _ = snapshot.remove(ids: removedIDs)
+                    snapshot.upsert(contentsOf: changedItems)
+                }.value
+                guard !Task.isCancelled, let self else { return }
+                self.filterSnapshotTask = nil
+                DebugPerformanceProbe.record("filter.snapshot.incremental_count", value: Double(changedItems.count + removedIDs.count))
+                self.refreshFilteredItems()
+            }
+        } else {
+            refreshFilteredItems()
+        }
+
+        if statisticsChanged(oldByID: oldByID, changedItems: changedItems, removedIDs: removedIDs) {
+            libraryStatisticsCache.invalidate(repository: repository, folders: folders)
+        }
+    }
+
+    private func statisticsChanged(
+        oldByID: [String: PromptItem],
+        changedItems: [PromptItem],
+        removedIDs: Set<String>
+    ) -> Bool {
+        guard !removedIDs.isEmpty || !changedItems.isEmpty else { return false }
+        if !removedIDs.isEmpty { return true }
+        for item in changedItems {
+            guard let old = oldByID[item.id] else { return true }
+            if old.folderId != item.folderId
+                || old.favorite != item.favorite
+                || old.isDeleted != item.isDeleted
+                || Self.hasRecentUse(old) != Self.hasRecentUse(item) {
+                return true
+            }
+        }
+        return false
     }
 
     private func updateFilterPreservingSelection(_ updates: (inout PromptFilter) -> Void) {
@@ -3195,25 +3452,46 @@ final class AppState: ObservableObject {
         preserveExistingSelection: Bool = true,
         allowEmptySelection: Bool = false
     ) {
-        let start = DebugPerformanceProbe.now()
-        let nextFilteredItems = filteredItems(for: filter)
-        DebugPerformanceProbe.recordDuration("filter.apply.ms", startedAt: start)
-        filteredItems = nextFilteredItems
+        guard let snapshot = libraryFilterSnapshot else { return }
+        filterTask?.cancel()
+        filterGeneration &+= 1
+        let generation = filterGeneration
+        let requestedFilter = filter
+        filterTask = Task { [weak self] in
+            do {
+                let result = try await snapshot.filter(requestedFilter)
+                guard !Task.isCancelled, let self, generation == self.filterGeneration else { return }
+                let nextFilteredItems = result.ids.compactMap { self.itemsByID[$0] }
+                self.libraryFilterController.record(result: result)
+                DebugPerformanceProbe.record("filter.apply.ms", value: result.durationMilliseconds)
+                DebugPerformanceProbe.record("filter.scanned_count", value: Double(result.scannedCount))
+                self.masonryDatasetRevision.queryRevision &+= 1
+                self.filteredItems = nextFilteredItems
 
-        if let requestedID, nextFilteredItems.contains(where: { $0.id == requestedID }) {
-            guard requestedID != selectedID else { return }
-            updateSelection(ids: [requestedID], primaryID: requestedID)
-        } else {
-            let nextSelectedID = PromptSelectionResolver.selectedID(
-                preserving: preserveExistingSelection ? selectedID : nil,
-                in: nextFilteredItems,
-                allowEmptySelection: allowEmptySelection
-            )
-            guard nextSelectedID != selectedID else { return }
-            updateSelection(
-                ids: nextSelectedID.map { Set([$0]) } ?? [],
-                primaryID: nextSelectedID
-            )
+                if let requestedID, self.itemsByID[requestedID] != nil,
+                   result.ids.contains(requestedID) {
+                    if requestedID != self.selectedID {
+                        self.updateSelection(ids: [requestedID], primaryID: requestedID)
+                    }
+                } else {
+                    let nextSelectedID = PromptSelectionResolver.selectedID(
+                        preserving: preserveExistingSelection ? self.selectedID : nil,
+                        in: nextFilteredItems,
+                        allowEmptySelection: allowEmptySelection
+                    )
+                    if nextSelectedID != self.selectedID {
+                        self.updateSelection(
+                            ids: nextSelectedID.map { Set([$0]) } ?? [],
+                            primaryID: nextSelectedID
+                        )
+                    }
+                }
+                self.filterTask = nil
+            } catch is CancellationError {
+                DebugPerformanceProbe.record("filter.cancelled")
+            } catch {
+                self?.filterTask = nil
+            }
         }
     }
 
@@ -3258,42 +3536,6 @@ final class AppState: ObservableObject {
         item.lastUsedAt.timeIntervalSince1970 > 0
     }
 
-    private func prepareMissingThumbnails() {
-        let libraryURL = libraryURL
-        var candidates: [PromptItem] = []
-        var existingGenerated: [(String, String)] = []
-        for item in items {
-            guard item.supportsGeneratedThumbnail, item.hasAvailablePrimaryAsset else { continue }
-            if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {
-                if existingPath != item.thumbnailPath {
-                    existingGenerated.append((item.id, existingPath))
-                }
-                continue
-            }
-            guard !item.isTextDocumentLike else { continue }
-            candidates.append(item)
-        }
-        applyGeneratedThumbnails(existingGenerated)
-        guard !candidates.isEmpty else { return }
-        startThumbnailGeneration(for: candidates)
-    }
-
-    private func scheduleReferenceThumbnailBackfill() {
-        guard let service = referenceThumbnailService else { return }
-        let allReferences = items.flatMap(\.referenceAssets)
-        let imageReferences = allReferences.filter(Self.isImageReferenceAsset)
-        let validIDs = Set(allReferences.map(\.id))
-        referenceThumbnailBackfillTask?.cancel()
-        referenceThumbnailBackfillTask = Task(priority: .utility) { [weak self] in
-            await self?.cleanupOrphanedReferenceThumbnails(
-                service: service,
-                validReferenceIDs: validIDs
-            )
-            guard !Task.isCancelled else { return }
-            await service.prewarm(imageReferences, priority: .utility)
-        }
-    }
-
     private func prioritizeReferenceThumbnails(for item: PromptItem) {
         let imageReferences = item.referenceAssets.filter(Self.isImageReferenceAsset)
         guard let service = referenceThumbnailService, !imageReferences.isEmpty else { return }
@@ -3307,17 +3549,6 @@ final class AppState: ObservableObject {
         let pathExtension = URL(fileURLWithPath: reference.path).pathExtension
         let format = pathExtension.isEmpty ? reference.type : pathExtension
         return AssetFormatCatalog.support(forFileExtension: format).assetKind == .image
-    }
-
-    private func cleanupOrphanedReferenceThumbnails(
-        service: ReferenceThumbnailService,
-        validReferenceIDs: Set<String>
-    ) async {
-        do {
-            _ = try await service.cleanupOrphans(keeping: validReferenceIDs)
-        } catch {
-            DebugPerformanceProbe.record("reference.thumbnail.cleanup.failure")
-        }
     }
 
     private nonisolated static func recordReferenceThumbnailProbe(_ event: ReferenceThumbnailService.ProbeEvent) {
@@ -3335,38 +3566,36 @@ final class AppState: ObservableObject {
 
     private func applyGeneratedThumbnails(_ generated: [(String, String)]) {
         guard !generated.isEmpty else { return }
-        var updatedItems = items
-        var changed = false
-        for (itemID, path) in generated {
+        let updates = Dictionary(generated, uniquingKeysWith: { _, latest in latest })
+        guard let thumbnailPathBatcher else { return }
+        Task { [weak self] in
             do {
-                try repository?.updateThumbnailPath(itemID: itemID, thumbnailPath: path)
-                if let index = updatedItems.firstIndex(where: { $0.id == itemID }) {
-                    updatedItems[index].thumbnailPath = path
-                    changed = true
-                }
+                _ = try await thumbnailPathBatcher.enqueue(updates)
             } catch {
-                showToast("缩略图更新失败")
+                await MainActor.run { self?.showToast("缩略图更新失败") }
             }
         }
-        if changed {
-            items = updatedItems
+    }
+
+    private func commitThumbnailPaths(_ updates: [String: String]) {
+        guard !updates.isEmpty else { return }
+        for (itemID, path) in updates {
+            guard var item = itemsByID[itemID] else { continue }
+            item.thumbnailPath = path
+            itemsByID[itemID] = item
         }
+        thumbnailUpdateState.apply(updates)
+        DebugPerformanceProbe.record("thumbnail.persist.batch_size", value: Double(updates.count))
+    }
+
+    func thumbnailPathOverride(for itemID: String) -> String? {
+        thumbnailUpdateState.path(for: itemID)
     }
 
     private func invalidateAndRegenerateTextThumbnail(for item: PromptItem) {
         guard item.isTextDocumentLike else { return }
         ThumbnailService.invalidateGeneratedThumbnail(for: item, libraryURL: libraryURL)
-        do {
-            try repository?.updateThumbnailPath(itemID: item.id, thumbnailPath: item.assetPath)
-        } catch {
-            showToast("缩略图刷新失败")
-        }
-
-        var updatedItems = items
-        if let index = updatedItems.firstIndex(where: { $0.id == item.id }) {
-            updatedItems[index].thumbnailPath = item.assetPath
-            items = updatedItems
-        }
+        applyGeneratedThumbnails([(item.id, item.assetPath)])
 
         let candidate = itemsByID[item.id] ?? item
         startThumbnailGeneration(for: [candidate])
@@ -3378,11 +3607,14 @@ final class AppState: ObservableObject {
         var existingGenerated: [(String, String)] = []
 
         for itemID in itemIDs {
-            guard let item = itemsByID[itemID],
+            guard var item = itemsByID[itemID],
                   item.supportsGeneratedThumbnail,
                   item.hasAvailablePrimaryAsset,
                   !item.isTextDocumentLike else {
                 continue
+            }
+            if let override = thumbnailUpdateState.path(for: itemID) {
+                item.thumbnailPath = override
             }
 
             if let existingPath = ThumbnailService.existingThumbnailPath(for: item, libraryURL: libraryURL) {

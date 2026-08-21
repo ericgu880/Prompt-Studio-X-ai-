@@ -27,14 +27,14 @@ require_pattern "$PREVIEW_FILE" 'reference.thumbnail.placeholder' \
     "Reference thumbnails must record placeholder rendering without blocking selection."
 require_pattern "$SIDE_PANEL_FILE" 'mode: usesPersistentThumbnail ? .thumbnail(libraryURL: libraryURL) : .original' \
     "The side-panel reference section must render persistent thumbnails, never original images."
-require_pattern "$STATE_FILE" 'scheduleReferenceThumbnailBackfill' \
-    "Existing reference assets must receive a low-priority thumbnail backfill after library load."
+if /usr/bin/grep -Fq 'scheduleReferenceThumbnailBackfill' "$STATE_FILE"; then
+    echo "Library load must not prewarm every historical reference thumbnail." >&2
+    exit 1
+fi
 require_pattern "$STATE_FILE" 'prioritizeReferenceThumbnails' \
     "Selecting an item must prioritize only that item's reference thumbnails."
 require_pattern "$STATE_FILE" 'filter(Self.isImageReferenceAsset)' \
     "Video, audio, and document references must stay on format placeholders instead of entering the image thumbnail queue."
-require_pattern "$STATE_FILE" 'cleanupOrphanedReferenceThumbnails' \
-    "Startup maintenance must clean thumbnail files whose reference IDs no longer exist."
 require_pattern "$STATE_FILE" 'recordInspectorReady' \
     "Selection-to-inspector readiness must be measured independently from image decoding."
 require_pattern "$SERVICE_FILE" 'let preparation = await Task.detached' \

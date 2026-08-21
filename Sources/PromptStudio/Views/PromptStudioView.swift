@@ -18,6 +18,7 @@ private extension UTType {
 }
 
 private let promptStudioDragTextPrefix = "promptstudio-item-ids:"
+private let promptStudioFolderDragTextPrefix = "promptstudio-folder-ids:"
 
 private func promptStudioDragText(itemIDs: [String]) -> String? {
     guard let data = try? PromptItemDragPayload(itemIDs: itemIDs).encoded() else { return nil }
@@ -32,6 +33,19 @@ private func promptStudioItemIDs(fromDragText text: String) -> [String]? {
     guard let data = Data(base64Encoded: encoded),
           let payload = try? PromptItemDragPayload.decode(data) else { return nil }
     return payload.itemIDs
+}
+
+private func promptStudioFolderDragText(folderIDs: [String]) -> String? {
+    guard let data = try? FolderDragPayload(folderIDs: folderIDs).encoded() else { return nil }
+    return promptStudioFolderDragTextPrefix + data.base64EncodedString()
+}
+
+private func promptStudioFolderIDs(fromDragText text: String) -> [String]? {
+    guard text.hasPrefix(promptStudioFolderDragTextPrefix) else { return nil }
+    let encoded = String(text.dropFirst(promptStudioFolderDragTextPrefix.count))
+    guard let data = Data(base64Encoded: encoded),
+          let payload = try? FolderDragPayload.decode(data) else { return nil }
+    return payload.folderIDs
 }
 
 private func promptStudioPasteboardItem(itemIDs: [String]) -> NSPasteboardItem? {
@@ -52,9 +66,11 @@ private func promptStudioVisualPasteboardItem(itemID: String) -> NSPasteboardIte
 
 private func promptStudioFolderPasteboardItem(folderIDs: [String]) -> NSPasteboardItem? {
     let payload = FolderDragPayload(folderIDs: folderIDs)
-    guard let data = try? payload.encoded() else { return nil }
+    guard let data = try? payload.encoded(),
+          let dragText = promptStudioFolderDragText(folderIDs: payload.folderIDs) else { return nil }
     let item = NSPasteboardItem()
     item.setData(data, forType: .promptStudioFolderIDs)
+    item.setString(dragText, forType: .string)
     return item
 }
 
@@ -226,6 +242,11 @@ struct PromptStudioView: View {
                 }
             }
             .background(StudioColor.appBackground)
+
+            BatchImportProgressOverlay(
+                state: state.importProgressState,
+                onDismiss: state.dismissImportStatus
+            )
 
             if state.isPreviewPresented, let item = state.selectedItem {
                 GeometryReader { proxy in
@@ -1042,14 +1063,14 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
         }
 
         override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-            guard fileURLs(from: sender).isEmpty == false else { return [] }
+            guard canReadFileURLs(from: sender) else { return [] }
             let acceptsDrop = isInsideDropBounds(sender)
             onTargetChange(acceptsDrop)
             return acceptsDrop ? .copy : []
         }
 
         override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-            guard fileURLs(from: sender).isEmpty == false else { return [] }
+            guard canReadFileURLs(from: sender) else { return [] }
             let acceptsDrop = isInsideDropBounds(sender)
             onTargetChange(acceptsDrop)
             return acceptsDrop ? .copy : []
@@ -1081,6 +1102,11 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
             return sender.draggingPasteboard
                 .readObjects(forClasses: [NSURL.self], options: options)?
                 .compactMap { ($0 as? URL) ?? ($0 as? NSURL)?.absoluteURL } ?? []
+        }
+
+        private func canReadFileURLs(from sender: NSDraggingInfo) -> Bool {
+            let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+            return sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: options)
         }
     }
 }
@@ -1166,9 +1192,10 @@ private struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     sidebarSection(nil) {
                         VStack(alignment: .leading, spacing: 4) {
-                            SidebarRow(icon: "rectangle.stack", title: "全部", countText: sidebarCountText(allCount), collection: .all)
-                            SidebarRow(icon: "clock", title: "最近使用", countText: sidebarCountText(state.recentCount), collection: .recent)
-                            SidebarRow(icon: "trash", title: "回收站", countText: sidebarCountText(state.trashCount), collection: .trash)
+                            SidebarLibraryCounts(
+                                cache: state.libraryStatisticsCache,
+                                isLibraryReady: state.isLibraryReady
+                            )
                         }
                         Text("文件夹")
                             .font(StudioFont.caption(11))
@@ -1177,7 +1204,7 @@ private struct SidebarView: View {
                             .padding(.leading, 10)
                             .padding(.top, 8)
                             .padding(.bottom, -4)
-                        FolderTreeView()
+                        FolderTreeView(statisticsCache: state.libraryStatisticsCache)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -1270,14 +1297,6 @@ private struct SidebarView: View {
         .padding(.horizontal, 18)
     }
 
-    private var allCount: Int {
-        state.items.filter { !$0.isDeleted }.count
-    }
-
-    private func sidebarCountText(_ count: Int) -> String {
-        state.isLibraryReady ? "\(count)" : "—"
-    }
-
     @ViewBuilder
     private func sidebarSection<Content: View>(_ title: String?, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1289,6 +1308,21 @@ private struct SidebarView: View {
             }
             content()
         }
+    }
+}
+
+private struct SidebarLibraryCounts: View {
+    @ObservedObject var cache: LibraryStatisticsCache
+    let isLibraryReady: Bool
+
+    var body: some View {
+        SidebarRow(icon: "rectangle.stack", title: "全部", countText: text(cache.statistics.activeCount), collection: .all)
+        SidebarRow(icon: "clock", title: "最近使用", countText: text(cache.statistics.recentCount), collection: .recent)
+        SidebarRow(icon: "trash", title: "回收站", countText: text(cache.statistics.trashCount), collection: .trash)
+    }
+
+    private func text(_ count: Int) -> String {
+        isLibraryReady ? "\(count)" : "—"
     }
 }
 
@@ -1429,6 +1463,7 @@ private final class SidebarScrollDocumentView: NSView {
 
 private struct FolderTreeView: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject var statisticsCache: LibraryStatisticsCache
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var orderOverrides: [String: Int] = [:]
     @State private var rowFrames: [String: CGRect] = [:]
@@ -1865,10 +1900,15 @@ private struct FolderTreeRowView: View {
 
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
             provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let text = object as? String,
-                      let itemIDs = promptStudioItemIDs(fromDragText: text) else { return }
-                Task { @MainActor in
-                    state.moveItems(itemIDs, toFolderID: row.folder.id)
+                guard let text = object as? String else { return }
+                if let folderIDs = promptStudioFolderIDs(fromDragText: text) {
+                    Task { @MainActor in
+                        state.moveFolders(folderIDs, toParentID: row.folder.id)
+                    }
+                } else if let itemIDs = promptStudioItemIDs(fromDragText: text) {
+                    Task { @MainActor in
+                        state.moveItems(itemIDs, toFolderID: row.folder.id)
+                    }
                 }
             }
         return true
@@ -2045,10 +2085,15 @@ private struct SidebarRow: View {
                 $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
             }) else { return false }
             provider.loadObject(ofClass: NSString.self) { object, _ in
-                guard let text = object as? String,
-                      let itemIDs = promptStudioItemIDs(fromDragText: text) else { return }
-                Task { @MainActor in
-                    state.moveItems(itemIDs, toFolderID: dropFolderID)
+                guard let text = object as? String else { return }
+                if let folderIDs = promptStudioFolderIDs(fromDragText: text) {
+                    Task { @MainActor in
+                        state.moveFolders(folderIDs, toParentID: dropFolderID)
+                    }
+                } else if let itemIDs = promptStudioItemIDs(fromDragText: text) {
+                    Task { @MainActor in
+                        state.moveItems(itemIDs, toFolderID: dropFolderID)
+                    }
                 }
             }
             return true
@@ -2159,6 +2204,8 @@ private struct MainContentView: View {
                         MasonryCollectionGridView(
                             folders: childFolders,
                             items: state.filteredItems,
+                            datasetRevision: state.masonryDatasetRevision,
+                            thumbnailUpdateState: state.thumbnailUpdateState,
                             isSplitResizing: isSplitResizing,
                             onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
                         )
@@ -2217,25 +2264,11 @@ private struct TopToolbarView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(StudioColor.secondaryText)
-            SearchInputField(text: Binding(
-                get: { state.filter.query },
-                set: { state.filter.query = $0 }
-            ), placeholder: "全能搜索：名称、提示词、分类、标签、描述", isFocused: $searchFocused)
-            .frame(height: 22)
-
-            if !state.filter.query.isEmpty {
-                Button {
-                    state.filter.query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(StudioFont.symbol(14, weight: .medium))
-                        .foregroundStyle(searchHovered || searchFocused ? StudioColor.secondaryText : StudioColor.mutedText)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("清空搜索")
-            }
+            DebouncedLibrarySearchField(
+                controller: state.libraryFilterController,
+                isFocused: $searchFocused,
+                isHighlighted: searchHovered || searchFocused
+            )
         }
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity)
@@ -2253,10 +2286,44 @@ private struct TopToolbarView: View {
     }
 }
 
+private struct DebouncedLibrarySearchField: View {
+    @ObservedObject var controller: LibraryFilterController
+    @Binding var isFocused: Bool
+    let isHighlighted: Bool
+
+    var body: some View {
+        SearchInputField(
+            text: Binding(
+                get: { controller.draftQuery },
+                set: { controller.submitDraft($0) }
+            ),
+            placeholder: "全能搜索：名称、提示词、分类、标签、描述",
+            isFocused: $isFocused,
+            onCommit: { controller.submitImmediately(controller.draftQuery) }
+        )
+        .frame(height: 22)
+
+        if !controller.draftQuery.isEmpty {
+            Button {
+                controller.submitImmediately("")
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(StudioFont.symbol(14, weight: .medium))
+                    .foregroundStyle(isHighlighted ? StudioColor.secondaryText : StudioColor.mutedText)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("清空搜索")
+        }
+    }
+}
+
 private struct SearchInputField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     @Binding var isFocused: Bool
+    let onCommit: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2321,6 +2388,16 @@ private struct SearchInputField: NSViewRepresentable {
             guard let textField = notification.object as? NSTextField else { return }
             parent.text = textField.stringValue
             setWhiteInsertionPoint(for: textField)
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            parent.onCommit()
+            return true
         }
 
         private func setWhiteInsertionPoint(for object: Any?) {
@@ -2835,6 +2912,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
     @AppStorage("promptStudio.thumbnailScale") private var thumbnailScale = 1.0
     let folders: [AppState.FolderRow]
     let items: [PromptItem]
+    let datasetRevision: MasonryDatasetRevision
+    @ObservedObject var thumbnailUpdateState: ThumbnailUpdateState
     let isSplitResizing: Bool
     let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
 
@@ -2905,6 +2984,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         context.coordinator.update(
             folders: folders,
             items: items,
+            datasetRevision: datasetRevision,
+            thumbnailUpdateState: thumbnailUpdateState,
             state: state,
             thumbnailScale: thumbnailScale,
             isSplitResizing: isSplitResizing,
@@ -2963,6 +3044,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         private struct PendingDatasetUpdate {
             let folders: [AppState.FolderRow]
             let items: [PromptItem]
+            let datasetRevision: MasonryDatasetRevision
             let thumbnailScale: Double
             let scrollView: NSScrollView
         }
@@ -3019,6 +3101,8 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
         func update(
             folders: [AppState.FolderRow],
             items: [PromptItem],
+            datasetRevision: MasonryDatasetRevision,
+            thumbnailUpdateState: ThumbnailUpdateState,
             state: AppState,
             thumbnailScale: Double,
             isSplitResizing: Bool,
@@ -3031,6 +3115,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             currentThumbnailScale = thumbnailScale
             self.isSplitResizing = isSplitResizing
             observeBounds(of: scrollView)
+            applyThumbnailUpdates(from: thumbnailUpdateState)
 
             guard !isSplitResizing else {
                 pendingDatasetUpdate = nil
@@ -3044,8 +3129,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             lastAvailableWidthBucket = widthBucket
             let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: currentThumbnailScale)
             let layoutInputKey = LayoutInputKey(
-                folders: folders,
-                items: items,
+                datasetRevision: datasetRevision,
                 widthBucket: widthBucket,
                 columnCount: columnCount,
                 thumbnailScaleBucket: Int((thumbnailScale * 100).rounded())
@@ -3060,6 +3144,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             pendingDatasetUpdate = PendingDatasetUpdate(
                 folders: folders,
                 items: items,
+                datasetRevision: datasetRevision,
                 thumbnailScale: thumbnailScale,
                 scrollView: scrollView
             )
@@ -3092,8 +3177,7 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
             let columnCount = Self.columnCount(for: availableWidth, thumbnailScale: update.thumbnailScale)
             let nextItemWidth = Self.itemWidth(for: availableWidth, columnCount: columnCount)
             let layoutInputKey = LayoutInputKey(
-                folders: update.folders,
-                items: update.items,
+                datasetRevision: update.datasetRevision,
                 widthBucket: widthBucket,
                 columnCount: columnCount,
                 thumbnailScaleBucket: Int((update.thumbnailScale * 100).rounded())
@@ -3160,6 +3244,30 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
                 collectionView.reloadData()
                 collectionView.layoutSubtreeIfNeeded()
                 CATransaction.commit()
+            }
+        }
+
+        private func applyThumbnailUpdates(from thumbnailState: ThumbnailUpdateState) {
+            guard let collectionView else { return }
+            let changedIDs = thumbnailState.consumeChangedItemIDs()
+            guard !changedIDs.isEmpty else { return }
+            var indexPaths = Set<IndexPath>()
+            for itemID in changedIDs {
+                guard let indexPath = itemIndexPathsByID[itemID],
+                      entries.indices.contains(indexPath.item),
+                      case .item(var item) = entries[indexPath.item],
+                      let path = thumbnailState.path(for: itemID) else {
+                    continue
+                }
+                item.thumbnailPath = path
+                entries[indexPath.item] = .item(item)
+                indexPaths.insert(indexPath)
+            }
+            guard !indexPaths.isEmpty else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                collectionView.reloadItems(at: indexPaths)
             }
         }
 
@@ -3883,75 +3991,41 @@ private struct MasonryCollectionGridView: NSViewRepresentable {
     }
 
     private struct LayoutInputKey: Equatable {
-        let folderKeys: [FolderKey]
-        let itemKeys: [ItemKey]
+        let datasetRevision: MasonryDatasetRevision
         let widthBucket: Int
         let columnCount: Int
         let thumbnailScaleBucket: Int
 
         init(
-            folders: [AppState.FolderRow],
-            items: [PromptItem],
+            datasetRevision: MasonryDatasetRevision,
             widthBucket: Int,
             columnCount: Int,
             thumbnailScaleBucket: Int
         ) {
-            folderKeys = folders.map(FolderKey.init)
-            itemKeys = items.map(ItemKey.init)
+            self.datasetRevision = datasetRevision
             self.widthBucket = widthBucket
             self.columnCount = columnCount
             self.thumbnailScaleBucket = thumbnailScaleBucket
         }
 
-        struct FolderKey: Equatable {
-            let id: String
-            let name: String
-            let count: Int
-
-            init(row: AppState.FolderRow) {
-                id = row.id
-                name = row.folder.name
-                count = row.count
-            }
-        }
-
-        struct ItemKey: Equatable {
-            let id: String
-            let title: String
-            let thumbnailPath: String
-            let updatedAt: TimeInterval
-            let assetKind: AssetKind
-            let previewMode: AssetPreviewMode
-            let width: Int
-            let height: Int
-            let aspectRatio: String
-
-            init(item: PromptItem) {
-                id = item.id
-                title = item.title
-                thumbnailPath = item.thumbnailPath
-                updatedAt = item.updatedAt.timeIntervalSinceReferenceDate
-                assetKind = item.assetKind
-                previewMode = item.previewMode
-                width = item.width
-                height = item.height
-                aspectRatio = item.displayAspectRatio
-            }
-        }
     }
 }
 
 private final class MasonryCollectionLayout: NSCollectionViewLayout {
     private let itemSpacing: CGFloat = 12
     private var attributesByIndexPath: [IndexPath: NSCollectionViewLayoutAttributes] = [:]
-    private var visibleIndexPaths: [(IndexPath, CGRect)] = []
+    private struct IndexedAttribute {
+        let indexPath: IndexPath
+        let attributes: NSCollectionViewLayoutAttributes
+    }
+    private var visibleAttributeIndex = MasonryVisibleAttributeIndex<IndexedAttribute>()
     private var contentSize: CGSize = .zero
     private(set) var visualItemIDs: [String] = []
     private(set) var visualFolderIDs: [String] = []
 
     func configure(entries: [MasonryGridEntry], columnCount: Int, itemWidth: CGFloat) {
         attributesByIndexPath = [:]
-        visibleIndexPaths = []
+        visibleAttributeIndex.reset(columnCount: columnCount)
         visualItemIDs = []
         visualFolderIDs = []
         guard columnCount > 0 else {
@@ -3975,7 +4049,12 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
             let attributes = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
             attributes.frame = frame
             attributesByIndexPath[indexPath] = attributes
-            visibleIndexPaths.append((indexPath, frame))
+            visibleAttributeIndex.append(
+                IndexedAttribute(indexPath: indexPath, attributes: attributes),
+                frame: frame,
+                order: index,
+                toColumn: column
+            )
             placements.append((entry, frame))
             columnHeights[column] += height + itemSpacing
         }
@@ -4015,9 +4094,7 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 
     override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
-        visibleIndexPaths.compactMap { indexPath, frame in
-            frame.intersects(rect) ? attributesByIndexPath[indexPath] : nil
-        }
+        visibleAttributeIndex.entriesIntersecting(rect).map(\.value.attributes)
     }
 
     override func layoutAttributesForItem(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes? {
@@ -4025,9 +4102,7 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 
     func indexPathsForItems(in rect: CGRect) -> [IndexPath] {
-        visibleIndexPaths.compactMap { indexPath, frame in
-            frame.intersects(rect) ? indexPath : nil
-        }
+        visibleAttributeIndex.entriesIntersecting(rect).map(\.value.indexPath)
     }
 
     private func shortestColumnIndex(in heights: [CGFloat]) -> Int {
@@ -4042,12 +4117,22 @@ private final class MasonryCollectionLayout: NSCollectionViewLayout {
     }
 }
 
+@MainActor
+private final class FolderDropTargetState: ObservableObject {
+    @Published var isTargeted = false
+
+    func reset() {
+        isTargeted = false
+    }
+}
+
 private final class MasonryCollectionItem: NSCollectionViewItem {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("MasonryCollectionItem")
     private var hostingView: LazyAssetContextMenuHostingView?
     private var markdownCardView: NativeMarkdownCardView?
     private var imageCardView: NativeImageCardView?
     private var selectionChromeView: NativeAssetSelectionChromeView?
+    private let folderDropTargetState = FolderDropTargetState()
 
     override func loadView() {
         view = NSView()
@@ -4059,6 +4144,11 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             "transform": NSNull(),
             "opacity": NSNull()
         ]
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        folderDropTargetState.reset()
     }
 
     func dragPreviewImage() -> NSImage {
@@ -4095,6 +4185,7 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
         actionContext: @escaping (String) -> PromptItemSelectionActionContext,
         beginDrag: @escaping (String, NSEvent, NSView, NSImage) -> Void
     ) {
+        folderDropTargetState.reset()
         let height = entry.totalHeight(width: width)
         view.frame.size = CGSize(width: width, height: height)
 
@@ -4214,9 +4305,8 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
                     row: row,
                     width: width,
                     isSelected: selectedFolderIDs.contains(row.id),
-                    onSelect: { modifiers in selectFolder(row.id, modifiers) },
-                    actionContext: { folderActionContext(row.id) },
-                    beginDrag: { event, sourceView in beginFolderDrag(row.id, event, sourceView) }
+                    dropTargetState: folderDropTargetState,
+                    onSelect: { modifiers in selectFolder(row.id, modifiers) }
                 )
                 .environmentObject(state)
                 .frame(width: width, height: height)
@@ -4270,6 +4360,40 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
             self.hostingView = hostingView
         }
 
+        if case .folder(let row) = entry {
+            hostingView?.configureFolderDrag(
+                folderID: row.id,
+                selectAction: { modifiers in selectFolder(row.id, modifiers) },
+                openAction: {
+                    selectFolder(row.id, [])
+                    state.selectFolder(row.folder)
+                },
+                contextAction: {
+                    let context = folderActionContext(row.id)
+                    state.selectFolders(ids: Set(context.orderedFolderIDs), primaryID: row.folder.id)
+                },
+                beginDrag: { folderID, event, sourceView in
+                    beginFolderDrag(folderID, event, sourceView)
+                },
+                onDropFolders: { folderIDs in
+                    state.moveFolders(folderIDs, toParentID: row.id)
+                },
+                onDropItems: { itemIDs in
+                    state.moveItems(itemIDs, toFolderID: row.id)
+                },
+                canDropFolders: { folderIDs in
+                    (try? FolderBatchMovePlanner.plan(
+                        allFolders: state.folders,
+                        sourceFolderIDs: folderIDs,
+                        targetParentID: row.id
+                    )) != nil
+                },
+                onDropTargeted: { [folderDropTargetState] isTargeted in
+                    folderDropTargetState.isTargeted = isTargeted
+                }
+            )
+        }
+
         if let item = entry.promptItem {
             let selectionChrome: NativeAssetSelectionChromeView
             if let selectionChromeView {
@@ -4298,7 +4422,16 @@ private final class MasonryCollectionItem: NSCollectionViewItem {
 private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     private weak var state: AppState?
     private var item: PromptItem?
+    private var folderDragID: String?
     private var selectAction: ((NSEvent.ModifierFlags) -> Void)?
+    private var folderSelectAction: ((NSEvent.ModifierFlags) -> Void)?
+    private var folderOpenAction: (() -> Void)?
+    private var folderContextAction: (() -> Void)?
+    private var beginFolderDrag: ((String, NSEvent, NSView) -> Void)?
+    private var onDropFolders: (([String]) -> Void)?
+    private var onDropItems: (([String]) -> Void)?
+    private var canDropFolders: (([String]) -> Bool)?
+    private var onDropTargeted: ((Bool) -> Void)?
     private var menuTargets: [NativeMarkdownMenuActionTarget] = []
     private var dragStartLocation: NSPoint?
     private var hasStartedDragging = false
@@ -4318,19 +4451,85 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
         self.actionContext = actionContext
         self.beginDrag = beginDrag
         self.selectAction = selectAction
+        folderDragID = nil
+        folderSelectAction = nil
+        folderOpenAction = nil
+        folderContextAction = nil
+        beginFolderDrag = nil
+        onDropFolders = nil
+        onDropItems = nil
+        canDropFolders = nil
+        onDropTargeted = nil
         menuTargets = []
     }
 
+    func configureFolderDrag(
+        folderID: String,
+        selectAction: @escaping (NSEvent.ModifierFlags) -> Void,
+        openAction: @escaping () -> Void,
+        contextAction: @escaping () -> Void,
+        beginDrag: @escaping (String, NSEvent, NSView) -> Void,
+        onDropFolders: @escaping ([String]) -> Void,
+        onDropItems: @escaping ([String]) -> Void,
+        canDropFolders: @escaping ([String]) -> Bool,
+        onDropTargeted: @escaping (Bool) -> Void
+    ) {
+        item = nil
+        folderDragID = folderID
+        folderSelectAction = selectAction
+        folderOpenAction = openAction
+        folderContextAction = contextAction
+        beginFolderDrag = beginDrag
+        self.onDropFolders = onDropFolders
+        self.onDropItems = onDropItems
+        self.canDropFolders = canDropFolders
+        self.onDropTargeted = onDropTargeted
+        registerForDraggedTypes([.promptStudioFolderIDs, .promptStudioItemIDs])
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard item != nil else {
+        guard bounds.contains(point) else { return nil }
+        if folderDragID != nil, folderOpenButtonRect.contains(point) {
             return super.hitTest(point)
         }
-        return bounds.contains(point) ? self : nil
+        guard item != nil || folderDragID != nil else {
+            return super.hitTest(point)
+        }
+        return self
+    }
+
+    private var folderOpenButtonRect: NSRect {
+        let buttonSize: CGFloat = 28
+        let trailingInset = AssetCardMetrics.selectionOutset + 14
+        let bottomInset = AssetCardMetrics.selectionOutset + 12
+        let y = isFlipped
+            ? bounds.maxY - bottomInset - buttonSize
+            : bounds.minY + bottomInset
+        return NSRect(
+            x: bounds.maxX - trailingInset - buttonSize,
+            y: y,
+            width: buttonSize,
+            height: buttonSize
+        ).insetBy(dx: -3, dy: -3)
     }
 
     override func mouseDown(with event: NSEvent) {
         dragStartLocation = event.locationInWindow
         hasStartedDragging = false
+        if let folderDragID {
+            if event.clickCount >= 2 {
+                folderOpenAction?()
+            } else {
+                let modifiers = event.modifierFlags.intersection([.command, .shift])
+                let context = state?.folderSelectionActionContext(clickedFolderID: folderDragID)
+                let isSelected = context?.orderedFolderIDs.contains(folderDragID) == true
+                collapseSelectionOnMouseUp = modifiers.isEmpty && isSelected && (context?.orderedFolderIDs.count ?? 0) > 1
+                if !collapseSelectionOnMouseUp {
+                    folderSelectAction?(modifiers)
+                }
+            }
+            return
+        }
         guard let item, let state else { return }
         if event.clickCount >= 2 {
             selectAction?([])
@@ -4346,6 +4545,16 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let folderDragID {
+            guard !hasStartedDragging, let dragStartLocation else { return }
+            let deltaX = event.locationInWindow.x - dragStartLocation.x
+            let deltaY = event.locationInWindow.y - dragStartLocation.y
+            guard hypot(deltaX, deltaY) >= 6 else { return }
+            collapseSelectionOnMouseUp = false
+            hasStartedDragging = true
+            beginFolderDrag?(folderDragID, event, self)
+            return
+        }
         guard !hasStartedDragging,
               let item,
               !item.isDeleted,
@@ -4363,7 +4572,11 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
 
     override func mouseUp(with event: NSEvent) {
         if collapseSelectionOnMouseUp && !hasStartedDragging {
-            selectAction?([])
+            if folderDragID != nil {
+                folderSelectAction?([])
+            } else {
+                selectAction?([])
+            }
         }
         collapseSelectionOnMouseUp = false
         dragStartLocation = nil
@@ -4378,6 +4591,10 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        if folderDragID != nil {
+            folderContextAction?()
+            return super.menu(for: event)
+        }
         guard let item, let state else { return nil }
         let context = actionContext?(item.id)
             ?? PromptItemSelectionActionContext(orderedItemIDs: [item.id], primaryID: item.id)
@@ -4450,6 +4667,58 @@ private final class LazyAssetContextMenuHostingView: NSHostingView<AnyView> {
             addMenuItem(title, symbolName: "trash", to: menu) { state.moveItemsToTrash(actionItemIDs) }
         }
         return menu
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard folderDragID != nil else { return [] }
+        let operation = dropOperation(for: sender)
+        onDropTargeted?(operation == .move)
+        return operation
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let operation = dropOperation(for: sender)
+        onDropTargeted?(operation == .move)
+        return operation
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { onDropTargeted?(false) }
+        guard folderDragID != nil else { return false }
+        let pasteboard = sender.draggingPasteboard
+        if let data = pasteboard.data(forType: .promptStudioFolderIDs),
+           let payload = try? FolderDragPayload.decode(data),
+           canDropFolders?(payload.folderIDs) == true {
+            onDropFolders?(payload.folderIDs)
+            return true
+        }
+        if let data = pasteboard.data(forType: .promptStudioItemIDs),
+           let payload = try? PromptItemDragPayload.decode(data) {
+            onDropItems?(payload.itemIDs)
+            return true
+        }
+        return false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDropTargeted?(false)
+    }
+
+    private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        guard folderDragID != nil else { return [] }
+        let pasteboard = sender.draggingPasteboard
+        if let data = pasteboard.data(forType: .promptStudioFolderIDs),
+           let payload = try? FolderDragPayload.decode(data) {
+            return canDropFolders?(payload.folderIDs) == true ? .move : []
+        }
+        if pasteboard.data(forType: .promptStudioItemIDs) != nil {
+            return .move
+        }
+        return []
     }
 
     private func addMoveToFolderMenu(item: PromptItem, state: AppState, itemIDs: [String], to menu: NSMenu) {
@@ -5795,14 +6064,8 @@ private struct MasonryGridView: View {
             row: folder,
             width: width,
             isSelected: state.selectedFolderIDs.contains(folder.id),
-            onSelect: { _ in state.selectFolderForPreview(folder.folder) },
-            actionContext: {
-                state.folderSelectionActionContext(
-                    clickedFolderID: folder.id,
-                    visualFolderIDs: visualFolderIDs
-                )
-            },
-            beginDrag: { _, _ in }
+            dropTargetState: FolderDropTargetState(),
+            onSelect: { _ in state.selectFolderForPreview(folder.folder) }
         )
         .offset(x: placement.x, y: placement.y)
         .zIndex(state.selectedFolderIDs.contains(folder.id) ? 1 : 0)
@@ -6337,17 +6600,17 @@ private enum SubfolderCardMetrics {
 
 private struct SubfolderCardView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let row: AppState.FolderRow
     let width: CGFloat
     let isSelected: Bool
+    @ObservedObject var dropTargetState: FolderDropTargetState
     let onSelect: (NSEvent.ModifierFlags) -> Void
-    let actionContext: () -> FolderSelectionActionContext
-    let beginDrag: (NSEvent, NSView) -> Void
-    @State private var isDropTargeted = false
 
     var body: some View {
         let contentWidth = SubfolderCardMetrics.contentWidth(for: width)
         let height = SubfolderCardMetrics.contentHeight(for: contentWidth)
+        let isDropTargeted = dropTargetState.isTargeted
         ZStack(alignment: .bottomTrailing) {
             HStack(spacing: 16) {
                 folderCover(height: height)
@@ -6374,7 +6637,7 @@ private struct SubfolderCardView: View {
             .padding(.leading, 8)
             .padding(.trailing, 14)
             .frame(width: contentWidth, height: height)
-            .background(StudioColor.panel)
+            .background(isDropTargeted ? StudioColor.primaryAction.opacity(0.16) : StudioColor.panel)
             .clipShape(RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: SubfolderCardMetrics.cornerRadius, style: .continuous)
@@ -6391,25 +6654,6 @@ private struct SubfolderCardView: View {
                     .allowsHitTesting(false)
                 }
             }
-
-            ImmediateFolderClickCapture(
-                isSelected: isSelected,
-                selectedCount: actionContext().orderedFolderIDs.count,
-                onSingleClick: onSelect,
-                onDoubleClick: {
-                    onSelect([])
-                    state.selectFolder(row.folder)
-                },
-                onContextClick: {
-                    let context = actionContext()
-                    state.selectFolders(ids: Set(context.orderedFolderIDs), primaryID: row.folder.id)
-                },
-                onBeginDrag: beginDrag,
-                onDropFolders: { folderIDs in state.moveFolders(folderIDs, toParentID: row.folder.id) },
-                onDropItems: { itemIDs in state.moveItems(itemIDs, toFolderID: row.folder.id) },
-                onDropTargeted: { isDropTargeted = $0 }
-            )
-            .frame(width: contentWidth, height: height)
 
             Button {
                 onSelect([])
@@ -6433,9 +6677,11 @@ private struct SubfolderCardView: View {
         .padding(AssetCardMetrics.selectionOutset)
         .frame(width: width, height: height + AssetCardMetrics.selectionOutset * 2)
         .overlay(
-            RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous)
-                .strokeBorder(
-                    isDropTargeted ? StudioColor.primaryAction : (isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear),
+                RoundedRectangle(cornerRadius: SubfolderCardMetrics.selectionCornerRadius, style: .continuous)
+                    .strokeBorder(
+                    isDropTargeted
+                        ? StudioColor.primaryAction.opacity(0.76)
+                        : (isSelected ? StudioColor.primaryAction.opacity(0.72) : Color.clear),
                     lineWidth: isDropTargeted ? 2 : 1.5
                 )
         )
@@ -6445,6 +6691,7 @@ private struct SubfolderCardView: View {
                 state.beginRenameFolder(row.folder)
             }
         }
+        .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isDropTargeted)
         .accessibilityLabel("进入文件夹 \(row.folder.name)，\(row.count) 个文件")
     }
 

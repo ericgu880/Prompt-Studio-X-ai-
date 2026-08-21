@@ -349,6 +349,22 @@ public struct PromptVersion: Codable, Identifiable, Equatable, Sendable {
     public var parameters: [String: String]
     public var note: String
     public var createdAt: Date
+    /// Durable ordering metadata populated after the version-sequence
+    /// migration. These fields are intentionally omitted from Codable payloads
+    /// so existing export/import JSON remains byte-compatible.
+    public var versionSequence: Int64?
+    public var versionCreatedAtSortKey: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case promptItemId
+        case version
+        case prompt
+        case negativePrompt
+        case parameters
+        case note
+        case createdAt
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -358,7 +374,9 @@ public struct PromptVersion: Codable, Identifiable, Equatable, Sendable {
         negativePrompt: String = "",
         parameters: [String: String] = [:],
         note: String = "",
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        versionSequence: Int64? = nil,
+        versionCreatedAtSortKey: Int64? = nil
     ) {
         self.id = id
         self.promptItemId = promptItemId
@@ -368,6 +386,8 @@ public struct PromptVersion: Codable, Identifiable, Equatable, Sendable {
         self.parameters = parameters
         self.note = note
         self.createdAt = createdAt
+        self.versionSequence = versionSequence
+        self.versionCreatedAtSortKey = versionCreatedAtSortKey
     }
 }
 
@@ -409,6 +429,12 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     public var updatedAt: Date
     public var lastUsedAt: Date
     public var sortOrder: Int
+    /// Persisted item-order metadata exposed to in-memory filtering/shadows
+    /// after the item-sequence migration.  Legacy rows remain nil so their
+    /// pre-ready observation ordering is unchanged.
+    public var itemSequence: Int64?
+    public var itemCreatedAtSortKey: Int64?
+    public var itemLastUsedAtSortKey: Int64?
     public var tags: [String]
     public var referenceAssets: [ReferenceAsset]
     public var versions: [PromptVersion]
@@ -440,6 +466,9 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         updatedAt: Date = Date(),
         lastUsedAt: Date = Date(timeIntervalSince1970: 0),
         sortOrder: Int = 0,
+        itemSequence: Int64? = nil,
+        itemCreatedAtSortKey: Int64? = nil,
+        itemLastUsedAtSortKey: Int64? = nil,
         tags: [String] = [],
         referenceAssets: [ReferenceAsset] = [],
         versions: [PromptVersion] = [],
@@ -483,6 +512,9 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.lastUsedAt = lastUsedAt
         self.sortOrder = sortOrder
+        self.itemSequence = itemSequence
+        self.itemCreatedAtSortKey = itemCreatedAtSortKey
+        self.itemLastUsedAtSortKey = itemLastUsedAtSortKey
         self.tags = tags
         self.referenceAssets = referenceAssets
         self.versions = versions
@@ -492,7 +524,34 @@ public struct PromptItem: Codable, Identifiable, Equatable, Sendable {
     }
 
     public var currentVersion: PromptVersion? {
-        versions.sorted { $0.createdAt < $1.createdAt }.last
+        if versions.contains(where: { $0.versionSequence != nil || $0.versionCreatedAtSortKey != nil }) {
+            return versions.max { lhs, rhs in
+                let leftDate = lhs.versionCreatedAtSortKey ?? Self.dateSortKey(lhs.createdAt)
+                let rightDate = rhs.versionCreatedAtSortKey ?? Self.dateSortKey(rhs.createdAt)
+                if leftDate != rightDate { return leftDate < rightDate }
+                switch (lhs.versionSequence, rhs.versionSequence) {
+                case let (left?, right?):
+                    return left < right
+                case (nil, _?):
+                    return true
+                case (_?, nil):
+                    return false
+                default:
+                    return lhs.createdAt < rhs.createdAt
+                }
+            }
+        }
+        return versions.sorted { $0.createdAt < $1.createdAt }.last
+    }
+
+    private static func dateSortKey(_ date: Date) -> Int64 {
+        let value = (date.timeIntervalSince1970 * 1_000_000).rounded()
+        guard value.isFinite,
+              value >= Double(Int64.min),
+              value <= Double(Int64.max) else {
+            return value.sign == .minus ? Int64.min : Int64.max
+        }
+        return Int64(value)
     }
 
     public var isTextDocumentLike: Bool {
@@ -906,16 +965,30 @@ public enum PromptFiltering {
         .sorted { lhs, rhs in
             switch filter.collection {
             case .recent:
-                if lhs.lastUsedAt != rhs.lastUsedAt {
+                if let lhsKey = lhs.itemLastUsedAtSortKey, let rhsKey = rhs.itemLastUsedAtSortKey {
+                    if lhsKey != rhsKey { return lhsKey > rhsKey }
+                } else if lhs.lastUsedAt != rhs.lastUsedAt {
                     return lhs.lastUsedAt > rhs.lastUsedAt
                 }
-                return lhs.createdAt > rhs.createdAt
+                if let lhsKey = lhs.itemCreatedAtSortKey, let rhsKey = rhs.itemCreatedAtSortKey {
+                    if lhsKey != rhsKey { return lhsKey > rhsKey }
+                } else if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
             default:
                 if lhs.sortOrder != rhs.sortOrder {
                     return lhs.sortOrder < rhs.sortOrder
                 }
-                return lhs.createdAt > rhs.createdAt
+                if let lhsKey = lhs.itemCreatedAtSortKey, let rhsKey = rhs.itemCreatedAtSortKey {
+                    if lhsKey != rhsKey { return lhsKey > rhsKey }
+                } else if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
             }
+            if let lhsSequence = lhs.itemSequence, let rhsSequence = rhs.itemSequence, lhsSequence != rhsSequence {
+                return lhsSequence < rhsSequence
+            }
+            return false
         }
     }
 }

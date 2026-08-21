@@ -184,6 +184,25 @@ final class LibraryAccessCoordinator {
     }
 
     func loadInitialContext() throws -> AuthorizedLibraryContext {
+#if DEBUG
+        if let performanceLibraryPath = ProcessInfo.processInfo.environment["PROMPTSTUDIO_PERFORMANCE_TEST_LIBRARY"],
+           !performanceLibraryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let performanceURL = URL(fileURLWithPath: performanceLibraryPath).standardizedFileURL
+            guard performanceURL.pathComponents.contains("PromptStudio Performance Fixtures"),
+                  performanceURL.lastPathComponent.hasPrefix("library-15000-") else {
+                throw LibraryLoadError.invalidLibrary(
+                    performanceURL,
+                    "性能测试只允许使用 PromptStudio Performance Fixtures 下的隔离资料库副本。"
+                )
+            }
+            try PromptRepository.validateExistingLibrary(at: performanceURL)
+            return AuthorizedLibraryContext(
+                url: performanceURL,
+                session: nil,
+                repository: try PromptRepository(libraryURL: performanceURL)
+            )
+        }
+#endif
         if let bookmarkData = bookmarkStore.bookmarkData {
             return try loadContext(fromBookmarkData: bookmarkData, saveOnSuccess: true)
         }

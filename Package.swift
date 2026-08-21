@@ -13,7 +13,11 @@ let package = Package(
         .executable(name: "PromptStudioMCP", targets: ["PromptStudioMCP"]),
         .executable(name: "PromptStudioCoreUnitTests", targets: ["PromptStudioCoreUnitTests"]),
         .executable(name: "PromptStudioSmokeTests", targets: ["PromptStudioSmokeTests"]),
-        .executable(name: "PromptStudioCaptureHost", targets: ["PromptStudioCaptureHost"])
+        .executable(name: "PromptStudioCaptureHost", targets: ["PromptStudioCaptureHost"]),
+        .executable(name: "PromptStudioLibraryQueryBenchmark", targets: ["PromptStudioLibraryQueryBenchmark"]),
+        .executable(name: "PromptStudioTagRelationBenchmark", targets: ["PromptStudioTagRelationBenchmark"]),
+        .executable(name: "PromptStudioLibraryDetailBenchmark", targets: ["PromptStudioLibraryDetailBenchmark"]),
+        .executable(name: "PromptStudioPhase2A4Benchmark", targets: ["PromptStudioPhase2A4Benchmark"])
     ],
     dependencies: [
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.6.0")
@@ -57,6 +61,22 @@ let package = Package(
         .executableTarget(
             name: "PromptStudioCaptureHost",
             path: "Sources/PromptStudioCaptureHost"
+        ),
+        .executableTarget(
+            name: "PromptStudioLibraryQueryBenchmark",
+            dependencies: ["PromptStudioCore"]
+        ),
+        .executableTarget(
+            name: "PromptStudioTagRelationBenchmark",
+            dependencies: ["PromptStudioCore"]
+        ),
+        .executableTarget(
+            name: "PromptStudioLibraryDetailBenchmark",
+            dependencies: ["PromptStudioCore"]
+        ),
+        .executableTarget(
+            name: "PromptStudioPhase2A4Benchmark",
+            dependencies: ["PromptStudioCore"]
         ),
         .testTarget(
             name: "PromptStudioCoreTests",

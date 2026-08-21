@@ -84,8 +84,14 @@ public struct PromptPlaceholderMigrationResult: Equatable, Sendable {
 public final class PromptRepository: @unchecked Sendable {
     public let libraryURL: URL
     public let databaseURL: URL
-    private let database: SQLiteDatabase
+    public let itemDetailInvalidationHub: ItemDetailInvalidationHub
+    public let libraryDataRevision: LibraryDataRevision
+    let database: SQLiteDatabase
     private let captureInsertLock = NSLock()
+    private let itemDetailServiceLock = NSLock()
+    private let legacyObservationClock: ItemSequenceObservationClock
+    private var itemDetailServiceValue: PromptItemDetailService?
+    private var migrationLeaseID: UUID?
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -99,12 +105,82 @@ public final class PromptRepository: @unchecked Sendable {
         return decoder
     }()
 
-    public init(libraryURL: URL) throws {
+    public convenience init(
+        libraryURL: URL,
+        libraryDataRevision: LibraryDataRevision? = nil,
+        itemDetailInvalidationHub: ItemDetailInvalidationHub? = nil,
+        legacyObservationClock: ItemSequenceObservationClock? = nil
+    ) throws {
+        try self.init(
+            libraryURL: libraryURL,
+            libraryDataRevision: libraryDataRevision,
+            itemDetailInvalidationHub: itemDetailInvalidationHub,
+            registerMigrationLease: true,
+            legacyObservationClock: legacyObservationClock
+        )
+    }
+
+    // Internal designated initializer used only by the closed-library
+    // migration rollback path.  It deliberately skips the repository lease
+    // because the coordinator's exclusive reservation already proves that
+    // no repository handle is active while the restore runs.
+    init(
+        libraryURL: URL,
+        libraryDataRevision: LibraryDataRevision?,
+        itemDetailInvalidationHub: ItemDetailInvalidationHub?,
+        registerMigrationLease: Bool,
+        legacyObservationClock: ItemSequenceObservationClock? = nil
+    ) throws {
         self.libraryURL = libraryURL
         self.databaseURL = libraryURL.appendingPathComponent("database/promptstudio.sqlite")
-        try Self.createLibraryDirectories(at: libraryURL)
-        self.database = try SQLiteDatabase(path: databaseURL.path)
-        try bootstrap()
+        let hub = itemDetailInvalidationHub
+            ?? ItemDetailInvalidationHub.shared(for: libraryURL, revision: libraryDataRevision)
+        self.itemDetailInvalidationHub = hub
+        self.libraryDataRevision = hub.revision
+        self.legacyObservationClock = legacyObservationClock ?? ItemSequenceObservationClock()
+        // Acquire the process-wide lease before touching the database.  This
+        // closes the reservation/init window used by whole-file rollback: a
+        // new repository cannot open, bootstrap, or write the live file while
+        // rollback owns the path reservation.  Failed initialization releases
+        // the preflight lease before propagating the original error.
+        let preflightLease = registerMigrationLease
+            ? try PromptRepositoryMigrationCoordinator.shared.register(path: databaseURL.path)
+            : nil
+        do {
+            try Self.createLibraryDirectories(at: libraryURL)
+            self.database = try SQLiteDatabase(path: databaseURL.path)
+            try bootstrap()
+        } catch {
+            if let preflightLease {
+                PromptRepositoryMigrationCoordinator.shared.unregister(path: databaseURL.path, lease: preflightLease)
+            }
+            throw error
+        }
+        self.migrationLeaseID = preflightLease
+    }
+
+    deinit {
+        if let migrationLeaseID {
+            PromptRepositoryMigrationCoordinator.shared.unregister(path: databaseURL.path, lease: migrationLeaseID)
+        }
+    }
+
+    /// Aliases keep the shared invalidation source discoverable to detail
+    /// services without coupling them to one property spelling.
+    public var detailInvalidationHub: ItemDetailInvalidationHub {
+        itemDetailInvalidationHub
+    }
+
+    public var invalidationHub: ItemDetailInvalidationHub {
+        itemDetailInvalidationHub
+    }
+
+    public var itemDetailInvalidation: ItemDetailInvalidationHub {
+        itemDetailInvalidationHub
+    }
+
+    public var revision: LibraryDataRevision {
+        libraryDataRevision
     }
 
     public static func defaultLibraryURL() -> URL {
@@ -269,11 +345,54 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func loadItems() throws -> [PromptItem] {
-        let rows = try database.query("SELECT * FROM prompt_items;")
-        let versions = try loadVersions()
-        return rows.map { row in
+        let itemSequenceReady = itemSequenceMigrationReady
+        let rows = try database.query(
+            itemSequenceReady
+                ? "SELECT * FROM prompt_items ORDER BY sortOrder ASC, itemCreatedAtSortKey DESC, itemSequence ASC;"
+                : "SELECT * FROM prompt_items;"
+        )
+        let versionSequenceReady = versionSequenceMigrationReady
+        let versions = try loadVersions(versionSequenceReady: versionSequenceReady)
+        return try rows.map { row in
             let id = required(row, "id")
-            let itemVersions = versions[id, default: []].sorted { $0.createdAt < $1.createdAt }
+            let itemVersions: [PromptVersion]
+            if versionSequenceReady {
+                itemVersions = versions[id, default: []].sorted { lhs, rhs in
+                    let leftKey = lhs.versionCreatedAtSortKey ?? Int64((lhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
+                    let rightKey = rhs.versionCreatedAtSortKey ?? Int64((rhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
+                    if leftKey != rightKey { return leftKey < rightKey }
+                    switch (lhs.versionSequence, rhs.versionSequence) {
+                    case let (left?, right?): return left < right
+                    case (nil, _?): return true
+                    case (_?, nil): return false
+                    default: return lhs.createdAt < rhs.createdAt
+                    }
+                }
+            } else {
+                itemVersions = versions[id, default: []].sorted { $0.createdAt < $1.createdAt }
+            }
+            // During an in-flight backfill the newly added columns contain a
+            // mixture of NULL, historical, and provisional values.  Keep the
+            // legacy model/comparator contract until the readiness gate is
+            // fully open; exposing partial metadata here would silently switch
+            // filtering order before the migration has finalized.
+            let loadedItemSequence = itemSequenceReady ? (row["itemSequence"] ?? nil).flatMap(Int64.init) : nil
+            let loadedItemCreatedAtSortKey = itemSequenceReady ? (row["itemCreatedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
+            let loadedItemLastUsedAtSortKey = itemSequenceReady ? (row["itemLastUsedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
+            let itemCreatedAt: Date
+            if itemSequenceReady {
+                // Once the migration gate is open, item creation time is
+                // decoded exclusively from the persisted microsecond key.
+                guard let itemSequence = loadedItemSequence,
+                      itemSequence > 0,
+                      let itemCreatedAtSortKey = loadedItemCreatedAtSortKey,
+                      loadedItemLastUsedAtSortKey != nil else {
+                    throw PromptRepositoryValidationError.incompatibleSchema("ready item date/sequence metadata is malformed")
+                }
+                itemCreatedAt = PromptItemCreatedAtSupport.date(forSortKey: itemCreatedAtSortKey)
+            } else {
+                itemCreatedAt = try legacyCreatedAt(required(row, "createdAt"))
+            }
             return PromptItem(
                 id: id,
                 title: required(row, "title"),
@@ -294,10 +413,13 @@ public final class PromptRepository: @unchecked Sendable {
                 favorite: int(row, "favorite") == 1,
                 pinnedAt: date(row["pinnedAt"] ?? nil),
                 deletedAt: date(row["deletedAt"] ?? nil),
-                createdAt: date(required(row, "createdAt")) ?? Date(),
+                createdAt: itemCreatedAt,
                 updatedAt: date(required(row, "updatedAt")) ?? Date(),
                 lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(timeIntervalSince1970: 0),
                 sortOrder: int(row, "sortOrder"),
+                itemSequence: loadedItemSequence,
+                itemCreatedAtSortKey: loadedItemCreatedAtSortKey,
+                itemLastUsedAtSortKey: loadedItemLastUsedAtSortKey,
                 tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
                 referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
                 versions: itemVersions,
@@ -306,6 +428,61 @@ public final class PromptRepository: @unchecked Sendable {
                 capturedSource: decodeOptional(CapturedSource.self, from: row["captureSourceJSON"] ?? nil)
             )
         }
+    }
+
+    /// Lazily creates one independent read service and reuses it across detail
+    /// requests. The service/connection are internally synchronized so this
+    /// lock only protects first-use initialization.
+    func sharedItemDetailService() throws -> PromptItemDetailService {
+        itemDetailServiceLock.lock()
+        defer { itemDetailServiceLock.unlock() }
+        if let itemDetailServiceValue {
+            return itemDetailServiceValue
+        }
+        let service = try PromptItemDetailService(databaseURL: databaseURL)
+        itemDetailServiceValue = service
+        return service
+    }
+
+    /// Loads sidebar statistics directly in SQLite without materializing the
+    /// complete prompt/version/reference graph.
+    public func loadLibraryStatistics() throws -> LibraryStatistics {
+        let aggregate = try database.query(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN deletedAt IS NULL THEN 1 ELSE 0 END), 0) AS activeCount,
+                COALESCE(SUM(CASE WHEN deletedAt IS NULL AND favorite = 1 THEN 1 ELSE 0 END), 0) AS favoriteCount,
+                COALESCE(SUM(CASE WHEN deletedAt IS NULL AND lastUsedAt > ? THEN 1 ELSE 0 END), 0) AS recentCount,
+                COALESCE(SUM(CASE WHEN deletedAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS trashCount
+            FROM prompt_items;
+            """,
+            values: [.text(Self.string(from: Date(timeIntervalSince1970: 0)))]
+        ).first ?? [:]
+
+        let folderRows = try database.query(
+            """
+            SELECT folderId, COUNT(*) AS itemCount
+            FROM prompt_items
+            WHERE deletedAt IS NULL
+            GROUP BY folderId;
+            """
+        )
+        var folderCounts: [String: Int] = [:]
+        for row in folderRows {
+            folderCounts[required(row, "folderId")] = int(row, "itemCount")
+        }
+
+        return LibraryStatistics(
+            activeCount: int(aggregate, "activeCount"),
+            favoriteCount: int(aggregate, "favoriteCount"),
+            recentCount: int(aggregate, "recentCount"),
+            trashCount: int(aggregate, "trashCount"),
+            folderCounts: folderCounts
+        )
+    }
+
+    public func loadStatistics() throws -> LibraryStatistics {
+        try loadLibraryStatistics()
     }
 
     /// Returns the prompt recorded for a browser capture ID, when one exists.
@@ -360,74 +537,77 @@ public final class PromptRepository: @unchecked Sendable {
         for item in candidates {
             var createdAsset: URL?
             do {
-                let didMigrate = try database.transaction {
-                    let text = item.currentVersion?.prompt ?? ""
-                    let type = PromptTypeClassifier.classify(text: text)
-                    let assetKind: AssetKind
-                    let format: String
-                    let category: String
-                    let assetPath: String
-                    let thumbnailPath: String
-                    let fileSize: Int64
-                    switch type {
-                    case .image:
-                        assetKind = .image
-                        format = ""
-                        category = AssetKind.image.displayName
-                        assetPath = ""
-                        thumbnailPath = ""
-                        fileSize = 0
-                    case .video:
-                        assetKind = .video
-                        format = ""
-                        category = AssetKind.video.displayName
-                        assetPath = ""
-                        thumbnailPath = ""
-                        fileSize = 0
-                    case .audio:
-                        assetKind = .audio
-                        format = ""
-                        category = AssetKind.audio.displayName
-                        assetPath = ""
-                        thumbnailPath = ""
-                        fileSize = 0
-                    case .text:
-                        assetKind = .markdown
-                        format = "MD"
-                        category = AssetKind.markdown.displayName
-                        let markdownURL = try writeMarkdownPromptAsset(
-                            promptID: item.id,
-                            title: item.title,
-                            prompt: text,
-                            negativePrompt: item.currentVersion?.negativePrompt ?? ""
+                let didMigrate = try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+                    try database.transaction {
+                        let text = item.currentVersion?.prompt ?? ""
+                        let type = PromptTypeClassifier.classify(text: text)
+                        let assetKind: AssetKind
+                        let format: String
+                        let category: String
+                        let assetPath: String
+                        let thumbnailPath: String
+                        let fileSize: Int64
+                        switch type {
+                        case .image:
+                            assetKind = .image
+                            format = ""
+                            category = AssetKind.image.displayName
+                            assetPath = ""
+                            thumbnailPath = ""
+                            fileSize = 0
+                        case .video:
+                            assetKind = .video
+                            format = ""
+                            category = AssetKind.video.displayName
+                            assetPath = ""
+                            thumbnailPath = ""
+                            fileSize = 0
+                        case .audio:
+                            assetKind = .audio
+                            format = ""
+                            category = AssetKind.audio.displayName
+                            assetPath = ""
+                            thumbnailPath = ""
+                            fileSize = 0
+                        case .text:
+                            assetKind = .markdown
+                            format = "MD"
+                            category = AssetKind.markdown.displayName
+                            let markdownURL = try writeMarkdownPromptAsset(
+                                promptID: item.id,
+                                title: item.title,
+                                prompt: text,
+                                negativePrompt: item.currentVersion?.negativePrompt ?? ""
+                            )
+                            createdAsset = markdownURL
+                            assetPath = markdownURL.path
+                            thumbnailPath = markdownURL.path
+                            let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
+                            fileSize = Int64(values.fileSize ?? 0)
+                        }
+                        let changed = try database.runAndReturnChanges(
+                            """
+                            UPDATE prompt_items
+                            SET type = ?, assetKind = ?, category = ?, assetPath = ?, thumbnailPath = ?, format = ?, fileSize = ?, updatedAt = ?
+                            WHERE id = ?
+                              AND trim(assetPath) = ''
+                              AND upper(trim(format)) IN ('PROMPT', 'TEXT');
+                            """,
+                            values: [
+                                .text(type.rawValue),
+                                .text(assetKind.rawValue),
+                                .text(category),
+                                .text(assetPath),
+                                .text(thumbnailPath),
+                                .text(format),
+                                .int(fileSize),
+                                .text(Self.string(from: Date())),
+                                .text(item.id)
+                            ]
                         )
-                        createdAsset = markdownURL
-                        assetPath = markdownURL.path
-                        thumbnailPath = markdownURL.path
-                        let values = try markdownURL.resourceValues(forKeys: [.fileSizeKey])
-                        fileSize = Int64(values.fileSize ?? 0)
+                        try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                        return changed == 1
                     }
-                    let changed = try database.runAndReturnChanges(
-                        """
-                        UPDATE prompt_items
-                        SET type = ?, assetKind = ?, category = ?, assetPath = ?, thumbnailPath = ?, format = ?, fileSize = ?, updatedAt = ?
-                        WHERE id = ?
-                          AND trim(assetPath) = ''
-                          AND upper(trim(format)) IN ('PROMPT', 'TEXT');
-                        """,
-                        values: [
-                            .text(type.rawValue),
-                            .text(assetKind.rawValue),
-                            .text(category),
-                            .text(assetPath),
-                            .text(thumbnailPath),
-                            .text(format),
-                            .int(fileSize),
-                            .text(Self.string(from: Date())),
-                            .text(item.id)
-                        ]
-                    )
-                    return changed == 1
                 }
                 if didMigrate {
                     migratedIDs.append(item.id)
@@ -443,6 +623,7 @@ public final class PromptRepository: @unchecked Sendable {
                 )
             }
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: migratedIDs)
         return PromptPlaceholderMigrationResult(
             candidateCount: candidates.count,
             migratedCount: migratedIDs.count,
@@ -473,10 +654,15 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveItem(_ item: PromptItem) throws {
-        try database.transaction {
-            try saveItemRecord(item)
-            try refreshTags(from: try loadItems())
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try saveItemRecord(item)
+                try refreshTagsAfterMutation()
+                try reconcileVersionSequenceMigrationFingerprintIfNeeded()
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: [item.id])
     }
 
     /// Inserts a captured item exactly once and returns the row that won the capture ID race.
@@ -491,50 +677,79 @@ public final class PromptRepository: @unchecked Sendable {
         var normalizedItem = item
         normalizedItem.captureID = captureID
 
-        captureInsertLock.lock()
-        defer { captureInsertLock.unlock() }
-        return try database.transaction {
-            if let existing = try findItem(captureID: captureID) {
-                return existing
-            }
+        let outcome: (item: PromptItem, inserted: Bool)
+        do {
+            captureInsertLock.lock()
+            defer { captureInsertLock.unlock() }
+            outcome = try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+                try database.transaction { () -> (item: PromptItem, inserted: Bool) in
+                    if let existing = try findItem(captureID: captureID) {
+                        return (existing, false)
+                    }
 
-            let inserted = try saveItemRecord(normalizedItem, conflict: .ignoreExistingCapture)
-            if inserted {
-                try refreshTags(from: try loadItems())
+                    let inserted = try saveItemRecord(normalizedItem, conflict: .ignoreExistingCapture)
+                    if inserted {
+                        try refreshTagsAfterMutation()
+                        try reconcileVersionSequenceMigrationFingerprintIfNeeded()
+                        try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                    }
+                    return (try findItem(captureID: captureID) ?? normalizedItem, inserted)
+                }
             }
-            return try findItem(captureID: captureID) ?? normalizedItem
         }
+        if outcome.inserted {
+            _ = itemDetailInvalidationHub.publish(changedItemIDs: [outcome.item.id])
+        }
+        return outcome.item
     }
 
     public func saveItems(_ items: [PromptItem]) throws {
-        try database.transaction {
-            for item in items {
-                try saveItemRecord(item)
+        guard !items.isEmpty else { return }
+        let requestedIDs = Set(items.map(\.id))
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for item in items {
+                    try saveItemRecord(item)
+                }
+                try refreshTagsAfterMutation()
+                try reconcileVersionSequenceMigrationFingerprintIfNeeded()
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
-            try refreshTags(from: try loadItems())
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: requestedIDs)
     }
 
     public func updateItemFolders(_ items: [PromptItem]) throws {
         guard !items.isEmpty else { return }
-        try database.transaction {
-            for item in items {
-                try database.run(
-                    """
-                    UPDATE prompt_items
-                    SET folderId = ?, folderName = ?, category = ?, updatedAt = ?
-                    WHERE id = ? AND deletedAt IS NULL;
-                    """,
-                    values: [
-                        .text(item.folderId),
-                        .text(item.folderName),
-                        .text(item.category),
-                        .text(Self.string(from: item.updatedAt)),
-                        .text(item.id)
-                    ]
-                )
+        var changedItemIDs: Set<String> = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for item in items {
+                    let changed = try database.runAndReturnChanges(
+                        """
+                        UPDATE prompt_items
+                        SET folderId = ?, folderName = ?, category = ?, updatedAt = ?
+                        WHERE id = ? AND deletedAt IS NULL
+                          AND (folderId <> ? OR folderName <> ? OR category <> ? OR updatedAt <> ?);
+                        """,
+                        values: [
+                            .text(item.folderId),
+                            .text(item.folderName),
+                            .text(item.category),
+                            .text(Self.string(from: item.updatedAt)),
+                            .text(item.id),
+                            .text(item.folderId),
+                            .text(item.folderName),
+                            .text(item.category),
+                            .text(Self.string(from: item.updatedAt))
+                        ]
+                    )
+                    if changed == 1 { changedItemIDs.insert(item.id) }
+                }
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
     }
 
     public func markDeleted(itemID: String, deletedAt: Date?) throws {
@@ -544,20 +759,27 @@ public final class PromptRepository: @unchecked Sendable {
     public func markDeleted(itemIDs: [String], deletedAt: Date?) throws {
         let ids = PromptItemDragPayload(itemIDs: itemIDs).itemIDs
         guard !ids.isEmpty else { return }
-        try database.transaction {
-            let updatedAt = Self.string(from: Date())
-            for itemID in ids {
-                try database.run(
-                    "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE id = ?;",
-                    values: [
-                        deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                        .text(updatedAt),
-                        .text(itemID)
-                    ]
-                )
+        var changedItemIDs: Set<String> = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                let updatedAt = Self.string(from: Date())
+                for itemID in ids {
+                    let changed = try database.runAndReturnChanges(
+                        "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NOT ?;",
+                        values: [
+                            deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
+                            .text(updatedAt),
+                            .text(itemID),
+                            deletedAt.map { .text(Self.string(from: $0)) } ?? .null
+                        ]
+                    )
+                    if changed == 1 { changedItemIDs.insert(itemID) }
+                }
+                try refreshTagsAfterMutation()
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
-            try refreshTags(from: try loadItems())
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
     }
 
     public func permanentlyDelete(itemID: String) throws {
@@ -567,35 +789,106 @@ public final class PromptRepository: @unchecked Sendable {
     public func permanentlyDelete(itemIDs: [String]) throws {
         let ids = PromptItemDragPayload(itemIDs: itemIDs).itemIDs
         guard !ids.isEmpty else { return }
-        try database.transaction {
-            for itemID in ids {
-                try database.run("DELETE FROM prompt_items WHERE id = ?;", values: [.text(itemID)])
+        var removedItemIDs: Set<String> = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for itemID in ids {
+                    let changed = try database.runAndReturnChanges(
+                        "DELETE FROM prompt_items WHERE id = ?;",
+                        values: [.text(itemID)]
+                    )
+                    if changed == 1 { removedItemIDs.insert(itemID) }
+                }
+                try refreshTagsAfterMutation()
+                try reconcileVersionSequenceMigrationFingerprintIfNeeded()
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
-            try refreshTags(from: try loadItems())
         }
+        _ = itemDetailInvalidationHub.publish(removedItemIDs: removedItemIDs)
     }
 
     public func updateLastUsed(itemID: String, at date: Date = Date()) throws {
-        try database.run(
-            "UPDATE prompt_items SET lastUsedAt = ? WHERE id = ?;",
-            values: [.text(Self.string(from: date)), .text(itemID)]
-        )
+        let encodedDate = Self.string(from: date)
+        let changed: Int = try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                let setClause = itemSequenceStorageAvailable()
+                    ? "lastUsedAt = ?, itemLastUsedAtSortKey = ?"
+                    : "lastUsedAt = ?"
+                let predicate = itemSequenceStorageAvailable()
+                    ? "id = ? AND lastUsedAt <> ?"
+                    : "id = ? AND lastUsedAt <> ?"
+                var values: [SQLiteValue] = [.text(encodedDate)]
+                if itemSequenceStorageAvailable() { values.append(.int(itemSequenceSortKey(for: encodedDate, fallback: Date(timeIntervalSince1970: 0)))) }
+                values += [.text(itemID), .text(encodedDate)]
+                let result = try database.runAndReturnChanges("UPDATE prompt_items SET \(setClause) WHERE \(predicate);", values: values)
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                return result
+            }
+        }
+        if changed == 1 {
+            _ = itemDetailInvalidationHub.publish(changedItemIDs: [itemID])
+        }
     }
 
     public func updateThumbnailPath(itemID: String, thumbnailPath: String) throws {
-        try database.run(
-            "UPDATE prompt_items SET thumbnailPath = ?, updatedAt = ? WHERE id = ?;",
-            values: [.text(thumbnailPath), .text(Self.string(from: Date())), .text(itemID)]
-        )
+        let changed = try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                let value = try database.runAndReturnChanges(
+                    "UPDATE prompt_items SET thumbnailPath = ?, updatedAt = ? WHERE id = ? AND thumbnailPath <> ?;",
+                    values: [.text(thumbnailPath), .text(Self.string(from: Date())), .text(itemID), .text(thumbnailPath)]
+                )
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                return value
+            }
+        }
+        if changed == 1 {
+            _ = itemDetailInvalidationHub.publish(changedItemIDs: [itemID])
+        }
+    }
+
+    /// Persists a thumbnail batch in one transaction without loading items or
+    /// refreshing tags. Empty batches perform no transaction.
+    public func updateThumbnailPaths(_ paths: [String: String]) throws {
+        guard !paths.isEmpty else { return }
+        var changedItemIDs: Set<String> = []
+        let updatedAt = Self.string(from: Date())
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for itemID in paths.keys.sorted() {
+                    guard let thumbnailPath = paths[itemID] else { continue }
+                    let changed = try database.runAndReturnChanges(
+                        "UPDATE prompt_items SET thumbnailPath = ?, updatedAt = ? WHERE id = ? AND thumbnailPath <> ?;",
+                        values: [.text(thumbnailPath), .text(updatedAt), .text(itemID), .text(thumbnailPath)]
+                    )
+                    if changed == 1 { changedItemIDs.insert(itemID) }
+                }
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
     }
 
     public func updateSortOrders(_ orders: [(id: String, sortOrder: Int)]) throws {
-        for order in orders {
-            try database.run(
-                "UPDATE prompt_items SET sortOrder = ?, updatedAt = ? WHERE id = ?;",
-                values: [.int(Int64(order.sortOrder)), .text(Self.string(from: Date())), .text(order.id)]
-            )
+        guard !orders.isEmpty else { return }
+        var changedItemIDs: Set<String> = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for order in orders {
+                    let changed = try database.runAndReturnChanges(
+                        "UPDATE prompt_items SET sortOrder = ?, updatedAt = ? WHERE id = ? AND sortOrder <> ?;",
+                        values: [
+                            .int(Int64(order.sortOrder)),
+                            .text(Self.string(from: Date())),
+                            .text(order.id),
+                            .int(Int64(order.sortOrder))
+                        ]
+                    )
+                    if changed == 1 { changedItemIDs.insert(order.id) }
+                }
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
         }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
     }
 
     public func copyAssetIntoLibrary(from sourceURL: URL, type: PromptType) throws -> URL {
@@ -742,10 +1035,15 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveTag(_ tag: Tag) throws {
-        try database.run(
-            "INSERT OR REPLACE INTO tags (id, name, color, count) VALUES (?, ?, ?, ?);",
-            values: [.text(tag.id), .text(tag.name), .text(tag.color), .int(Int64(tag.count))]
-        )
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try database.run(
+                    "INSERT OR REPLACE INTO tags (id, name, color, count) VALUES (?, ?, ?, ?);",
+                    values: [.text(tag.id), .text(tag.name), .text(tag.color), .int(Int64(tag.count))]
+                )
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
     }
 
     public func loadTags() throws -> [Tag] {
@@ -760,16 +1058,21 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveModelProfile(_ profile: ModelProfile) throws {
-        try database.run(
-            "INSERT OR REPLACE INTO model_profiles (id, name, type, parametersJSON, defaultNegativePrompt) VALUES (?, ?, ?, ?, ?);",
-            values: [
-                .text(profile.id),
-                .text(profile.name),
-                .text(profile.type.rawValue),
-                .text(encode(profile.parameters)),
-                .text(profile.defaultNegativePrompt)
-            ]
-        )
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try database.run(
+                    "INSERT OR REPLACE INTO model_profiles (id, name, type, parametersJSON, defaultNegativePrompt) VALUES (?, ?, ?, ?, ?);",
+                    values: [
+                        .text(profile.id),
+                        .text(profile.name),
+                        .text(profile.type.rawValue),
+                        .text(encode(profile.parameters)),
+                        .text(profile.defaultNegativePrompt)
+                    ]
+                )
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
     }
 
     public func loadModelProfiles() throws -> [ModelProfile] {
@@ -786,18 +1089,23 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveFolder(_ folder: LibraryFolder) throws {
-        try database.run(
-            "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?);",
-            values: [
-                .text(folder.id),
-                .text(folder.name),
-                folder.parentId.map { .text($0) } ?? .null,
-                folder.type.map { .text($0.rawValue) } ?? .null,
-                .int(Int64(folder.count)),
-                .int(Int64(folder.sortOrder)),
-                .text(Self.string(from: folder.createdAt))
-            ]
-        )
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try database.run(
+                    "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?);",
+                    values: [
+                        .text(folder.id),
+                        .text(folder.name),
+                        folder.parentId.map { .text($0) } ?? .null,
+                        folder.type.map { .text($0.rawValue) } ?? .null,
+                        .int(Int64(folder.count)),
+                        .int(Int64(folder.sortOrder)),
+                        .text(Self.string(from: folder.createdAt))
+                    ]
+                )
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
     }
 
     public func loadFolders() throws -> [LibraryFolder] {
@@ -821,23 +1129,26 @@ public final class PromptRepository: @unchecked Sendable {
     /// batch.
     public func updateFolderParentsAndSort(_ updates: [FolderParentSortUpdate]) throws {
         guard !updates.isEmpty else { return }
-        try database.transaction {
-            for update in updates {
-                let changed = try database.runAndReturnChanges(
-                    "UPDATE library_folders SET parentId = ?, sortOrder = ? WHERE id = ?;",
-                    values: [
-                        update.parentID.map { .text($0) } ?? .null,
-                        .int(Int64(update.sortOrder)),
-                        .text(update.folderID)
-                    ]
-                )
-                guard changed == 1 else {
-                    throw PromptRepositoryFolderMutationError.affectedRowsMismatch(
-                        folderID: update.folderID,
-                        expected: 1,
-                        actual: changed
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                for update in updates {
+                    let changed = try database.runAndReturnChanges(
+                        "UPDATE library_folders SET parentId = ?, sortOrder = ? WHERE id = ?;",
+                        values: [
+                            update.parentID.map { .text($0) } ?? .null,
+                            .int(Int64(update.sortOrder)),
+                            .text(update.folderID)
+                        ]
                     )
+                    guard changed == 1 else {
+                        throw PromptRepositoryFolderMutationError.affectedRowsMismatch(
+                            folderID: update.folderID,
+                            expected: 1,
+                            actual: changed
+                        )
+                    }
                 }
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
         }
     }
@@ -860,8 +1171,10 @@ public final class PromptRepository: @unchecked Sendable {
     ) throws {
         let requestedIDs = FolderDragPayload(folderIDs: sourceFolderIDs).folderIDs
         guard !requestedIDs.isEmpty else { return }
-        try database.transaction {
-            let folders = try loadFolders()
+        var changedItemIDs: Set<String> = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                let folders = try loadFolders()
             let foldersByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
             for folderID in requestedIDs where foldersByID[folderID] == nil {
                 throw PromptRepositoryFolderMutationError.folderNotFound(folderID)
@@ -884,6 +1197,11 @@ public final class PromptRepository: @unchecked Sendable {
             guard !subtreeIDs.isEmpty else { return }
             let placeholders = Array(repeating: "?", count: subtreeIDs.count).joined(separator: ",")
             let updatedAt = Self.string(from: Date())
+            let rows = try database.query(
+                "SELECT id FROM prompt_items WHERE deletedAt IS NULL AND folderId IN (\(placeholders));",
+                values: subtreeIDs.map { .text($0) }
+            )
+            changedItemIDs = Set(rows.map { required($0, "id") })
             try database.run(
                 "UPDATE prompt_items SET deletedAt = ?, updatedAt = ? WHERE deletedAt IS NULL AND folderId IN (\(placeholders));",
                 values: [.text(Self.string(from: deletedAt)), .text(updatedAt)] + subtreeIDs.map { .text($0) }
@@ -904,7 +1222,14 @@ public final class PromptRepository: @unchecked Sendable {
                     )
                 }
             }
-            try refreshTags(from: loadItems())
+                try refreshTagsAfterMutation()
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
+        if changedItemIDs.isEmpty {
+            _ = libraryDataRevision.advance()
+        } else {
+            _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
         }
     }
 
@@ -929,10 +1254,15 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func renameFolder(id: String, name: String) throws {
-        try database.run(
-            "UPDATE library_folders SET name = ? WHERE id = ?;",
-            values: [.text(name), .text(id)]
-        )
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try database.run(
+                    "UPDATE library_folders SET name = ? WHERE id = ?;",
+                    values: [.text(name), .text(id)]
+                )
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
     }
 
     public func deleteFolders(ids: [String]) throws {
@@ -942,15 +1272,63 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func deleteFolder(id: String) throws {
-        try database.run("DELETE FROM library_folders WHERE id = ?;", values: [.text(id)])
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                try database.run("DELETE FROM library_folders WHERE id = ?;", values: [.text(id)])
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
     }
 
-    private func saveVersion(_ version: PromptVersion) throws {
+    private func saveVersion(
+        _ version: PromptVersion,
+        sequence: Int64? = nil,
+        createdAtString: String? = nil,
+        sortKey: Int64? = nil
+    ) throws {
+        guard versionSequenceStorageAvailable else {
+            try database.run(
+                """
+                INSERT OR REPLACE INTO prompt_versions (
+                    id, promptItemId, version, prompt, negativePrompt, parametersJSON, note, createdAt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                values: [
+                    .text(version.id),
+                    .text(version.promptItemId),
+                    .text(version.version),
+                    .text(version.prompt),
+                    .text(version.negativePrompt),
+                    .text(encode(version.parameters)),
+                    .text(version.note),
+                    .text(Self.string(from: version.createdAt))
+                ]
+            )
+            return
+        }
+
+        let assignedSequence: Int64
+        if let sequence {
+            assignedSequence = sequence
+        } else {
+            assignedSequence = try nextVersionSequence(itemID: version.promptItemId)
+        }
         try database.run(
             """
-            INSERT OR REPLACE INTO prompt_versions (
-                id, promptItemId, version, prompt, negativePrompt, parametersJSON, note, createdAt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO prompt_versions (
+                id, promptItemId, version, prompt, negativePrompt, parametersJSON, note, createdAt,
+                versionCreatedAtSortKey, versionSequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                promptItemId = excluded.promptItemId,
+                version = excluded.version,
+                prompt = excluded.prompt,
+                negativePrompt = excluded.negativePrompt,
+                parametersJSON = excluded.parametersJSON,
+                note = excluded.note,
+                createdAt = excluded.createdAt,
+                versionCreatedAtSortKey = excluded.versionCreatedAtSortKey,
+                versionSequence = excluded.versionSequence;
             """,
             values: [
                 .text(version.id),
@@ -960,18 +1338,71 @@ public final class PromptRepository: @unchecked Sendable {
                 .text(version.negativePrompt),
                 .text(encode(version.parameters)),
                 .text(version.note),
-                .text(Self.string(from: version.createdAt))
+                .text(createdAtString ?? Self.string(from: version.createdAt)),
+                .int(sortKey ?? VersionSequenceTimestampSupport.sortKey(for: version.createdAt)),
+                .int(assignedSequence)
             ]
         )
     }
 
-    private enum SaveItemConflict {
+    private enum SaveItemConflict: Equatable {
         case updateExistingID
         case ignoreExistingCapture
     }
 
     @discardableResult
     private func saveItemRecord(_ item: PromptItem, conflict: SaveItemConflict = .updateExistingID) throws -> Bool {
+        let hasItemSequenceStorage = itemSequenceStorageAvailable()
+        let encodedCreatedAt = Self.string(from: item.createdAt)
+        let encodedLastUsedAt = Self.string(from: item.lastUsedAt)
+        let existingItemMetadata: [String: String?]?
+        if hasItemSequenceStorage {
+            existingItemMetadata = try database.query(
+                "SELECT createdAt, lastUsedAt, itemCreatedAtSortKey, itemLastUsedAtSortKey, itemSequence FROM prompt_items WHERE id = ?;",
+                values: [.text(item.id)]
+            ).first
+        } else {
+            existingItemMetadata = try database.query(
+                "SELECT createdAt, lastUsedAt FROM prompt_items WHERE id = ?;",
+                values: [.text(item.id)]
+            ).first
+        }
+        // `createdAt` is an immutable raw-history field.  A ready load has no
+        // opaque raw representation in PromptItem, so never serialize the
+        // model Date back over an existing row; only new rows use that Date.
+        let persistedCreatedAt: String
+        if let existingRaw = existingItemMetadata?["createdAt"] ?? nil {
+            persistedCreatedAt = existingRaw
+        } else {
+            persistedCreatedAt = encodedCreatedAt
+        }
+        let itemSequence: Int64?
+        let createdSortKey: Int64?
+        let lastUsedSortKey: Int64?
+        if hasItemSequenceStorage {
+            if let raw = existingItemMetadata?["itemSequence"] ?? nil, let parsed = Int64(raw), parsed > 0 {
+                itemSequence = parsed
+            } else {
+                itemSequence = try nextItemSequence()
+            }
+            if let raw = existingItemMetadata?["itemCreatedAtSortKey"] ?? nil,
+               let parsed = Int64(raw) {
+                createdSortKey = parsed
+            } else {
+                createdSortKey = itemSequenceSortKey(for: persistedCreatedAt)
+            }
+            if existingItemMetadata?["lastUsedAt"] ?? nil == encodedLastUsedAt,
+               let raw = existingItemMetadata?["itemLastUsedAtSortKey"] ?? nil,
+               let parsed = Int64(raw) {
+                lastUsedSortKey = parsed
+            } else {
+                lastUsedSortKey = itemSequenceSortKey(for: encodedLastUsedAt, fallback: Date(timeIntervalSince1970: 0))
+            }
+        } else {
+            itemSequence = nil
+            createdSortKey = nil
+            lastUsedSortKey = nil
+        }
         let conflictClause: String
         switch conflict {
         case .updateExistingID:
@@ -1005,72 +1436,162 @@ public final class PromptRepository: @unchecked Sendable {
                 captureId = excluded.captureId,
                 captureSourceJSON = excluded.captureSourceJSON
             """
+            + (hasItemSequenceStorage ? ", itemCreatedAtSortKey = excluded.itemCreatedAtSortKey, itemLastUsedAtSortKey = excluded.itemLastUsedAtSortKey, itemSequence = excluded.itemSequence" : "")
         case .ignoreExistingCapture:
             // Match the partial unique index explicitly so unrelated constraints still fail.
             conflictClause = "ON CONFLICT(captureId) WHERE captureId IS NOT NULL DO NOTHING"
         }
 
+        let itemSequenceColumns = hasItemSequenceStorage ? ", itemCreatedAtSortKey, itemLastUsedAtSortKey, itemSequence" : ""
+        let itemSequencePlaceholders = hasItemSequenceStorage ? ", ?, ?, ?" : ""
+        var itemValues: [SQLiteValue] = [
+            .text(item.id), .text(item.title), .text(item.type.rawValue), .text(item.assetKind.rawValue),
+            .text(item.modelId), .text(item.modelName), .text(item.folderId), .text(item.folderName), .text(item.category),
+            .text(item.assetPath), .text(item.thumbnailPath), .text(item.aspectRatio), .int(Int64(item.width)), .int(Int64(item.height)),
+            .text(item.format), .int(item.fileSize), .int(item.favorite ? 1 : 0),
+            item.pinnedAt.map { .text(Self.string(from: $0)) } ?? .null,
+            item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
+            .text(persistedCreatedAt), .text(Self.string(from: item.updatedAt)), .text(encodedLastUsedAt), .int(Int64(item.sortOrder)),
+            .text(encode(item.tags)), .text(encode(item.referenceAssets)), .text(item.description),
+            item.captureID.map { .text($0) } ?? .null, item.capturedSource.map { .text(encode($0)) } ?? .null
+        ]
+        if hasItemSequenceStorage {
+            itemValues += [.int(createdSortKey ?? 0), .int(lastUsedSortKey ?? 0), .int(itemSequence ?? 0)]
+        }
         try database.run(
             """
             INSERT INTO prompt_items (
                 id, title, type, assetKind, modelId, modelName, folderId, folderName, category, assetPath, thumbnailPath,
                 aspectRatio, width, height, format, fileSize, favorite, pinnedAt, deletedAt, createdAt, updatedAt,
-                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description, captureId, captureSourceJSON
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lastUsedAt, sortOrder, tagsJSON, referencesJSON, description, captureId, captureSourceJSON\(itemSequenceColumns)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?\(itemSequencePlaceholders))
             \(conflictClause)
             ;
             """,
-            values: [
-                .text(item.id),
-                .text(item.title),
-                .text(item.type.rawValue),
-                .text(item.assetKind.rawValue),
-                .text(item.modelId),
-                .text(item.modelName),
-                .text(item.folderId),
-                .text(item.folderName),
-                .text(item.category),
-                .text(item.assetPath),
-                .text(item.thumbnailPath),
-                .text(item.aspectRatio),
-                .int(Int64(item.width)),
-                .int(Int64(item.height)),
-                .text(item.format),
-                .int(item.fileSize),
-                .int(item.favorite ? 1 : 0),
-                item.pinnedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                item.deletedAt.map { .text(Self.string(from: $0)) } ?? .null,
-                .text(Self.string(from: item.createdAt)),
-                .text(Self.string(from: item.updatedAt)),
-                .text(Self.string(from: item.lastUsedAt)),
-                .int(Int64(item.sortOrder)),
-                .text(encode(item.tags)),
-                .text(encode(item.referenceAssets)),
-                .text(item.description),
-                item.captureID.map { .text($0) } ?? .null,
-                item.capturedSource.map { .text(encode($0)) } ?? .null
-            ]
+            values: itemValues
         )
 
+        let hasVersionSequenceStorage = self.versionSequenceStorageAvailable
+        let preservedVersionMetadata = hasVersionSequenceStorage
+            ? try loadVersionMetadata(itemID: item.id)
+            : [:]
+        var nextSequence = preservedVersionMetadata.values.map(\.sequence).max() ?? 0
+        var assignedSequences: [String: Int64] = [:]
+        if hasVersionSequenceStorage {
+            for version in item.versions {
+                if let metadata = preservedVersionMetadata[version.id] {
+                    assignedSequences[version.id] = metadata.sequence
+                } else {
+                    nextSequence += 1
+                    assignedSequences[version.id] = nextSequence
+                }
+            }
+        }
         let inserted = Int((try database.query("SELECT changes() AS changed;").first?["changed"] ?? nil) ?? "0") == 1
         switch conflict {
         case .updateExistingID:
             try database.run("DELETE FROM prompt_versions WHERE promptItemId = ?;", values: [.text(item.id)])
             for version in item.versions {
-                try saveVersion(version)
+                let metadata = preservedVersionMetadata[version.id]
+                try saveVersion(
+                    version,
+                    sequence: assignedSequences[version.id] ?? metadata?.sequence,
+                    createdAtString: metadata?.createdAt,
+                    sortKey: metadata?.sortKey
+                )
             }
         case .ignoreExistingCapture:
             if inserted {
                 for version in item.versions {
-                    try saveVersion(version)
+                    let metadata = preservedVersionMetadata[version.id]
+                    try saveVersion(
+                        version,
+                        sequence: assignedSequences[version.id] ?? metadata?.sequence,
+                        createdAtString: metadata?.createdAt,
+                        sortKey: metadata?.sortKey
+                    )
                 }
             }
+        }
+        if conflict == .updateExistingID || inserted {
+            var relationItem = item
+            if let createdSortKey {
+                relationItem.createdAt = PromptItemCreatedAtSupport.date(forSortKey: createdSortKey)
+            } else if let rawCreatedAt = existingItemMetadata?["createdAt"] ?? nil,
+                      let parsedCreatedAt = ISO8601DateFormatter().date(from: rawCreatedAt) {
+                relationItem.createdAt = parsedCreatedAt
+            }
+            try dualWriteTagRelationsIfAvailable(item: relationItem, rawCreatedAt: persistedCreatedAt)
         }
         return inserted
     }
 
-    private func loadVersions() throws -> [String: [PromptVersion]] {
-        let rows = try database.query("SELECT * FROM prompt_versions ORDER BY createdAt ASC;")
+    private struct SavedVersionMetadata {
+        let sequence: Int64
+        let createdAt: String
+        let sortKey: Int64
+    }
+
+    private func loadVersionMetadata(itemID: String) throws -> [String: SavedVersionMetadata] {
+        guard versionSequenceStorageAvailable else { return [:] }
+        let rows = try database.query(
+            "SELECT id, createdAt, versionCreatedAtSortKey, versionSequence FROM prompt_versions WHERE promptItemId = ?;",
+            values: [.text(itemID)]
+        )
+        var values: [String: SavedVersionMetadata] = [:]
+        for row in rows {
+            guard let rawSequence = row["versionSequence"] ?? nil,
+                  let sequence = Int64(rawSequence),
+                  let createdAt = row["createdAt"] ?? nil,
+                  let rawSortKey = row["versionCreatedAtSortKey"] ?? nil,
+                  let sortKey = Int64(rawSortKey) else { continue }
+            values[required(row, "id")] = SavedVersionMetadata(
+                sequence: sequence,
+                createdAt: createdAt,
+                sortKey: sortKey
+            )
+        }
+        return values
+    }
+
+    private func nextVersionSequence(itemID: String) throws -> Int64 {
+        let value = try database.query(
+            "SELECT COALESCE(MAX(versionSequence), 0) + 1 AS nextSequence FROM prompt_versions WHERE promptItemId = ?;",
+            values: [.text(itemID)]
+        ).first?["nextSequence"] ?? nil
+        return Int64(value ?? "") ?? 1
+    }
+
+    /// The columns are added before the migration reaches `.ready`. Writers
+    /// therefore dual-write during backfill so a checkpoint cannot skip rows
+    /// that would otherwise contain NULL sequence metadata.
+    private var versionSequenceStorageAvailable: Bool {
+        guard let columns = try? versionSequenceColumnNames() else { return false }
+        return columns.contains("versionSequence") && columns.contains("versionCreatedAtSortKey")
+    }
+
+    private func reconcileVersionSequenceMigrationFingerprintIfNeeded() throws {
+        guard (try? versionSequenceMetadataTableExists()) == true else { return }
+        let state = try versionSequenceMigrationState()
+        guard state.phase == .backfilling else { return }
+        // Writers participate in the migration contract with one metadata-row
+        // counter bump. The protected payload fingerprint is reserved for
+        // prepare and final reconciliation, avoiding O(writes × versions).
+        try database.run(
+            "UPDATE version_sequence_migration SET changeCounter = changeCounter + 1, updatedAt = ? WHERE id = 1;",
+            values: [.text(Self.string(from: Date()))]
+        )
+    }
+
+    private func loadVersions(versionSequenceReady: Bool) throws -> [String: [PromptVersion]] {
+        let rows: [[String: String?]]
+        if versionSequenceReady {
+            rows = try database.query(
+                "SELECT * FROM prompt_versions ORDER BY versionCreatedAtSortKey ASC, versionSequence ASC;"
+            )
+        } else {
+            rows = try database.query("SELECT * FROM prompt_versions ORDER BY createdAt ASC;")
+        }
         var grouped: [String: [PromptVersion]] = [:]
         for row in rows {
             let itemID = required(row, "promptItemId")
@@ -1082,7 +1603,13 @@ public final class PromptRepository: @unchecked Sendable {
                 negativePrompt: required(row, "negativePrompt"),
                 parameters: decode([String: String].self, from: required(row, "parametersJSON"), fallback: [:]),
                 note: required(row, "note"),
-                createdAt: date(required(row, "createdAt")) ?? Date()
+                createdAt: date(required(row, "createdAt")) ?? Date(),
+                versionSequence: versionSequenceReady
+                    ? (row["versionSequence"] ?? nil).flatMap(Int64.init)
+                    : nil,
+                versionCreatedAtSortKey: versionSequenceReady
+                    ? (row["versionCreatedAtSortKey"] ?? nil).flatMap(Int64.init)
+                    : nil
             )
             grouped[itemID, default: []].append(version)
         }
@@ -1154,7 +1681,7 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
-    private func refreshTags(from items: [PromptItem]) throws {
+    func refreshTags(from items: [PromptItem]) throws {
         var counts: [String: Int] = [:]
         for item in items where !item.isDeleted {
             for tag in item.tags {
@@ -1208,6 +1735,13 @@ public final class PromptRepository: @unchecked Sendable {
     private func date(_ string: String?) -> Date? {
         guard let string, !string.isEmpty else { return nil }
         return ISO8601DateFormatter().date(from: string)
+    }
+
+    private func legacyCreatedAt(_ raw: String) throws -> Date {
+        if let observation = PromptItemCreatedAtSupport.legacyObservation(from: raw) {
+            return observation.date
+        }
+        return try legacyObservationClock.observe()
     }
 
     private func required(_ row: [String: String?], _ key: String) -> String {

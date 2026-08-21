@@ -21,6 +21,7 @@ bash Scripts/test_swift_toolchain.sh
 bash Scripts/test_license_keychain.sh
 bash Scripts/test_codesign_policy.sh
 bash Scripts/test_release_ui_copy.sh
+bash Scripts/test_batch_media_import.sh
 bash Scripts/test_prompt_smart_paste.sh
 ```
 
@@ -39,6 +40,7 @@ Coverage:
 - `PromptImportParser` text, tag, negative prompt, and parameter parsing.
 - `PromptFiltering` query, model, tag, folder, recent sorting, and trash behavior.
 - `PromptRepository` round trips for items, versions, tags, folders, thumbnails, last-used dates, trash/restore, and seed asset repair.
+- `MediaImportService` nested scanning, bounded concurrency, stable ordering, batch rollback, cancellation cleanup, and 100-file persistence.
 - `PromptStudioAutomationService` prompt creation, updates, text imports, image metadata imports, and validation.
 
 Core unit tests should not spawn app processes or depend on the default user library. Use temporary library directories.
