@@ -19,6 +19,17 @@ struct ExternalFileOpenRequest: Identifiable, Equatable {
     let urls: [URL]
 }
 
+enum DeleteSelectionCapability: Equatable {
+    case none
+    case items(Set<String>)
+    case folders(Set<String>)
+}
+
+private struct ThumbnailLibraryOwnerToken: Equatable, Sendable {
+    let generation: UInt64
+    let url: URL
+}
+
 struct TemporaryTextPreviewRequest: Identifiable, Equatable {
     let id = UUID()
     let url: URL
@@ -299,12 +310,21 @@ final class AppState: ObservableObject {
             handleItemsChanged(from: oldValue)
         }
     }
-    @Published var tags: [Tag] = []
+    @Published var tags: [Tag] = [] {
+        didSet {
+            if oldValue != tags {
+                enqueueSummaryMutationRefresh()
+            }
+        }
+    }
     @Published var models: [ModelProfile] = SeedData.models
     @Published var folders: [LibraryFolder] = [] {
         didSet {
             masonryDatasetRevision.folderRevision &+= 1
             libraryStatisticsCache.recomputeFolderHierarchy(folders)
+            if oldValue != folders {
+                enqueueSummaryMutationRefresh()
+            }
         }
     }
     @Published var filter = PromptFilter() {
@@ -322,7 +342,53 @@ final class AppState: ObservableObject {
     @Published private(set) var selectedFolderIDs: Set<String> = []
     @Published private(set) var selectedFolderID: String?
     var selectedID: String? { selectionState.primaryID }
+    /// Stable identity is the Summary selection source.  Detail content is
+    /// deliberately not derived from `items` while the Summary browser is
+    /// attached; the shared ItemDetailController owns that asynchronous
+    /// state instead.
+    var selectedItemID: String? { selectionState.primaryID }
     var selectedIDs: Set<String> { selectionState.ids }
+
+    /// Shared command capability for the App menu and local key monitor.
+    /// Summary mode evaluates resident IDs because its legacy item array is
+    /// intentionally empty; legacy mode retains its full-item behavior.
+    var deleteSelectionCapability: DeleteSelectionCapability {
+        if !selectedFolderIDs.isEmpty {
+            return .folders(selectedFolderIDs)
+        }
+
+        let itemIDs = selectedIDs.isEmpty
+            ? selectedID.map { Set([$0]) } ?? []
+            : selectedIDs
+        guard !itemIDs.isEmpty else { return .none }
+
+        if summaryPaginator != nil {
+            let selectedSummaries = summaryItems.filter { itemIDs.contains($0.id) }
+            guard selectedSummaries.count == itemIDs.count,
+                  selectedSummaries.allSatisfy({ $0.deletedAt == nil }) else {
+                return .none
+            }
+            return .items(itemIDs)
+        }
+
+        guard items.contains(where: { itemIDs.contains($0.id) && !$0.isDeleted }) else {
+            return .none
+        }
+        return .items(itemIDs)
+    }
+
+    var canDeleteSelection: Bool { deleteSelectionCapability != .none }
+
+    func performDeleteSelection() {
+        switch deleteSelectionCapability {
+        case .none:
+            return
+        case .items(let itemIDs):
+            moveItemsToTrash(Array(itemIDs))
+        case .folders(let folderIDs):
+            beginDeleteFolders(Array(folderIDs))
+        }
+    }
 
     func selectedItemIDsOrFallback(_ itemID: String) -> [String] {
         selectionActionContext(clickedItemID: itemID).orderedItemIDs
@@ -387,6 +453,15 @@ final class AppState: ObservableObject {
     @Published private(set) var canNavigateBack = false
     @Published private(set) var canNavigateForward = false
     @Published private(set) var libraryAccessState: LibraryAccessState = .loading
+    /// Summary is the production browser source for the 2A.4 surface.  The
+    /// legacy PromptItem arrays remain available to the detail/editor seams,
+    /// but Summary UI never hydrates cards from them.
+    @Published private(set) var summaryPaginator: LibrarySummaryPaginator?
+    @Published private(set) var summaryAttachError: String?
+    @Published var summaryPreviewItemID: String?
+    @Published private(set) var summaryDetailController: ItemDetailController?
+    @Published private(set) var summaryPreviewPageSession: PreviewPageSession?
+    var summaryPreviewNavigationTask: Task<Void, Never>?
 
     /// The app-side adapter is intentionally a closure. PromptStudioCore owns
     /// the production capture model; this keeps the Pet target buildable while
@@ -400,13 +475,27 @@ final class AppState: ObservableObject {
     private var repository: PromptRepository? {
         authorizedLibraryContext?.repository
     }
+
+    // Narrow seam for Summary's ID-only mutation path; the legacy repository
+    // remains private to the full-item/editor code below.
+    var summaryRepository: PromptRepository? { repository }
+    func summaryFolder(withID id: String) -> LibraryFolder? { folder(withID: id) }
     private var itemsByID: [String: PromptItem] = [:]
     private var itemIndexByID: [String: Int] = [:]
     private var libraryFilterSnapshot: LibraryFilterSnapshot?
     private var filterTask: Task<Void, Never>?
     private var filterSnapshotTask: Task<Void, Never>?
+    // Coalesces folder/item/tag didSet notifications emitted by one generic
+    // repository mutation into a single Summary replacement request.
+    var summaryMutationRefreshTask: Task<Void, Never>?
+    var summaryRetryTask: Task<Void, Never>?
+    var summaryMutationRefreshGeneration: UInt64 = 0
     private var filterGeneration: UInt64 = 0
+    private var libraryGeneration: UInt64 = 0
     private var thumbnailPathBatcher: ThumbnailPathBatcher?
+#if DEBUG
+    private var thumbnailPersistenceOverrideForTesting: ThumbnailPathBatcher.FlushHandler?
+#endif
     private var pendingLastUsedTask: Task<Void, Never>?
     private var libraryLoadTask: Task<Void, Never>?
     private var loadGeneration = 0
@@ -433,6 +522,14 @@ final class AppState: ObservableObject {
         authorizedLibraryContext?.url ?? configuredLibraryURL
     }
 
+    private func ownsThumbnailWork(_ token: ThumbnailLibraryOwnerToken) -> Bool {
+        guard libraryGeneration == token.generation,
+              let context = authorizedLibraryContext else {
+            return false
+        }
+        return context.url.standardizedFileURL == token.url.standardizedFileURL
+    }
+
     var isImporting: Bool {
         mediaImportTask != nil
     }
@@ -451,16 +548,36 @@ final class AppState: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        $filter
+            .dropFirst()
+            .sink { [weak self] filter in
+                self?.refreshSummaryPage(for: filter)
+            }
+            .store(in: &cancellables)
     }
 
     var selectedItem: PromptItem? {
-        selectedID.flatMap { itemsByID[$0] }
+        if summaryPaginator != nil {
+            return summaryDetailController?.currentDetail
+        }
+        return selectedID.flatMap { itemsByID[$0] }
     }
 
     /// Resolve composer and inspector work by stable item identity. Selection
     /// can change while a sheet is open, so edit paths must not read only the
     /// current selected item.
     func promptItem(for itemID: String) -> PromptItem? {
+        if summaryPaginator != nil {
+            return summaryDetailController?.selectedID == itemID
+                ? summaryDetailController?.currentDetail
+                : nil
+        }
+        return itemsByID[itemID] ?? items.first(where: { $0.id == itemID })
+    }
+
+    /// Explicit legacy-only lookup for editor/maintenance seams. Summary UI
+    /// must call the ID-native detail controller instead of this path.
+    func legacyPromptItem(for itemID: String) -> PromptItem? {
         itemsByID[itemID] ?? items.first(where: { $0.id == itemID })
     }
 
@@ -649,9 +766,9 @@ final class AppState: ObservableObject {
             guard let self else { return }
             do {
                 let context = try makeContext()
-                let data = try self.loadRepositoryData(repository: context.repository)
+                let data = try self.loadRepositoryData(repository: context.repository, includeLegacyItems: false)
                 guard generation == self.loadGeneration, !Task.isCancelled else { return }
-                self.installLibraryContext(context, data: data)
+                await self.installLibraryContext(context, data: data)
             } catch let error as LibraryLoadError {
                 guard generation == self.loadGeneration, !Task.isCancelled else { return }
                 self.handleLibraryLoadError(error)
@@ -662,7 +779,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func loadRepositoryData(repository: PromptRepository) throws -> LoadedLibraryData {
+    private func loadRepositoryData(
+        repository: PromptRepository,
+        includeLegacyItems: Bool
+    ) throws -> LoadedLibraryData {
         let seedItems: [PromptItem]
         if AppRuntimePolicy.includesDemoLibraryContent,
            let seedBundle = Self.seedResourceBundle() {
@@ -676,29 +796,39 @@ final class AppState: ObservableObject {
             tags: AppRuntimePolicy.includesDemoLibraryContent ? SeedData.tags : []
         )
         try repository.seedFoldersIfNeeded(initialFolders)
-        try migrateFolderHierarchyIfNeeded(repository: repository)
-        try repository.repairSeedAssetPaths(from: seedItems)
-        let placeholderMigration = try repository.migratePromptPlaceholders()
-        if placeholderMigration.migratedCount > 0 || placeholderMigration.failedCount > 0 {
-            DebugPerformanceProbe.record(
-                "prompt.placeholder.migration.count",
-                value: Double(placeholderMigration.migratedCount)
-            )
-            if placeholderMigration.failedCount > 0 {
+        if includeLegacyItems {
+            try migrateFolderHierarchyIfNeeded(repository: repository)
+            try repository.repairSeedAssetPaths(from: seedItems)
+            let placeholderMigration = try repository.migratePromptPlaceholders()
+            if placeholderMigration.migratedCount > 0 || placeholderMigration.failedCount > 0 {
                 DebugPerformanceProbe.record(
-                    "prompt.placeholder.migration.failure",
-                    value: Double(placeholderMigration.failedCount)
+                    "prompt.placeholder.migration.count",
+                    value: Double(placeholderMigration.migratedCount)
+                )
+                if placeholderMigration.failedCount > 0 {
+                    DebugPerformanceProbe.record(
+                        "prompt.placeholder.migration.failure",
+                        value: Double(placeholderMigration.failedCount)
+                    )
+                }
+                print(
+                    "Prompt placeholder migration: migrated \(placeholderMigration.migratedCount) of "
+                        + "\(placeholderMigration.candidateCount), failed \(placeholderMigration.failedCount)"
                 )
             }
-            print(
-                "Prompt placeholder migration: migrated \(placeholderMigration.migratedCount) of "
-                    + "\(placeholderMigration.candidateCount), failed \(placeholderMigration.failedCount)"
-            )
         }
         let persistedModels = try repository.loadModelProfiles()
         let loadedFolders = try repository.loadFolders()
-        let loadedItems = try repository.loadItems()
-        try repairLegacyRecentTimestampsIfNeeded(repository: repository)
+        let loadedItems: [PromptItem]
+        if includeLegacyItems {
+            SummaryStartupBoundaryInstrumentation.recordLegacyLoad(for: repository.libraryURL)
+            loadedItems = try repository.loadItems()
+        } else {
+            loadedItems = []
+        }
+        if includeLegacyItems {
+            try repairLegacyRecentTimestampsIfNeeded(repository: repository)
+        }
         let loadedTags = try repository.loadTags()
         return LoadedLibraryData(
             models: SeedData.orderedModels(persistedModels.isEmpty ? SeedData.models : persistedModels),
@@ -733,8 +863,13 @@ final class AppState: ObservableObject {
         return nil
     }
 
-    private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) {
-        stopLibraryBackgroundWork()
+    private func installLibraryContext(_ context: AuthorizedLibraryContext, data: LoadedLibraryData) async {
+        await stopLibraryBackgroundWork()
+        libraryGeneration &+= 1
+        let thumbnailOwner = ThumbnailLibraryOwnerToken(
+            generation: libraryGeneration,
+            url: context.url.standardizedFileURL
+        )
         authorizedLibraryContext = context
         referenceThumbnailService = ReferenceThumbnailService.shared(
             libraryURL: context.url,
@@ -743,12 +878,53 @@ final class AppState: ObservableObject {
             }
         )
         let repository = context.repository
-        thumbnailPathBatcher = ThumbnailPathBatcher { [weak self] updates in
+#if DEBUG
+        let thumbnailPersistenceOverride = thumbnailPersistenceOverrideForTesting
+#endif
+        summaryAttachError = nil
+        do {
+            summaryPaginator = try LibrarySummaryPaginator(repository: repository, folders: data.folders)
+        } catch {
+            summaryPaginator = nil
+            summaryAttachError = error.localizedDescription
+        }
+        if summaryPaginator != nil {
+            do {
+                summaryDetailController = try repository.makeItemDetailController()
+            } catch {
+                summaryDetailController = nil
+                summaryPaginator = nil
+                summaryAttachError = "摘要详情连接失败：\(error.localizedDescription)"
+            }
+        } else {
+            summaryDetailController = nil
+        }
+        if let paginator = summaryPaginator, let controller = summaryDetailController {
+            summaryPreviewPageSession = PreviewPageSession(
+                browser: paginator.browser,
+                detailController: controller
+            )
+        } else {
+            summaryPreviewPageSession = nil
+        }
+        thumbnailPathBatcher = ThumbnailPathBatcher { [weak self] _, updates in
+            guard let self, await self.ownsThumbnailWork(thumbnailOwner) else { return }
+#if DEBUG
+            if let thumbnailPersistenceOverride {
+                try await thumbnailPersistenceOverride(updates)
+            } else {
+                try await Task.detached(priority: .utility) {
+                    try repository.updateThumbnailPaths(updates)
+                }.value
+            }
+#else
             try await Task.detached(priority: .utility) {
                 try repository.updateThumbnailPaths(updates)
             }.value
+#endif
+            guard await self.ownsThumbnailWork(thumbnailOwner) else { return }
             await MainActor.run {
-                self?.commitThumbnailPaths(updates)
+                self.commitThumbnailPaths(updates, owner: thumbnailOwner)
             }
         }
         mediaImportService = Self.makeMediaImportService(libraryURL: context.url)
@@ -763,6 +939,7 @@ final class AppState: ObservableObject {
         filter = PromptFilter()
         isBatchingFilterUpdate = false
         refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
+        refreshSummaryPage(for: filter)
         libraryAccessState = .ready(
             LibraryDescriptor(
                 url: context.url,
@@ -773,7 +950,107 @@ final class AppState: ObservableObject {
         libraryStatisticsCache.invalidate(repository: context.repository, folders: data.folders)
     }
 
-    private func stopLibraryBackgroundWork() {
+    /// Loads the full legacy model only after the user explicitly selects the
+    /// legacy Summary escape hatch. Normal attached Summary rendering never
+    /// calls this method and therefore never evaluates the full filter path.
+    @discardableResult
+    func loadLegacyItemsForExplicitSummaryMode() -> [PromptItem] {
+        guard items.isEmpty, let repository else { return filteredItems }
+        do {
+            SummaryStartupBoundaryInstrumentation.recordLegacyLoad(for: repository.libraryURL)
+            items = try repository.loadItems()
+            refreshFilteredItems(preserveExistingSelection: false, allowEmptySelection: true)
+        } catch {
+            modal = .error(error.localizedDescription)
+        }
+        return filteredItems
+    }
+
+#if DEBUG
+    /// Test-only injection keeps the runtime integration test on the real
+    /// AppState didSet hooks while its query executor remains in-memory.
+    func installSummaryPaginatorForTesting(_ paginator: LibrarySummaryPaginator) {
+        summaryPaginator = paginator
+    }
+
+    func loadRepositoryItemCountForTesting(
+        repository: PromptRepository,
+        explicitLegacyMode: Bool
+    ) throws -> Int {
+        try loadRepositoryData(repository: repository, includeLegacyItems: explicitLegacyMode).items.count
+    }
+
+    /// Runs the same context/data/install path as ordinary startup against a
+    /// caller-owned temporary repository. No user Library authorization is
+    /// consulted by this debug-only seam.
+    func startLibraryLoadForTesting(repository: PromptRepository) async {
+        startLibraryLoad {
+            AuthorizedLibraryContext(url: repository.libraryURL, session: nil, repository: repository)
+        }
+        await libraryLoadTask?.value
+    }
+
+    /// Runtime integration tests use a temporary repository and the exact
+    /// install/reload path without touching the user's Library directory.
+    func installLibraryContextForTesting(
+        repository: PromptRepository,
+        models: [ModelProfile] = SeedData.models,
+        folders: [LibraryFolder],
+        items: [PromptItem],
+        tags: [Tag]
+    ) async {
+        let context = AuthorizedLibraryContext(url: repository.libraryURL, session: nil, repository: repository)
+        await installLibraryContext(
+            context,
+            data: LoadedLibraryData(models: models, folders: folders, items: items, tags: tags)
+        )
+    }
+
+    /// Test-only lifecycle seam. A replacement context may not discard its
+    /// paginator until the underlying SQLite request has physically settled.
+    func stopLibraryBackgroundWorkForTesting() async {
+        await stopLibraryBackgroundWork()
+    }
+
+    func setThumbnailPersistenceOverrideForTesting(_ handler: ThumbnailPathBatcher.FlushHandler?) {
+        thumbnailPersistenceOverrideForTesting = handler
+    }
+
+    func enqueueThumbnailUpdatesForTesting(_ updates: [String: String]) async throws {
+        guard let thumbnailPathBatcher else { return }
+        _ = try await thumbnailPathBatcher.enqueue(updates)
+        _ = try await thumbnailPathBatcher.flush()
+    }
+
+    func enableTrialForTesting() {
+        licenseManager.enableTrialForTesting()
+    }
+#endif
+
+    private func stopLibraryBackgroundWork() async {
+        libraryGeneration &+= 1
+        if let summaryPaginator {
+            await summaryPaginator.cancelAndWait()
+        }
+        summaryPaginator = nil
+        summaryAttachError = nil
+        if let summaryMutationRefreshTask {
+            summaryMutationRefreshTask.cancel()
+            await summaryMutationRefreshTask.value
+        }
+        summaryMutationRefreshTask = nil
+        if let summaryRetryTask {
+            summaryRetryTask.cancel()
+            await summaryRetryTask.value
+        }
+        summaryRetryTask = nil
+        summaryDetailController?.cancel()
+        summaryDetailController = nil
+        summaryPreviewNavigationTask?.cancel()
+        summaryPreviewNavigationTask = nil
+        summaryPreviewPageSession?.reset()
+        summaryPreviewPageSession = nil
+        summaryPreviewItemID = nil
         pendingLastUsedTask?.cancel()
         pendingLastUsedTask = nil
         activeThumbnailGenerationIDs.removeAll()
@@ -796,10 +1073,12 @@ final class AppState: ObservableObject {
         filterTask = nil
         filterSnapshotTask?.cancel()
         filterSnapshotTask = nil
+        libraryFilterSnapshot = nil
+        filteredItems = []
         libraryFilterController.cancel()
-        libraryStatisticsCache.cancel()
+        await libraryStatisticsCache.cancelAndWait()
         if let thumbnailPathBatcher {
-            Task { await thumbnailPathBatcher.cancel() }
+            await thumbnailPathBatcher.cancelAndWait()
         }
         thumbnailPathBatcher = nil
         thumbnailUpdateState.reset()
@@ -915,6 +1194,10 @@ final class AppState: ObservableObject {
     private func updateSelection(ids: Set<String>, primaryID: String?) {
         let normalizedPrimaryID = primaryID.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first
         let nextState = SelectionState(primaryID: normalizedPrimaryID, ids: ids)
+        if summaryPaginator != nil,
+           summaryDetailController?.selectedID != normalizedPrimaryID {
+            summaryDetailController?.select(id: normalizedPrimaryID)
+        }
         guard nextState != selectionState else { return }
         referenceLightbox = nil
         if let normalizedPrimaryID {
@@ -923,7 +1206,9 @@ final class AppState: ObservableObject {
             inspectorSelectionStartedAt.removeAll()
         }
         selectionState = nextState
-        if let normalizedPrimaryID, let item = itemsByID[normalizedPrimaryID] {
+        if summaryPaginator == nil,
+           let normalizedPrimaryID,
+           let item = itemsByID[normalizedPrimaryID] {
             prioritizeReferenceThumbnails(for: item)
         }
     }
@@ -2404,11 +2689,15 @@ final class AppState: ObservableObject {
 
         do {
             let lookup = Dictionary(uniqueKeysWithValues: siblings.map { ($0.id, $0) })
-            for (index, id) in finalIDs.enumerated() {
-                guard var folder = lookup[id] else { continue }
-                folder.sortOrder = index
-                try repository?.saveFolder(folder)
+            let updates: [FolderParentSortUpdate] = finalIDs.enumerated().compactMap { index, id -> FolderParentSortUpdate? in
+                guard let folder = lookup[id] else { return nil }
+                return FolderParentSortUpdate(
+                    folderID: folder.id,
+                    parentID: folder.parentId,
+                    sortOrder: index
+                )
             }
+            try repository?.updateFolderParentsAndSort(updates)
             folders = try repository?.loadFolders() ?? folders
         } catch {
             modal = .error(error.localizedDescription)
@@ -2471,11 +2760,14 @@ final class AppState: ObservableObject {
         siblings.swapAt(draggedIndex, targetIndex)
 
         do {
-            for index in siblings.indices {
-                var folder = siblings[index]
-                folder.sortOrder = index
-                try repository?.saveFolder(folder)
+            let updates = siblings.enumerated().map { index, folder in
+                FolderParentSortUpdate(
+                    folderID: folder.id,
+                    parentID: folder.parentId,
+                    sortOrder: index
+                )
             }
+            try repository?.updateFolderParentsAndSort(updates)
             folders = try repository?.loadFolders() ?? folders
         } catch {
             modal = .error(error.localizedDescription)
@@ -2514,11 +2806,12 @@ final class AppState: ObservableObject {
         moveFolders([folder.id], toParentID: parentID)
     }
 
-    func moveFolders(_ folderIDs: [String], toParentID parentID: String?) {
-        guard requireFeature(.proManageCollections) else { return }
+    @discardableResult
+    func moveFolders(_ folderIDs: [String], toParentID parentID: String?) -> Bool {
+        guard requireFeature(.proManageCollections) else { return false }
         guard let repository else {
             modal = .error("资料库尚未连接")
-            return
+            return false
         }
         do {
             let contextIDs = FolderSelectionActionContext.normalizeParentChildOverlap(
@@ -2537,10 +2830,13 @@ final class AppState: ObservableObject {
             }
             clearSelectedFolder()
             showToast(plan.sourceFolderIDs.count > 1 ? "已移动 \(plan.sourceFolderIDs.count) 个文件夹" : "已移动文件夹")
+            return true
         } catch let error as FolderBatchMoveError {
             showToast(error.localizedDescription)
+            return false
         } catch {
             modal = .error(error.localizedDescription)
+            return false
         }
     }
 
@@ -2579,8 +2875,23 @@ final class AppState: ObservableObject {
         )
         guard !normalizedIDs.isEmpty else { return }
         let selectedNames = normalizedIDs.compactMap { folder(withID: $0)?.name }
-        let allTreeIDs = Set(normalizedIDs.flatMap { Array(descendantFolderIDs(of: $0, includingSelf: true)) })
-        let count = items.filter { !$0.isDeleted && allTreeIDs.contains($0.folderId) }.count
+        let count: Int
+        if summaryPaginator != nil {
+            let subtreeIDs = Set(normalizedIDs.flatMap {
+                descendantFolderIDs(of: $0, includingSelf: true)
+            })
+            if let directCounts = try? repository?.loadLibraryStatistics().folderCounts {
+                count = subtreeIDs.reduce(0) { $0 + directCounts[$1, default: 0] }
+            } else {
+                count = normalizedIDs.reduce(into: 0) { count, folderID in
+                    guard let folder = folder(withID: folderID) else { return }
+                    count += itemCount(in: folder, includingDescendants: true)
+                }
+            }
+        } else {
+            let allTreeIDs = Set(normalizedIDs.flatMap { Array(descendantFolderIDs(of: $0, includingSelf: true)) })
+            count = items.filter { !$0.isDeleted && allTreeIDs.contains($0.folderId) }.count
+        }
         modal = .folderDeleteConfirmation(
             FolderDeleteRequest(
                 folderIDs: normalizedIDs,
@@ -2690,11 +3001,15 @@ final class AppState: ObservableObject {
     private func saveFolderOrder(parentId: String?, orderedIDs: [String]) throws {
         let siblings = folders.filter { $0.parentId == parentId }
         let lookup = Dictionary(uniqueKeysWithValues: siblings.map { ($0.id, $0) })
-        for (index, id) in orderedIDs.enumerated() {
-            guard var folder = lookup[id] else { continue }
-            folder.sortOrder = index
-            try repository?.saveFolder(folder)
+        let updates: [FolderParentSortUpdate] = orderedIDs.enumerated().compactMap { index, id -> FolderParentSortUpdate? in
+            guard let folder = lookup[id] else { return nil }
+            return FolderParentSortUpdate(
+                folderID: folder.id,
+                parentID: folder.parentId,
+                sortOrder: index
+            )
         }
+        try repository?.updateFolderParentsAndSort(updates)
     }
 
     private func nextDefaultFolderName(parentId: String?) -> String {
@@ -2733,12 +3048,11 @@ final class AppState: ObservableObject {
             var selectedAfterRename = selectedID
             for index in updatedItems.indices where updatedItems[index].folderId == folder.id {
                 updatedItems[index].folderName = trimmedName
-                updatedItems[index].updatedAt = Date()
-                try repository?.saveItem(updatedItems[index])
                 if selectedAfterRename == nil {
                     selectedAfterRename = updatedItems[index].id
                 }
             }
+            items = updatedItems
             reload(selecting: selectedAfterRename)
             showToast("已重命名文件夹")
             return true
@@ -3333,10 +3647,21 @@ final class AppState: ObservableObject {
             } else if validFolderIDs != selectedFolderIDs {
                 selectFolders(ids: validFolderIDs, primaryID: selectedFolderID)
             }
-            items = try repository?.loadItems() ?? []
             tags = try repository?.loadTags() ?? []
-            refreshFilteredItems(selecting: id)
             libraryStatisticsCache.invalidate(repository: repository, folders: folders)
+
+            // Summary mode owns an ID-native paged projection. Repository
+            // mutations must not repopulate the legacy full-item array just
+            // to refresh that projection; the paginator performs the exact
+            // revision replacement below. Legacy mode keeps its established
+            // full-array reload behavior.
+            if summaryPaginator != nil {
+                enqueueSummaryMutationRefresh()
+                return
+            }
+
+            items = try repository?.loadItems() ?? []
+            refreshFilteredItems(selecting: id)
         } catch {
             modal = .error(error.localizedDescription)
         }
@@ -3353,6 +3678,9 @@ final class AppState: ObservableObject {
         let oldByID = Dictionary(uniqueKeysWithValues: oldItems.map { ($0.id, $0) })
         let removedIDs = Set(oldByID.keys).subtracting(itemsByID.keys)
         let changedItems = items.filter { oldByID[$0.id] != $0 }
+        if !changedItems.isEmpty || !removedIDs.isEmpty {
+            enqueueSummaryMutationRefresh()
+        }
         let requiresFullBuild = libraryFilterSnapshot == nil
             || oldItems.isEmpty
             || filterSnapshotTask != nil
@@ -3577,8 +3905,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func commitThumbnailPaths(_ updates: [String: String]) {
-        guard !updates.isEmpty else { return }
+    private func commitThumbnailPaths(
+        _ updates: [String: String],
+        owner: ThumbnailLibraryOwnerToken
+    ) {
+        guard ownsThumbnailWork(owner), !updates.isEmpty else { return }
         for (itemID, path) in updates {
             guard var item = itemsByID[itemID] else { continue }
             item.thumbnailPath = path

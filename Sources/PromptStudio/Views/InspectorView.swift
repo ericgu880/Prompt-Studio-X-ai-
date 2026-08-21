@@ -23,9 +23,20 @@ struct InspectorView: View {
     var body: some View {
         Group {
             if let folder = state.selectedFolder {
-                folderInfoInspector(for: folder)
+                if state.summaryPaginator != nil {
+                    summaryFolderInfoInspector(for: folder)
+                } else {
+                    folderInfoInspector(for: folder)
+                }
             } else if let item = state.selectedItem {
                 inspector(for: item)
+            } else if state.summaryPaginator != nil,
+                      let controller = state.summaryDetailController,
+                      controller.selectedID != nil {
+                SummaryInspectorDetailStateView(
+                    controller: controller,
+                    loadedContent: { item in AnyView(inspector(for: item)) }
+                )
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("未选择素材")
@@ -44,7 +55,7 @@ struct InspectorView: View {
         .background(StudioColor.panel)
         .onChange(of: state.selectedID) { _, selectedID in
             stopEditing()
-            if let item = state.items.first(where: { $0.id == selectedID }), item.isTextDocumentLike {
+            if let item = state.selectedItem, item.id == selectedID, item.isTextDocumentLike {
                 loadMarkdownDocument(item)
             } else {
                 markdownDocumentLoadTask?.cancel()
@@ -121,6 +132,124 @@ struct InspectorView: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.control.opacity(0.55)))
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 28)
+        }
+        .transparentScrollArea()
+    }
+
+    /// Summary folder inspection is projection-only. Legacy PromptItem
+    /// counts/previews remain in `folderInfoInspector` behind the attached
+    /// Summary seam and are never evaluated for ordinary Summary browsing.
+    private func summaryFolderInfoInspector(for folder: LibraryFolder) -> some View {
+        let folderIDs = state.folderDescendantIDs(for: folder.id)
+        let summaries = state.summaryItems.filter { $0.deletedAt == nil && folderIDs.contains($0.folderId) }
+        let imageCount = summaries.filter { $0.assetKind == .image }.count
+        let videoCount = summaries.filter { $0.assetKind == .video }.count
+        let documentCount = summaries.filter { $0.assetKind == .markdown || $0.assetKind == .document }.count
+        let childFolders = state.childFolders(of: folder.id)
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(StudioColor.control)
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(StudioColor.primaryAction)
+                    }
+                    .frame(width: 58, height: 58)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(folder.name)
+                            .font(StudioFont.font(18, weight: .bold))
+                            .foregroundStyle(StudioColor.text)
+                            .lineLimit(3)
+                        Text("文件夹信息")
+                            .font(StudioFont.font(12))
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
+                    Spacer(minLength: 8)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    infoLine("文件名", folder.name)
+                    infoLine("已加载文件数", "\(summaries.count)")
+                    infoLine("图片", "\(imageCount)")
+                    infoLine("视频", "\(videoCount)")
+                    infoLine("文档", "\(documentCount)")
+                    infoLine("其他", "\(max(0, summaries.count - imageCount - videoCount - documentCount))")
+                    infoLine("创建日期", folderCreatedDateText(folder.createdAt))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(StudioColor.control.opacity(0.55)))
+
+                if !childFolders.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SidePanelSectionTitle(title: "子文件夹")
+                        ForEach(childFolders) { child in
+                            Button {
+                                state.selectFolderForPreview(child)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "folder")
+                                        .foregroundStyle(StudioColor.primaryAction)
+                                    Text(child.name)
+                                        .foregroundStyle(StudioColor.text)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(StudioColor.secondaryText)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 34)
+                                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(StudioColor.control.opacity(0.62)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if !summaries.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SidePanelSectionTitle(title: "最近添加")
+                        ForEach(summaries.prefix(6)) { summary in
+                            Button {
+                                state.selectSummaryItem(id: summary.id)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    SummaryInspectorThumbnail(summary: summary)
+                                        .frame(width: 42, height: 42)
+                                    Text(summary.title)
+                                        .font(StudioFont.font(12, weight: .medium))
+                                        .foregroundStyle(StudioColor.text)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 52)
+                                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(StudioColor.control.opacity(0.42)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Button { state.selectFolder(folder) } label: {
+                    HStack {
+                        Image(systemName: "arrow.right")
+                        Text("打开文件夹")
+                        Spacer()
+                    }
+                    .font(StudioFont.font(13, weight: .semibold))
+                    .foregroundStyle(StudioColor.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(StudioColor.control))
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 24)
             .padding(.top, 24)
@@ -1269,6 +1398,103 @@ private struct InlinePromptEditor: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
         .animation(StudioMotion.fast(reduceMotion: reduceMotion), value: isHovered)
+    }
+}
+
+enum SummaryInspectorDetailPresentation: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed
+}
+
+func summaryInspectorDetailPresentation(for state: ItemDetailState) -> SummaryInspectorDetailPresentation {
+    switch state {
+    case .idle: return .idle
+    case .loading: return .loading
+    case .loaded: return .loaded
+    case .failed: return .failed
+    }
+}
+
+private struct SummaryInspectorDetailStateView: View {
+    @ObservedObject var controller: ItemDetailController
+    let loadedContent: (PromptItem) -> AnyView
+
+    var body: some View {
+        Group {
+            if controller.state == .loaded, let item = controller.currentDetail {
+                loadedContent(item)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    switch summaryInspectorDetailPresentation(for: controller.state) {
+                    case .failed:
+                        Image(systemName: controller.isNotFound ? "questionmark.folder" : "exclamationmark.triangle")
+                            .font(.system(size: 26))
+                            .foregroundStyle(StudioColor.secondaryText)
+                        Text(controller.error?.localizedDescription ?? "详情加载失败")
+                            .foregroundStyle(StudioColor.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !controller.isNotFound {
+                            Button("重试") { controller.retry() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    case .loading, .loaded:
+                        ProgressView()
+                        Text("正在加载详情…")
+                            .foregroundStyle(StudioColor.secondaryText)
+                    case .idle:
+                        Text("未选择详情")
+                            .foregroundStyle(StudioColor.secondaryText)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, StudioLayout.contentTopPadding)
+                .foregroundStyle(StudioColor.text)
+            }
+        }
+    }
+}
+
+private struct SummaryInspectorThumbnail: View {
+    let summary: LibraryItemSummary
+    @StateObject private var loader = SharedThumbnailImageLoader()
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(StudioColor.panelRaised)
+            if let image = loader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            } else {
+                Image(systemName: symbolName)
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+        }
+        .task(id: summary.id + summary.thumbnailPath + String(summary.updatedAt.timeIntervalSinceReferenceDate)) {
+            guard !summary.thumbnailPath.isEmpty else { return }
+            await loader.load(
+                ThumbnailImageRequest(
+                    path: summary.thumbnailPath,
+                    contentVersion: summary.updatedAt.timeIntervalSinceReferenceDate,
+                    maxPixelSize: 600
+                )
+            )
+        }
+    }
+
+    private var symbolName: String {
+        switch summary.assetKind {
+        case .image: return "photo"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .markdown, .json, .text, .data: return "doc.text"
+        default: return "doc"
+        }
     }
 }
 

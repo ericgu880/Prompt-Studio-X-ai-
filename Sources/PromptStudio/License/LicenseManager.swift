@@ -40,6 +40,12 @@ final class LicenseManager: ObservableObject {
         FeatureGate(state: state)
     }
 
+#if DEBUG
+    func enableTrialForTesting() {
+        state = .trialActive(daysRemaining: 1)
+    }
+#endif
+
     func loadStateOnLaunch() {
         _ = beginMutation()
         do {

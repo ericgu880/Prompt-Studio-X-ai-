@@ -248,7 +248,21 @@ struct PromptStudioView: View {
                 onDismiss: state.dismissImportStatus
             )
 
-            if state.isPreviewPresented, let item = state.selectedItem {
+            if state.isPreviewPresented,
+               state.summaryPreviewItemID != nil,
+               let controller = state.summaryDetailController {
+                GeometryReader { proxy in
+                    SummaryPreviewHost(
+                        controller: controller,
+                        inspectorWidth: constrainedLayout(totalWidth: proxy.size.width).inspector,
+                        railItems: summaryPreviewRailItems,
+                        onSelectRailItemID: selectPreviewRailItem,
+                        onNavigateStep: navigatePreviewStep
+                    )
+                    .environmentObject(state)
+                }
+                .zIndex(80)
+            } else if state.isPreviewPresented, let item = presentedPreviewItem {
                 GeometryReader { proxy in
                     ImmersivePreviewOverlay(
                         item: item,
@@ -296,20 +310,8 @@ struct PromptStudioView: View {
                     state.togglePreview()
                 }
                 DeleteSelectionKeyMonitor(
-                    canDelete: {
-                        if !state.selectedFolderIDs.isEmpty { return true }
-                        let selectedIDs = state.selectedIDs.isEmpty
-                            ? state.selectedID.map { Set([$0]) } ?? []
-                            : state.selectedIDs
-                        return state.items.contains { selectedIDs.contains($0.id) && !$0.isDeleted }
-                    },
-                    onDelete: {
-                        if state.selectedFolderIDs.isEmpty {
-                            state.moveSelectedToTrash()
-                        } else {
-                            state.beginDeleteSelectedFolders()
-                        }
-                    }
+                    canDelete: { state.canDeleteSelection },
+                    onDelete: { state.performDeleteSelection() }
                 )
                 AppShortcutKeyMonitor(
                     backShortcut: shortcutStore.binding(for: .navigateBack),
@@ -337,11 +339,17 @@ struct PromptStudioView: View {
                 capturePreviewSessionSnapshot()
             } else {
                 previewSessionSnapshot = .empty
+                state.clearSummaryPreviewRequest()
             }
         }
     }
 
     private func capturePreviewSessionSnapshot() {
+        if let summaryID = state.summaryPreviewItemID {
+            let loadedIDs = state.summaryPreviewPageSession?.loadedSummaryIDs ?? [summaryID]
+            previewSessionSnapshot = PreviewSessionSnapshot(itemIDs: loadedIDs)
+            return
+        }
         guard let currentID = state.selectedItem?.id else {
             previewSessionSnapshot = .empty
             return
@@ -354,6 +362,10 @@ struct PromptStudioView: View {
     }
 
     private func selectPreviewRailItem(_ itemID: String) {
+        if state.summaryPreviewItemID != nil {
+            state.previewSummaryItem(id: itemID)
+            return
+        }
         guard let item = state.items.first(where: { $0.id == itemID && !$0.isDeleted }) else { return }
         let start = DebugPerformanceProbe.now()
         state.select(item)
@@ -361,6 +373,12 @@ struct PromptStudioView: View {
     }
 
     private func navigatePreviewStep(_ direction: PreviewStepDirection) {
+        if state.summaryPreviewItemID != nil {
+            let summaryDirection: PreviewPageNavigationDirection = direction == .next ? .next : .previous
+            state.beginSummaryPreviewNavigation(summaryDirection)
+            capturePreviewSessionSnapshot()
+            return
+        }
         guard let currentID = state.selectedItem?.id,
               let nextID = previewSessionSnapshot.nextItemID(from: currentID, direction: direction),
               let nextItem = state.items.first(where: { $0.id == nextID && !$0.isDeleted }) else {
@@ -369,6 +387,27 @@ struct PromptStudioView: View {
         let start = DebugPerformanceProbe.now()
         state.select(nextItem)
         DebugPerformanceProbe.recordDuration("preview.selection.update.ms", startedAt: start)
+    }
+
+    private var summaryPreviewRailItems: [PreviewRailItem] {
+        let currentID = state.summaryDetailController?.selectedID ?? state.summaryPreviewItemID
+        return (state.summaryPreviewPageSession?.loadedSummaries ?? state.summaryItems)
+            .enumerated()
+            .map { index, summary in
+                PreviewRailItem(
+                    summary: summary,
+                    isCurrent: summary.id == currentID,
+                    positionIndex: index
+                )
+            }
+    }
+
+    private var presentedPreviewItem: PromptItem? {
+        if let summaryID = state.summaryPreviewItemID {
+            guard state.summaryDetailController?.selectedID == summaryID else { return nil }
+            return state.summaryDetailController?.currentDetail
+        }
+        return state.selectedItem
     }
 
     private func constrainedLayout(totalWidth: CGFloat) -> (sidebar: CGFloat, inspector: CGFloat) {
@@ -1107,6 +1146,57 @@ private struct FileDropCaptureOverlay: NSViewRepresentable {
         private func canReadFileURLs(from sender: NSDraggingInfo) -> Bool {
             let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
             return sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: options)
+        }
+    }
+}
+
+private struct SummaryPreviewHost: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var controller: ItemDetailController
+    let inspectorWidth: CGFloat
+    let railItems: [PreviewRailItem]
+    let onSelectRailItemID: (String) -> Void
+    let onNavigateStep: (PreviewStepDirection) -> Void
+
+    var body: some View {
+        Group {
+            if let item = controller.currentDetail,
+               controller.state == .loaded {
+                ImmersivePreviewOverlay(
+                    item: item,
+                    inspectorWidth: inspectorWidth,
+                    railItems: railItems,
+                    onSelectRailItemID: onSelectRailItemID,
+                    onNavigateStep: onNavigateStep
+                )
+            } else if controller.state == .failed {
+                ZStack {
+                    StudioColor.previewBackground.opacity(0.96)
+                    VStack(spacing: 14) {
+                        Image(systemName: controller.isNotFound ? "questionmark.folder" : "exclamationmark.triangle")
+                            .font(.system(size: 30))
+                            .foregroundStyle(StudioColor.secondaryText)
+                        Text(controller.error?.localizedDescription ?? "详情加载失败")
+                            .foregroundStyle(StudioColor.text)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                        if !controller.isNotFound {
+                            Button("重试") { controller.retry() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        Button("关闭") { state.isPreviewPresented = false }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .ignoresSafeArea()
+            } else {
+                ZStack {
+                    StudioColor.previewBackground.opacity(0.96)
+                    ProgressView()
+                        .controlSize(.large)
+                }
+                .ignoresSafeArea()
+            }
         }
     }
 }
@@ -2165,11 +2255,72 @@ private struct RecentRow: View {
     }
 }
 
+enum SummarySurfaceGateDecision: Equatable {
+    case attached
+    case failClosed
+    case explicitLegacy
+}
+
+func summarySurfaceGateDecision(
+    hasPaginator: Bool,
+    attachError: String?,
+    explicitLegacyMode: Bool
+) -> SummarySurfaceGateDecision {
+    if hasPaginator { return .attached }
+    if explicitLegacyMode { return .explicitLegacy }
+    // An attach error is diagnostic state, never implicit permission to
+    // hydrate the legacy PromptItem surface.
+    _ = attachError
+    return .failClosed
+}
+
+/// The legacy PromptItem surface is an explicit user-controlled escape hatch.
+/// Keep its conversion at the real render boundary so decode telemetry cannot
+/// be satisfied by a test-only helper while the normal Summary path remains
+/// projection-only.
+@MainActor
+func legacyPromptItemsForRendering(
+    _ items: [PromptItem],
+    explicitLegacyMode: Bool
+) -> [PromptItem] {
+    guard explicitLegacyMode else { return items }
+    return items.map { item in
+        _ = SummaryRendererDecodeInstrumentation.legacyItem(item)
+        return item
+    }
+}
+
+@MainActor
+func legacyPromptItemsForRenderingIfExplicit(
+    _ gate: SummarySurfaceGateDecision,
+    items: @autoclosure () -> [PromptItem]
+) -> [PromptItem] {
+    guard gate == .explicitLegacy else { return [] }
+    return legacyPromptItemsForRendering(items(), explicitLegacyMode: true)
+}
+
+@MainActor
+func summaryContentFrameAlignment(
+    isLibraryReady: Bool,
+    hasSummary: Bool,
+    summaryIsEmpty: @autoclosure () -> Bool,
+    summaryFoldersAreEmpty: @autoclosure () -> Bool,
+    legacyItemsAreEmpty: @autoclosure () -> Bool,
+    legacyFoldersAreEmpty: @autoclosure () -> Bool
+) -> Alignment {
+    guard isLibraryReady else { return .center }
+    if hasSummary {
+        return summaryIsEmpty() && summaryFoldersAreEmpty() ? .center : .topLeading
+    }
+    return legacyItemsAreEmpty() && legacyFoldersAreEmpty() ? .center : .topLeading
+}
+
 private struct MainContentView: View {
     @EnvironmentObject private var state: AppState
     @Binding var isSidebarVisible: Bool
     let isSplitResizing: Bool
     let onPreviewNavigationSnapshotChange: (PreviewNavigationSnapshot) -> Void
+    @AppStorage("promptStudio.summary.legacyExplicitMode") private var legacySummarySurfaceEnabled = false
     private static let contentHorizontalInset: CGFloat = 24
 
     var body: some View {
@@ -2187,7 +2338,7 @@ private struct MainContentView: View {
                 .padding(.horizontal, Self.contentHorizontalInset)
                 .padding(.bottom, 12)
 
-            Group {
+            VStack(spacing: 0) {
                 if !state.isLibraryReady {
                     if case .loading = state.libraryAccessState {
                         LibraryLoadingPlaceholderView()
@@ -2196,14 +2347,42 @@ private struct MainContentView: View {
                     }
                 } else {
                     let childFolders = state.childFolderRowsForCurrentCollection()
-                    if state.filteredItems.isEmpty && childFolders.isEmpty {
+                    let summaryGate = summarySurfaceGateDecision(
+                        hasPaginator: state.summaryPaginator != nil,
+                        attachError: state.summaryAttachError,
+                        explicitLegacyMode: legacySummarySurfaceEnabled
+                    )
+                    let legacyItems = legacyPromptItemsForRenderingIfExplicit(
+                        summaryGate,
+                        items: state.loadLegacyItemsForExplicitSummaryMode()
+                    )
+                    if let paginator = state.summaryPaginator {
+                        SummarySurfaceView(
+                            paginator: paginator,
+                            folders: childFolders.map(\.summaryRow)
+                        )
+                        .padding(.horizontal, Self.contentHorizontalInset)
+                    } else if summaryGate == .failClosed {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 28))
+                                .foregroundStyle(StudioColor.orange)
+                            Text("资料库摘要暂不可用")
+                                .font(StudioFont.font(14, weight: .semibold))
+                            Text(state.summaryAttachError.map { "\($0)\n\n已阻止自动回退到旧版项目加载。" } ?? "摘要连接失败；已阻止自动回退到旧版项目加载。")
+                                .font(StudioFont.font(12))
+                                .foregroundStyle(StudioColor.secondaryText)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(32)
+                    } else if legacyItems.isEmpty && childFolders.isEmpty {
                         EmptyStateView()
                     } else if state.isListView && childFolders.isEmpty {
-                        PromptListView(items: state.filteredItems)
+                        PromptListView(items: legacyItems)
                     } else if useNativeMasonryCollectionView {
                         MasonryCollectionGridView(
                             folders: childFolders,
-                            items: state.filteredItems,
+                            items: legacyItems,
                             datasetRevision: state.masonryDatasetRevision,
                             thumbnailUpdateState: state.thumbnailUpdateState,
                             isSplitResizing: isSplitResizing,
@@ -2213,7 +2392,7 @@ private struct MainContentView: View {
                     } else {
                         MasonryGridView(
                             folders: childFolders,
-                            items: state.filteredItems,
+                            items: legacyItems,
                             isSplitResizing: isSplitResizing,
                             onPreviewNavigationSnapshotChange: onPreviewNavigationSnapshotChange
                         )
@@ -2233,18 +2412,22 @@ private struct MainContentView: View {
     }
 
     private var contentFrameAlignment: Alignment {
-        if !state.isLibraryReady {
-            return .center
-        }
-        if state.filteredItems.isEmpty && state.childFolderRowsForCurrentCollection().isEmpty {
-            return .center
-        }
-        return .topLeading
+        summaryContentFrameAlignment(
+            isLibraryReady: state.isLibraryReady,
+            hasSummary: state.summaryPaginator != nil,
+            summaryIsEmpty: state.summaryPaginator?.summaries.isEmpty ?? true,
+            summaryFoldersAreEmpty: state.childFolderRowsForCurrentCollection().isEmpty,
+            legacyItemsAreEmpty: state.filteredItems.isEmpty,
+            legacyFoldersAreEmpty: state.childFolderRowsForCurrentCollection().isEmpty
+        )
     }
 
     private var contentStateKey: String {
         if !state.isLibraryReady {
             return "library-\(state.libraryAccessState)"
+        }
+        if state.summaryPaginator != nil {
+            return "summary-\(state.isListView)"
         }
         if state.filteredItems.isEmpty {
             return "empty-\(state.isListView)"

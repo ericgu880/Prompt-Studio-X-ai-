@@ -85,6 +85,10 @@ let package = Package(
         .testTarget(
             name: "PromptStudioCaptureHostTests",
             dependencies: ["PromptStudioCaptureHost"]
+        ),
+        .testTarget(
+            name: "PromptStudioSummaryUITests",
+            dependencies: ["PromptStudio"]
         )
     ]
 )

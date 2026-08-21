@@ -1,6 +1,62 @@
 import Foundation
 import SQLite3
 
+#if DEBUG
+/// Debug-only evidence for tests that need to observe the real legacy loader
+/// boundary rather than an AppState wrapper around it.
+public enum PromptRepositoryLoadInstrumentation {
+    /// A per-library, monotonic observation token for concurrent tests. Tests
+    /// capture a baseline and compare its delta; there is intentionally no
+    /// process-wide reset operation that could contaminate another library's
+    /// observation.
+    public struct Observation: Sendable {
+        private let libraryURL: URL
+        private let baseline: Int
+
+        fileprivate init(libraryURL: URL, baseline: Int) {
+            self.libraryURL = libraryURL
+            self.baseline = baseline
+        }
+
+        public var delta: Int {
+            PromptRepositoryLoadInstrumentation.loadItemsCount(for: libraryURL) - baseline
+        }
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var loadItemsCountStorage = 0
+    nonisolated(unsafe) private static var loadItemsCountByLibrary: [String: Int] = [:]
+
+    public static var loadItemsCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadItemsCountStorage
+    }
+
+    public static func loadItemsCount(for libraryURL: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadItemsCountByLibrary[key(for: libraryURL), default: 0]
+    }
+
+    public static func beginObservation(for libraryURL: URL) -> Observation {
+        Observation(libraryURL: libraryURL, baseline: loadItemsCount(for: libraryURL))
+    }
+
+    static func recordLoadItems(for libraryURL: URL) {
+        lock.lock()
+        loadItemsCountStorage += 1
+        let libraryKey = key(for: libraryURL)
+        loadItemsCountByLibrary[libraryKey, default: 0] += 1
+        lock.unlock()
+    }
+
+    private static func key(for libraryURL: URL) -> String {
+        libraryURL.standardizedFileURL.path
+    }
+}
+#endif
+
 public enum PromptRepositoryValidationError: Error, LocalizedError {
     case notDirectory(String)
     case missingDatabase(String)
@@ -38,6 +94,47 @@ public enum PromptRepositoryFolderMutationError: Error, LocalizedError, Equatabl
         case .affectedRowsMismatch(let folderID, let expected, let actual):
             "文件夹更新行数异常（\(folderID)：应为 \(expected)，实际为 \(actual)）"
         }
+    }
+}
+
+/// ID-only folder mutation used by Summary drag/drop.  The complete request
+/// is validated before any row is written, so a missing/deleted/mixed payload
+/// fails closed instead of partially moving the visible page.
+public enum PromptRepositoryItemFolderMutationError: Error, LocalizedError, Equatable, Sendable {
+    case emptySelection
+    case targetFolderNotFound(String)
+    case itemsMissing([String])
+    case itemsDeleted([String])
+    case mixedState(missing: [String], deleted: [String])
+    case affectedRowsMismatch(expected: Int, actual: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptySelection:
+            return "未选择可移动项目"
+        case .targetFolderNotFound(let folderID):
+            return "目标文件夹不存在：\(folderID)"
+        case .itemsMissing(let ids):
+            return "项目不存在：\(ids.joined(separator: ", "))"
+        case .itemsDeleted(let ids):
+            return "项目已删除：\(ids.joined(separator: ", "))"
+        case .mixedState(let missing, let deleted):
+            return "项目状态不一致（缺失：\(missing.joined(separator: ", "))；已删除：\(deleted.joined(separator: ", "))）"
+        case .affectedRowsMismatch(let expected, let actual):
+            return "项目文件夹更新行数异常（应为 \(expected)，实际为 \(actual)）"
+        }
+    }
+}
+
+public struct PromptRepositoryItemFolderMutationResult: Equatable, Sendable {
+    public let changedIDs: [String]
+    public let unchangedIDs: [String]
+    public let updatedAt: Date
+
+    public init(changedIDs: [String], unchangedIDs: [String], updatedAt: Date) {
+        self.changedIDs = changedIDs
+        self.unchangedIDs = unchangedIDs
+        self.updatedAt = updatedAt
     }
 }
 
@@ -345,6 +442,9 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func loadItems() throws -> [PromptItem] {
+#if DEBUG
+        PromptRepositoryLoadInstrumentation.recordLoadItems(for: libraryURL)
+#endif
         let itemSequenceReady = itemSequenceMigrationReady
         let rows = try database.query(
             itemSequenceReady
@@ -355,77 +455,11 @@ public final class PromptRepository: @unchecked Sendable {
         let versions = try loadVersions(versionSequenceReady: versionSequenceReady)
         return try rows.map { row in
             let id = required(row, "id")
-            let itemVersions: [PromptVersion]
-            if versionSequenceReady {
-                itemVersions = versions[id, default: []].sorted { lhs, rhs in
-                    let leftKey = lhs.versionCreatedAtSortKey ?? Int64((lhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
-                    let rightKey = rhs.versionCreatedAtSortKey ?? Int64((rhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
-                    if leftKey != rightKey { return leftKey < rightKey }
-                    switch (lhs.versionSequence, rhs.versionSequence) {
-                    case let (left?, right?): return left < right
-                    case (nil, _?): return true
-                    case (_?, nil): return false
-                    default: return lhs.createdAt < rhs.createdAt
-                    }
-                }
-            } else {
-                itemVersions = versions[id, default: []].sorted { $0.createdAt < $1.createdAt }
-            }
-            // During an in-flight backfill the newly added columns contain a
-            // mixture of NULL, historical, and provisional values.  Keep the
-            // legacy model/comparator contract until the readiness gate is
-            // fully open; exposing partial metadata here would silently switch
-            // filtering order before the migration has finalized.
-            let loadedItemSequence = itemSequenceReady ? (row["itemSequence"] ?? nil).flatMap(Int64.init) : nil
-            let loadedItemCreatedAtSortKey = itemSequenceReady ? (row["itemCreatedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
-            let loadedItemLastUsedAtSortKey = itemSequenceReady ? (row["itemLastUsedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
-            let itemCreatedAt: Date
-            if itemSequenceReady {
-                // Once the migration gate is open, item creation time is
-                // decoded exclusively from the persisted microsecond key.
-                guard let itemSequence = loadedItemSequence,
-                      itemSequence > 0,
-                      let itemCreatedAtSortKey = loadedItemCreatedAtSortKey,
-                      loadedItemLastUsedAtSortKey != nil else {
-                    throw PromptRepositoryValidationError.incompatibleSchema("ready item date/sequence metadata is malformed")
-                }
-                itemCreatedAt = PromptItemCreatedAtSupport.date(forSortKey: itemCreatedAtSortKey)
-            } else {
-                itemCreatedAt = try legacyCreatedAt(required(row, "createdAt"))
-            }
-            return PromptItem(
-                id: id,
-                title: required(row, "title"),
-                type: PromptType(rawValue: required(row, "type")) ?? .image,
-                assetKind: AssetKind(rawValue: required(row, "assetKind")) ?? .unknown,
-                modelId: required(row, "modelId"),
-                modelName: required(row, "modelName"),
-                folderId: required(row, "folderId"),
-                folderName: required(row, "folderName"),
-                category: required(row, "category"),
-                assetPath: required(row, "assetPath"),
-                thumbnailPath: required(row, "thumbnailPath"),
-                aspectRatio: required(row, "aspectRatio"),
-                width: int(row, "width"),
-                height: int(row, "height"),
-                format: required(row, "format"),
-                fileSize: int64(row, "fileSize"),
-                favorite: int(row, "favorite") == 1,
-                pinnedAt: date(row["pinnedAt"] ?? nil),
-                deletedAt: date(row["deletedAt"] ?? nil),
-                createdAt: itemCreatedAt,
-                updatedAt: date(required(row, "updatedAt")) ?? Date(),
-                lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(timeIntervalSince1970: 0),
-                sortOrder: int(row, "sortOrder"),
-                itemSequence: loadedItemSequence,
-                itemCreatedAtSortKey: loadedItemCreatedAtSortKey,
-                itemLastUsedAtSortKey: loadedItemLastUsedAtSortKey,
-                tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
-                referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
+            let itemVersions = orderedVersions(versions[id, default: []], versionSequenceReady: versionSequenceReady)
+            return try decodeItem(
+                row,
                 versions: itemVersions,
-                description: required(row, "description"),
-                captureID: row["captureId"] ?? nil,
-                capturedSource: decodeOptional(CapturedSource.self, from: row["captureSourceJSON"] ?? nil)
+                itemSequenceReady: itemSequenceReady
             )
         }
     }
@@ -485,22 +519,45 @@ public final class PromptRepository: @unchecked Sendable {
         try loadLibraryStatistics()
     }
 
+    /// Returns the next sort order for a newly created item without hydrating
+    /// the existing prompt/version graph.
+    func nextTopSortOrder() throws -> Int {
+        let row = try database.query(
+            "SELECT COALESCE(MIN(sortOrder), 0) - 1 AS nextSortOrder FROM prompt_items;"
+        ).first
+        let raw = row?["nextSortOrder"] ?? nil
+        return Int(raw ?? "-1") ?? -1
+    }
+
     /// Returns the prompt recorded for a browser capture ID, when one exists.
     public func findItem(captureID: String) throws -> PromptItem? {
         let normalized = captureID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
         guard let row = try database.query(
-            "SELECT id FROM prompt_items WHERE captureId = ? LIMIT 1;",
+            "SELECT * FROM prompt_items WHERE captureId = ? LIMIT 1;",
             values: [.text(normalized)]
         ).first else {
             return nil
         }
         let id = required(row, "id")
-        return try loadItems().first(where: { $0.id == id })
+        let itemSequenceReady = itemSequenceMigrationReady
+        let versionSequenceReady = versionSequenceMigrationReady
+        let versions = try loadVersions(for: id, versionSequenceReady: versionSequenceReady)
+        return try decodeItem(
+            row,
+            versions: orderedVersions(versions, versionSequenceReady: versionSequenceReady),
+            itemSequenceReady: itemSequenceReady
+        )
     }
 
     public func seedIfNeeded(items: [PromptItem], models: [ModelProfile], tags: [Tag]) throws {
-        if try loadItems().isEmpty {
+        // Startup Summary attaches to the projection query before any legacy
+        // PromptItem hydration. A single ID probe preserves the seed decision
+        // without decoding every row and its versions.
+        let hasItems = try !database.query(
+            "SELECT id FROM prompt_items LIMIT 1;"
+        ).isEmpty
+        if !hasItems {
             for model in models {
                 try saveModelProfile(model)
             }
@@ -750,6 +807,96 @@ public final class PromptRepository: @unchecked Sendable {
             }
         }
         _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
+    }
+
+    /// Atomically moves Summary item IDs without hydrating PromptItem values.
+    /// All IDs and the target folder are checked inside the same write
+    /// transaction before updates begin.  A same-folder request is a no-op and
+    /// returns its IDs as unchanged, preserving the cursor/page state.
+    @discardableResult
+    public func updateItemFolderIDs(
+        _ itemIDs: [String],
+        toFolderID folderID: String,
+        targetFolderName folderName: String,
+        updatedAt: Date = Date()
+    ) throws -> PromptRepositoryItemFolderMutationResult {
+        let ids = PromptItemDragPayload(itemIDs: itemIDs).itemIDs
+        guard !ids.isEmpty else { throw PromptRepositoryItemFolderMutationError.emptySelection }
+
+        var changedIDs: [String] = []
+        var unchangedIDs: [String] = []
+        try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
+            try database.transaction {
+                let folderExists = try database.query(
+                    "SELECT id FROM library_folders WHERE id = ? LIMIT 1;",
+                    values: [.text(folderID)]
+                ).contains { required($0, "id") == folderID }
+                guard folderExists else {
+                    throw PromptRepositoryItemFolderMutationError.targetFolderNotFound(folderID)
+                }
+
+                let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+                let rows = try database.query(
+                    "SELECT id, folderId, category, deletedAt FROM prompt_items WHERE id IN (\(placeholders));",
+                    values: ids.map { .text($0) }
+                )
+                let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { (required($0, "id"), $0) })
+                let missingIDs = ids.filter { rowsByID[$0] == nil }
+                let deletedIDs = ids.filter {
+                    guard let row = rowsByID[$0] else { return false }
+                    return (row["deletedAt"] ?? nil) != nil
+                }
+                if !missingIDs.isEmpty || !deletedIDs.isEmpty {
+                    if !missingIDs.isEmpty && !deletedIDs.isEmpty {
+                        throw PromptRepositoryItemFolderMutationError.mixedState(
+                            missing: missingIDs,
+                            deleted: deletedIDs
+                        )
+                    }
+                    if !missingIDs.isEmpty {
+                        throw PromptRepositoryItemFolderMutationError.itemsMissing(missingIDs)
+                    }
+                    throw PromptRepositoryItemFolderMutationError.itemsDeleted(deletedIDs)
+                }
+
+                let updateDate = Self.string(from: updatedAt)
+                let changedCandidates = ids.filter {
+                    guard let row = rowsByID[$0] else { return false }
+                    return required(row, "folderId") != folderID
+                }
+                unchangedIDs = ids.filter { !changedCandidates.contains($0) }
+                guard !changedCandidates.isEmpty else { return }
+
+                for id in changedCandidates {
+                    let category = rowsByID[id].map { required($0, "category") } ?? ""
+                    let changed = try database.runAndReturnChanges(
+                        """
+                        UPDATE prompt_items
+                        SET folderId = ?, folderName = ?, category = ?, updatedAt = ?
+                        WHERE id = ? AND deletedAt IS NULL AND folderId <> ?;
+                        """,
+                        values: [
+                            .text(folderID), .text(folderName), .text(category), .text(updateDate),
+                            .text(id), .text(folderID)
+                        ]
+                    )
+                    guard changed == 1 else {
+                        throw PromptRepositoryItemFolderMutationError.affectedRowsMismatch(
+                            expected: 1,
+                            actual: changed
+                        )
+                    }
+                    changedIDs.append(id)
+                }
+                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+            }
+        }
+        _ = itemDetailInvalidationHub.publish(changedItemIDs: Set(changedIDs))
+        return PromptRepositoryItemFolderMutationResult(
+            changedIDs: changedIDs,
+            unchangedIDs: unchangedIDs,
+            updatedAt: updatedAt
+        )
     }
 
     public func markDeleted(itemID: String, deletedAt: Date?) throws {
@@ -1089,8 +1236,22 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func saveFolder(_ folder: LibraryFolder) throws {
+        var didChange = false
         try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
             try database.transaction {
+                let existing = try database.query(
+                    "SELECT name, parentId, type, count, sortOrder, createdAt FROM library_folders WHERE id = ?;",
+                    values: [.text(folder.id)]
+                ).first
+                let isUnchanged = existing.map { row in
+                    required(row, "name") == folder.name
+                        && (row["parentId"] ?? nil) == folder.parentId
+                        && (row["type"] ?? nil) == folder.type?.rawValue
+                        && int(row, "count") == folder.count
+                        && int(row, "sortOrder") == folder.sortOrder
+                        && required(row, "createdAt") == Self.string(from: folder.createdAt)
+                } ?? false
+                guard !isUnchanged else { return }
                 try database.run(
                     "INSERT OR REPLACE INTO library_folders (id, name, parentId, type, count, sortOrder, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?);",
                     values: [
@@ -1104,7 +1265,11 @@ public final class PromptRepository: @unchecked Sendable {
                     ]
                 )
                 try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                didChange = true
             }
+        }
+        if didChange {
+            finishFolderMutation(changedItemIDs: [])
         }
     }
 
@@ -1129,9 +1294,29 @@ public final class PromptRepository: @unchecked Sendable {
     /// batch.
     public func updateFolderParentsAndSort(_ updates: [FolderParentSortUpdate]) throws {
         guard !updates.isEmpty else { return }
+        var finalUpdatesByID: [String: FolderParentSortUpdate] = [:]
+        for update in updates {
+            finalUpdatesByID[update.folderID] = update
+        }
+        var didChange = false
         try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
             try database.transaction {
-                for update in updates {
+                for update in finalUpdatesByID.values {
+                    guard let row = try database.query(
+                        "SELECT parentId, sortOrder FROM library_folders WHERE id = ?;",
+                        values: [.text(update.folderID)]
+                    ).first else {
+                        throw PromptRepositoryFolderMutationError.affectedRowsMismatch(
+                            folderID: update.folderID,
+                            expected: 1,
+                            actual: 0
+                        )
+                    }
+                    let existingParentID = row["parentId"] ?? nil
+                    let existingSortOrder = int(row, "sortOrder")
+                    guard existingParentID != update.parentID || existingSortOrder != update.sortOrder else {
+                        continue
+                    }
                     let changed = try database.runAndReturnChanges(
                         "UPDATE library_folders SET parentId = ?, sortOrder = ? WHERE id = ?;",
                         values: [
@@ -1147,9 +1332,15 @@ public final class PromptRepository: @unchecked Sendable {
                             actual: changed
                         )
                     }
+                    didChange = true
                 }
-                try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                if didChange {
+                    try reconcileItemSequenceMigrationFingerprintIfNeeded()
+                }
             }
+        }
+        if didChange {
+            finishFolderMutation(changedItemIDs: [])
         }
     }
 
@@ -1226,11 +1417,7 @@ public final class PromptRepository: @unchecked Sendable {
                 try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
         }
-        if changedItemIDs.isEmpty {
-            _ = libraryDataRevision.advance()
-        } else {
-            _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
-        }
+        finishFolderMutation(changedItemIDs: changedItemIDs)
     }
 
     public func deleteFolderTrees(
@@ -1254,14 +1441,42 @@ public final class PromptRepository: @unchecked Sendable {
     }
 
     public func renameFolder(id: String, name: String) throws {
+        var changedItemIDs: Set<String> = []
+        var didChange = false
         try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
             try database.transaction {
-                try database.run(
+                guard let folderRow = try database.query(
+                    "SELECT name FROM library_folders WHERE id = ?;",
+                    values: [.text(id)]
+                ).first else {
+                    throw PromptRepositoryFolderMutationError.folderNotFound(id)
+                }
+                guard (folderRow["name"] ?? nil) != name else { return }
+                let rows = try database.query(
+                    "SELECT id FROM prompt_items WHERE folderId = ?;",
+                    values: [.text(id)]
+                )
+                changedItemIDs = Set(rows.map { required($0, "id") })
+                let changed = try database.runAndReturnChanges(
                     "UPDATE library_folders SET name = ? WHERE id = ?;",
+                    values: [.text(name), .text(id)]
+                )
+                guard changed == 1 else {
+                    throw PromptRepositoryFolderMutationError.folderNotFound(id)
+                }
+                didChange = true
+                // `folderName` is part of the paged Summary projection. Keep
+                // it consistent in the same transaction instead of relying
+                // on AppState to hydrate and rewrite every PromptItem.
+                try database.run(
+                    "UPDATE prompt_items SET folderName = ? WHERE folderId = ?;",
                     values: [.text(name), .text(id)]
                 )
                 try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
+        }
+        if didChange {
+            finishFolderMutation(changedItemIDs: changedItemIDs)
         }
     }
 
@@ -1274,9 +1489,28 @@ public final class PromptRepository: @unchecked Sendable {
     public func deleteFolder(id: String) throws {
         try PromptRepositoryMigrationCoordinator.shared.withWriteLock(path: databaseURL.path) {
             try database.transaction {
-                try database.run("DELETE FROM library_folders WHERE id = ?;", values: [.text(id)])
+                let changed = try database.runAndReturnChanges(
+                    "DELETE FROM library_folders WHERE id = ?;",
+                    values: [.text(id)]
+                )
+                guard changed == 1 else {
+                    throw PromptRepositoryFolderMutationError.folderNotFound(id)
+                }
                 try reconcileItemSequenceMigrationFingerprintIfNeeded()
             }
+        }
+        finishFolderMutation(changedItemIDs: [])
+    }
+
+    /// Completes a folder mutation only after its SQLite transaction commits.
+    /// Item-backed changes publish through the shared hub, which advances the
+    /// shared data revision exactly once; folder-only changes advance that
+    /// same revision without manufacturing an item invalidation event.
+    private func finishFolderMutation(changedItemIDs: Set<String>) {
+        if changedItemIDs.isEmpty {
+            _ = libraryDataRevision.advance()
+        } else {
+            _ = itemDetailInvalidationHub.publish(changedItemIDs: changedItemIDs)
         }
     }
 
@@ -1583,14 +1817,107 @@ public final class PromptRepository: @unchecked Sendable {
         )
     }
 
-    private func loadVersions(versionSequenceReady: Bool) throws -> [String: [PromptVersion]] {
-        let rows: [[String: String?]]
+    private func orderedVersions(_ versions: [PromptVersion], versionSequenceReady: Bool) -> [PromptVersion] {
         if versionSequenceReady {
+            return versions.sorted { lhs, rhs in
+                let leftKey = lhs.versionCreatedAtSortKey ?? Int64((lhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
+                let rightKey = rhs.versionCreatedAtSortKey ?? Int64((rhs.createdAt.timeIntervalSince1970 * 1_000_000).rounded())
+                if leftKey != rightKey { return leftKey < rightKey }
+                switch (lhs.versionSequence, rhs.versionSequence) {
+                case let (left?, right?): return left < right
+                case (nil, _?): return true
+                case (_?, nil): return false
+                default: return lhs.createdAt < rhs.createdAt
+                }
+            }
+        }
+        return versions.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func decodeItem(
+        _ row: [String: String?],
+        versions: [PromptVersion],
+        itemSequenceReady: Bool
+    ) throws -> PromptItem {
+        // During an in-flight backfill the newly added columns contain a
+        // mixture of NULL, historical, and provisional values.  Keep the
+        // legacy model/comparator contract until the readiness gate is
+        // fully open; exposing partial metadata here would silently switch
+        // filtering order before the migration has finalized.
+        let loadedItemSequence = itemSequenceReady ? (row["itemSequence"] ?? nil).flatMap(Int64.init) : nil
+        let loadedItemCreatedAtSortKey = itemSequenceReady ? (row["itemCreatedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
+        let loadedItemLastUsedAtSortKey = itemSequenceReady ? (row["itemLastUsedAtSortKey"] ?? nil).flatMap(Int64.init) : nil
+        let itemCreatedAt: Date
+        if itemSequenceReady {
+            // Once the migration gate is open, item creation time is
+            // decoded exclusively from the persisted microsecond key.
+            guard let itemSequence = loadedItemSequence,
+                  itemSequence > 0,
+                  let itemCreatedAtSortKey = loadedItemCreatedAtSortKey,
+                  loadedItemLastUsedAtSortKey != nil else {
+                throw PromptRepositoryValidationError.incompatibleSchema("ready item date/sequence metadata is malformed")
+            }
+            itemCreatedAt = PromptItemCreatedAtSupport.date(forSortKey: itemCreatedAtSortKey)
+        } else {
+            itemCreatedAt = try legacyCreatedAt(required(row, "createdAt"))
+        }
+        return PromptItem(
+            id: required(row, "id"),
+            title: required(row, "title"),
+            type: PromptType(rawValue: required(row, "type")) ?? .image,
+            assetKind: AssetKind(rawValue: required(row, "assetKind")) ?? .unknown,
+            modelId: required(row, "modelId"),
+            modelName: required(row, "modelName"),
+            folderId: required(row, "folderId"),
+            folderName: required(row, "folderName"),
+            category: required(row, "category"),
+            assetPath: required(row, "assetPath"),
+            thumbnailPath: required(row, "thumbnailPath"),
+            aspectRatio: required(row, "aspectRatio"),
+            width: int(row, "width"),
+            height: int(row, "height"),
+            format: required(row, "format"),
+            fileSize: int64(row, "fileSize"),
+            favorite: int(row, "favorite") == 1,
+            pinnedAt: date(row["pinnedAt"] ?? nil),
+            deletedAt: date(row["deletedAt"] ?? nil),
+            createdAt: itemCreatedAt,
+            updatedAt: date(required(row, "updatedAt")) ?? Date(),
+            lastUsedAt: date(required(row, "lastUsedAt")) ?? Date(timeIntervalSince1970: 0),
+            sortOrder: int(row, "sortOrder"),
+            itemSequence: loadedItemSequence,
+            itemCreatedAtSortKey: loadedItemCreatedAtSortKey,
+            itemLastUsedAtSortKey: loadedItemLastUsedAtSortKey,
+            tags: decode([String].self, from: required(row, "tagsJSON"), fallback: []),
+            referenceAssets: decode([ReferenceAsset].self, from: required(row, "referencesJSON"), fallback: []),
+            versions: versions,
+            description: required(row, "description"),
+            captureID: row["captureId"] ?? nil,
+            capturedSource: decodeOptional(CapturedSource.self, from: row["captureSourceJSON"] ?? nil)
+        )
+    }
+
+    private func loadVersions(for itemID: String, versionSequenceReady: Bool) throws -> [PromptVersion] {
+        let grouped = try loadVersions(forItemID: itemID, versionSequenceReady: versionSequenceReady)
+        return grouped[itemID, default: []]
+    }
+
+    private func loadVersions(versionSequenceReady: Bool) throws -> [String: [PromptVersion]] {
+        try loadVersions(forItemID: nil, versionSequenceReady: versionSequenceReady)
+    }
+
+    private func loadVersions(forItemID itemID: String?, versionSequenceReady: Bool) throws -> [String: [PromptVersion]] {
+        let rows: [[String: String?]]
+        let order = versionSequenceReady
+            ? " ORDER BY versionCreatedAtSortKey ASC, versionSequence ASC;"
+            : " ORDER BY createdAt ASC;"
+        if let itemID {
             rows = try database.query(
-                "SELECT * FROM prompt_versions ORDER BY versionCreatedAtSortKey ASC, versionSequence ASC;"
+                "SELECT * FROM prompt_versions WHERE promptItemId = ?\(order)",
+                values: [.text(itemID)]
             )
         } else {
-            rows = try database.query("SELECT * FROM prompt_versions ORDER BY createdAt ASC;")
+            rows = try database.query("SELECT * FROM prompt_versions\(order)")
         }
         var grouped: [String: [PromptVersion]] = [:]
         for row in rows {

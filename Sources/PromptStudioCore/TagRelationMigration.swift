@@ -904,7 +904,11 @@ extension PromptRepository {
     internal func refreshTagsAfterMutation() throws {
         guard (try? tagRelationTableExists()) == true,
               (try? tagRelationMigrationState().phase == .ready) == true else {
-            try refreshTags(from: try loadItems())
+            // The relation migration may still be warming up during a cold
+            // DEBUG/demo seed. Rebuild the derived tag catalog from the
+            // metadata JSON only; hydrating PromptItem versions here would
+            // cross the Summary startup boundary through loadItems().
+            try refreshTagsFromMetadataJSON()
             return
         }
 
@@ -914,6 +918,29 @@ extension PromptRepository {
         var namesWithCounts: [String: Int] = [:]
         for row in rows {
             namesWithCounts[tagRelationRequired(row, "tagName")] = Int(tagRelationRequired(row, "count")) ?? 0
+        }
+        for (name, count) in namesWithCounts {
+            try database.run(
+                "INSERT INTO tags (id, name, color, count) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET count = excluded.count;",
+                values: [.text(UUID().uuidString), .text(name), .text("#3B82F6"), .int(Int64(count))]
+            )
+        }
+        let existingRows = try database.query("SELECT name FROM tags;")
+        for name in existingRows.map({ tagRelationRequired($0, "name") }) where namesWithCounts[name] == nil {
+            try database.run("DELETE FROM tags WHERE name = ?;", values: [.text(name)])
+        }
+    }
+
+    private func refreshTagsFromMetadataJSON() throws {
+        let rows = try database.query("SELECT id, tagsJSON, deletedAt FROM prompt_items;")
+        var namesWithCounts: [String: Int] = [:]
+        for row in rows {
+            guard tagRelationOptional(row, "deletedAt") == nil else { continue }
+            let itemID = tagRelationRequired(row, "id")
+            let tags = try decodeTagArray(tagRelationRequired(row, "tagsJSON"), itemID: itemID)
+            for tag in tags {
+                namesWithCounts[tag, default: 0] += 1
+            }
         }
         for (name, count) in namesWithCounts {
             try database.run(

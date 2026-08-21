@@ -41,7 +41,7 @@ struct PromptStudioApp: App {
                     petCoordinator.start()
                 }
                 .task {
-                    if appState.items.isEmpty {
+                    if !appState.isLibraryReady {
                         appState.load()
                     }
                     await appState.licenseManager.refreshIfNeeded()
@@ -118,17 +118,11 @@ struct PromptStudioApp: App {
                     .keyboardShortcut(shortcutStore.binding(for: .preview).keyEquivalent, modifiers: shortcutStore.binding(for: .preview).eventModifiers)
                 Button("移到回收站") {
                     guard !AppKitBridge.isTextInputActive() else { return }
-                    if appState.selectedFolderIDs.isEmpty {
-                        appState.moveSelectedToTrash()
-                    } else {
-                        appState.beginDeleteSelectedFolders()
-                    }
+                    appState.performDeleteSelection()
                 }
                     .keyboardShortcut(.delete, modifiers: .command)
                     .disabled(
-                        (appState.selectedFolderIDs.isEmpty
-                            && (appState.selectedItem == nil || appState.selectedItem?.isDeleted == true))
-                            || AppKitBridge.isTextInputActive()
+                        !appState.canDeleteSelection || AppKitBridge.isTextInputActive()
                     )
             }
 

@@ -19,6 +19,17 @@ final class NativeMarqueeCollectionView: NSCollectionView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    /// NSCollectionView can keep returning itself for a point inside an item
+    /// when its marquee overlay is installed above the item views. Summary
+    /// cards own a sibling native event view, so route attached hit-tests to
+    /// that overlay before falling back to collection-level blank selection.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let eventView = summaryEventView(at: point) {
+            return eventView
+        }
+        return super.hitTest(point)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if marqueeOverlay.superview == nil {
@@ -96,6 +107,36 @@ final class NativeMarqueeCollectionView: NSCollectionView {
         collectionViewLayout?.layoutAttributesForElements(
             in: CGRect(origin: point, size: CGSize(width: 1, height: 1))
         ).contains(where: { $0.representedElementCategory == .item }) == true
+    }
+
+    private func summaryEventView(at point: NSPoint) -> SummaryCardEventView? {
+        for itemView in subviews.reversed() {
+            guard itemView !== marqueeOverlay,
+                  !itemView.isHidden,
+                  itemView.alphaValue > 0,
+                  itemView.frame.contains(point) else { continue }
+            let itemPoint = itemView.convert(point, from: self)
+            if let eventView = descendantSummaryEventView(in: itemView, point: itemPoint) {
+                return eventView
+            }
+        }
+        return nil
+    }
+
+    private func descendantSummaryEventView(in view: NSView, point: NSPoint) -> SummaryCardEventView? {
+        if let eventView = view as? SummaryCardEventView, eventView.bounds.contains(point) {
+            return eventView
+        }
+        for child in view.subviews.reversed() {
+            guard !child.isHidden,
+                  child.alphaValue > 0,
+                  child.frame.contains(point) else { continue }
+            let childPoint = child.convert(point, from: view)
+            if let eventView = descendantSummaryEventView(in: child, point: childPoint) {
+                return eventView
+            }
+        }
+        return nil
     }
 }
 

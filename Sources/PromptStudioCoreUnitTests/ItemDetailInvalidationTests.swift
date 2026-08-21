@@ -226,6 +226,143 @@ func testPromptRepositoryPublishesCommittedItemDetailInvalidations() throws {
     try expect(recorder.events.last?.removedItemIDs == [item.id], "permanent delete should publish removed ID")
 }
 
+func testPromptRepositoryFolderMutationsAdvanceSharedRevisionAndPublishRenameIDs() throws {
+    let libraryURL = invalidationTemporaryLibraryURL()
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let folder = LibraryFolder(id: "folder-revision", name: "Before")
+    try repository.saveFolder(folder)
+
+    var item = invalidationTagItem(id: "folder-revision-item", tags: [], sortOrder: 0)
+    item.folderId = folder.id
+    item.folderName = folder.name
+    try repository.saveItem(item)
+
+    let recorder = ItemDetailEventRecorder()
+    let subscription = repository.itemDetailInvalidationHub.subscribe { recorder.append($0) }
+    defer { subscription.cancel() }
+
+    let beforeRename = repository.libraryDataRevision.current
+    try repository.renameFolder(id: folder.id, name: "After")
+    try expect(repository.libraryDataRevision.current > beforeRename, "folder rename should advance the shared revision")
+    try expect(recorder.events.count == 1, "folder rename should publish one post-commit event")
+    try expect(
+        recorder.events[0].changedItemIDs == [item.id],
+        "folder rename should publish every affected prompt item ID"
+    )
+    try expect(
+        recorder.events[0].revision == repository.libraryDataRevision.current,
+        "folder rename event should carry the shared committed revision"
+    )
+
+    let folderOnly = LibraryFolder(id: "folder-only", name: "Folder only")
+    let beforeSaveFolder = repository.libraryDataRevision.current
+    try repository.saveFolder(folderOnly)
+    try expect(repository.libraryDataRevision.current > beforeSaveFolder, "saveFolder should advance the shared revision")
+    try expect(recorder.events.count == 1, "folder-only save should not publish an item event")
+
+    let beforeParentUpdate = repository.libraryDataRevision.current
+    try repository.updateFolderParentsAndSort([
+        FolderParentSortUpdate(folderID: folderOnly.id, parentID: folder.id, sortOrder: 4)
+    ])
+    try expect(
+        repository.libraryDataRevision.current > beforeParentUpdate,
+        "folder parent and sort updates should advance the shared revision"
+    )
+    try expect(recorder.events.count == 1, "folder-only parent update should not publish an item event")
+
+    let beforeDelete = repository.libraryDataRevision.current
+    try repository.deleteFolder(id: folderOnly.id)
+    try expect(repository.libraryDataRevision.current > beforeDelete, "folder delete should advance the shared revision")
+    try expect(recorder.events.count == 1, "folder-only delete should not publish an item event")
+}
+
+func testPromptRepositoryMissingFolderMutationsDoNotAdvanceSharedRevision() throws {
+    let libraryURL = invalidationTemporaryLibraryURL()
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let beforeRename = repository.libraryDataRevision.current
+
+    do {
+        try repository.renameFolder(id: "missing-folder", name: "Renamed")
+        throw CoreUnitTestError.failure("missing folder rename should fail")
+    } catch let error as PromptRepositoryFolderMutationError {
+        try expect(error == .folderNotFound("missing-folder"), "missing folder rename should report folderNotFound")
+    } catch let error as CoreUnitTestError {
+        throw error
+    }
+    try expect(
+        repository.libraryDataRevision.current == beforeRename,
+        "missing folder rename must not advance the shared revision"
+    )
+
+    do {
+        try repository.deleteFolder(id: "missing-folder")
+        throw CoreUnitTestError.failure("missing folder delete should fail")
+    } catch let error as PromptRepositoryFolderMutationError {
+        try expect(error == .folderNotFound("missing-folder"), "missing folder delete should report folderNotFound")
+    } catch let error as CoreUnitTestError {
+        throw error
+    }
+    try expect(
+        repository.libraryDataRevision.current == beforeRename,
+        "missing folder delete must not advance the shared revision"
+    )
+}
+
+func testPromptRepositoryBatchFolderOrderAdvancesOneSharedRevision() throws {
+    let libraryURL = invalidationTemporaryLibraryURL()
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let folders = [
+        LibraryFolder(id: "order-a", name: "A", sortOrder: 0),
+        LibraryFolder(id: "order-b", name: "B", sortOrder: 1),
+        LibraryFolder(id: "order-c", name: "C", sortOrder: 2)
+    ]
+    for folder in folders { try repository.saveFolder(folder) }
+
+    let before = repository.libraryDataRevision.current
+    try repository.updateFolderParentsAndSort([
+        FolderParentSortUpdate(folderID: "order-c", parentID: nil, sortOrder: 0),
+        FolderParentSortUpdate(folderID: "order-a", parentID: nil, sortOrder: 1),
+        FolderParentSortUpdate(folderID: "order-b", parentID: nil, sortOrder: 2)
+    ])
+    try expect(
+        repository.libraryDataRevision.current == before + 1,
+        "one batch folder order update must advance exactly one shared revision"
+    )
+    try expect(
+        try repository.loadFolders().map(\.id) == ["order-c", "order-a", "order-b"],
+        "one batch folder order update must persist every sibling order"
+    )
+}
+
+func testPromptRepositoryNoOpFolderMutationsDoNotAdvanceSharedRevision() throws {
+    let libraryURL = invalidationTemporaryLibraryURL()
+    defer { try? FileManager.default.removeItem(at: libraryURL) }
+    let repository = try PromptRepository(libraryURL: libraryURL)
+    let folder = LibraryFolder(id: "noop-folder", name: "No-op", sortOrder: 7)
+    try repository.saveFolder(folder)
+    var item = invalidationTagItem(id: "noop-item", tags: ["noop"], sortOrder: 0)
+    item.folderId = folder.id
+    item.folderName = folder.name
+    try repository.saveItem(item)
+
+    let recorder = ItemDetailEventRecorder()
+    let subscription = repository.itemDetailInvalidationHub.subscribe { recorder.append($0) }
+    defer { subscription.cancel() }
+    let before = repository.libraryDataRevision.current
+
+    try repository.saveFolder(folder)
+    try repository.renameFolder(id: folder.id, name: folder.name)
+    try repository.updateFolderParentsAndSort([
+        FolderParentSortUpdate(folderID: folder.id, parentID: folder.parentId, sortOrder: folder.sortOrder)
+    ])
+
+    try expect(repository.libraryDataRevision.current == before, "same-value folder mutations must not advance the shared revision")
+    try expect(recorder.events.isEmpty, "same-name folder rename must not publish an item invalidation")
+}
+
 func testSaveCapturedItemPublishesAfterUnlockAndSupportsReentrantObserver() throws {
     let libraryURL = invalidationTemporaryLibraryURL()
     defer { try? FileManager.default.removeItem(at: libraryURL) }

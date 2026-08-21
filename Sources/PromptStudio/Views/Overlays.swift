@@ -7,16 +7,30 @@ import UniformTypeIdentifiers
 
 struct PreviewRailItem: Identifiable, Equatable {
     let id: String
-    let item: PromptItem
+    let item: PromptItem?
+    let summary: LibraryItemSummary?
     let isCurrent: Bool
     let positionIndex: Int
 
     init(item: PromptItem, isCurrent: Bool, positionIndex: Int) {
         self.id = item.id
         self.item = item
+        self.summary = nil
         self.isCurrent = isCurrent
         self.positionIndex = positionIndex
     }
+
+    init(summary: LibraryItemSummary, isCurrent: Bool, positionIndex: Int) {
+        self.id = summary.id
+        self.item = nil
+        self.summary = summary
+        self.isCurrent = isCurrent
+        self.positionIndex = positionIndex
+    }
+
+    var title: String { item?.title ?? summary?.title ?? "未命名" }
+    var assetKind: AssetKind { item?.assetKind ?? summary?.assetKind ?? .unknown }
+    var assetPath: String { item?.assetPath ?? summary?.assetPath ?? "" }
 }
 
 enum PreviewStepDirection: Equatable {
@@ -211,8 +225,8 @@ struct ImmersivePreviewOverlay: View {
         let upperBound = min(railItems.count - 1, currentIndex + upperPadding)
         var paths: [String] = []
         var seen = Set<String>()
-        for railItem in railItems[lowerBound...upperBound] where railItem.item.assetKind == .image {
-            let path = railItem.item.assetPath
+        for railItem in railItems[lowerBound...upperBound] where railItem.assetKind == .image {
+            let path = railItem.assetPath
             guard !path.isEmpty, seen.insert(path).inserted else { continue }
             paths.append(path)
         }
@@ -3618,13 +3632,19 @@ private struct PreviewThumbnailRail: View {
             onSelect(railItem.id)
         } label: {
             ZStack(alignment: .bottomTrailing) {
-                AssetMediaView(item: railItem.item, contentMode: .fill)
-                    .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
-                    .background(StudioColor.panelRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .opacity(isHovered && !isCurrent ? 0.86 : 1)
+                if let item = railItem.item {
+                    AssetMediaView(item: item, contentMode: .fill)
+                        .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
+                        .background(StudioColor.panelRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .opacity(isHovered && !isCurrent ? 0.86 : 1)
+                } else if let summary = railItem.summary {
+                    SummaryPreviewRailThumbnail(summary: summary)
+                        .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
+                        .opacity(isHovered && !isCurrent ? 0.86 : 1)
+                }
 
-                if railItem.item.assetKind == .video {
+                if railItem.assetKind == .video {
                     Image(systemName: "play.fill")
                         .font(StudioFont.symbol(8, weight: .semibold))
                         .foregroundStyle(StudioColor.text)
@@ -3640,7 +3660,48 @@ private struct PreviewThumbnailRail: View {
         .onHover { hovering in
             hoveredItemID = hovering ? railItem.id : nil
         }
-        .accessibilityLabel(railItem.item.title)
+        .accessibilityLabel(railItem.title)
+    }
+}
+
+private struct SummaryPreviewRailThumbnail: View {
+    let summary: LibraryItemSummary
+    @StateObject private var loader = SharedThumbnailImageLoader()
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(StudioColor.panelRaised)
+            if let image = loader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            } else {
+                Image(systemName: symbolName)
+                    .foregroundStyle(StudioColor.secondaryText)
+            }
+        }
+        .task(id: summary.id + summary.thumbnailPath + String(summary.updatedAt.timeIntervalSinceReferenceDate)) {
+            guard !summary.thumbnailPath.isEmpty else { return }
+            await loader.load(
+                ThumbnailImageRequest(
+                    path: summary.thumbnailPath,
+                    contentVersion: summary.updatedAt.timeIntervalSinceReferenceDate,
+                    maxPixelSize: 1_200
+                )
+            )
+        }
+    }
+
+    private var symbolName: String {
+        switch summary.assetKind {
+        case .image: return "photo"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .markdown, .json, .text, .data: return "doc.text"
+        default: return "doc"
+        }
     }
 }
 

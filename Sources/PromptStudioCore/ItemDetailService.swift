@@ -305,3 +305,23 @@ public extension PromptRepository {
 
 extension PromptRepository: ItemDetailLoading {}
 extension PromptRepository: ItemDetailInvalidationProviding {}
+
+@MainActor
+public extension PromptRepository {
+    /// Builds the UI-facing detail owner from the repository's shared loader
+    /// and invalidation source. Initializing the shared read service here keeps
+    /// startup failures throwable while the controller observes committed
+    /// repository mutations through the library-scoped hub.
+    func makeItemDetailController(
+        cache: ItemDetailCache = ItemDetailCache()
+    ) throws -> ItemDetailController {
+        _ = try sharedItemDetailService()
+        return ItemDetailController(
+            loader: self,
+            cache: cache,
+            revisionProvider: { [weak self] id in
+                self?.itemDetailInvalidationHub.itemRevision(for: id) ?? 0
+            }
+        )
+    }
+}

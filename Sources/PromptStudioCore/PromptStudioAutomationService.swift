@@ -825,7 +825,7 @@ public final class PromptStudioAutomationService: @unchecked Sendable {
     }
 
     private func nextTopSortOrder() throws -> Int {
-        ((try repository.loadItems()).map(\.sortOrder).min() ?? 0) - 1
+        try repository.nextTopSortOrder()
     }
 
     private func nextVersionName(after versions: [PromptVersion]) -> String {
